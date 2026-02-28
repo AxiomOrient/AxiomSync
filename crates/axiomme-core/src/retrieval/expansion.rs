@@ -108,6 +108,7 @@ struct ExpansionLoopInput<'a> {
     planned: &'a PlannedQuery,
     budget: ResolvedBudget,
     target: Option<&'a AxiomUri>,
+    target_prefix: Option<String>,
     filter_projection: Option<&'a HashSet<Arc<str>>>,
     query_cutoffs: &'a QueryCutoffs,
     limit: usize,
@@ -123,6 +124,7 @@ struct IdentifierFastPathInput<'a> {
     budget: ResolvedBudget,
     query: &'a str,
     query_cutoffs: &'a QueryCutoffs,
+    target_prefix: Option<String>,
     limit: usize,
     run_start: Instant,
 }
@@ -135,6 +137,7 @@ struct QueryFrontierInput<'a> {
     budget: ResolvedBudget,
     query: &'a str,
     query_cutoffs: &'a QueryCutoffs,
+    target_prefix: Option<String>,
     limit: usize,
 }
 
@@ -149,6 +152,9 @@ pub(super) fn run_single_query(
     let query = planned.query.clone();
     let limit = options.limit.max(1);
     let query_cutoffs = QueryCutoffs::from_options(&query, options);
+    let target = options.target_uri.clone();
+    let target_prefix = target.as_ref().map(|t| format!("{t}/"));
+
     if let Some(result) = run_identifier_query_fast_path(IdentifierFastPathInput {
         index,
         options,
@@ -156,12 +162,13 @@ pub(super) fn run_single_query(
         budget,
         query: &query,
         query_cutoffs: &query_cutoffs,
+        target_prefix: target_prefix.clone(),
         limit,
         run_start,
     }) {
         return result;
     }
-    let target = options.target_uri.clone();
+
     let QueryInitialization {
         trace_start,
         frontier,
@@ -176,6 +183,7 @@ pub(super) fn run_single_query(
         budget,
         query: &query,
         query_cutoffs: &query_cutoffs,
+        target_prefix: target_prefix.clone(),
         limit,
     });
     let loop_state = execute_expansion_loop(ExpansionLoopInput {
@@ -184,6 +192,7 @@ pub(super) fn run_single_query(
         planned,
         budget,
         target: target.as_ref(),
+        target_prefix,
         filter_projection: filter_projection.as_ref(),
         query_cutoffs: &query_cutoffs,
         limit,
@@ -225,6 +234,7 @@ fn run_identifier_query_fast_path(input: IdentifierFastPathInput<'_>) -> Option<
         budget,
         query,
         query_cutoffs,
+        target_prefix,
         limit,
         run_start,
     } = input;
@@ -247,9 +257,14 @@ fn run_identifier_query_fast_path(input: IdentifierFastPathInput<'_>) -> Option<
         options.score_threshold,
         options.filter.as_ref(),
     );
+    let target_str = target.as_ref().map(ToString::to_string);
     ranked.retain(|item| {
-        uri_matches_query_bounds(&item.uri, planned, target.as_ref())
-            && item.depth <= budget.depth
+        uri_matches_query_bounds_optimized(
+            &item.uri,
+            planned,
+            target_str.as_deref(),
+            target_prefix.as_deref(),
+        ) && item.depth <= budget.depth
             && query_cutoffs.allows_scored_record(index, item)
     });
     if ranked.is_empty() {
@@ -308,6 +323,7 @@ fn execute_expansion_loop(input: ExpansionLoopInput<'_>) -> ExpansionLoopState {
         planned,
         budget,
         target,
+        target_prefix,
         filter_projection,
         query_cutoffs,
         limit,
@@ -315,14 +331,15 @@ fn execute_expansion_loop(input: ExpansionLoopInput<'_>) -> ExpansionLoopState {
         mut frontier,
         run_start,
     } = input;
-    let mut steps = Vec::new();
-    let mut visited = HashSet::new();
+    let mut steps = Vec::with_capacity(budget.nodes.min(1024));
+    let mut visited = HashSet::with_capacity(budget.nodes.min(1024));
     let mut explored = 0usize;
     let mut round = 0u32;
     let mut stable_rounds = 0u32;
     let mut previous_topk = Vec::<String>::new();
     let mut selected = HashMap::<String, ContextHit>::new();
     let mut stop_reason = "queue_empty".to_string();
+    let target_str = target.map(ToString::to_string);
 
     while let Some(node) = frontier.pop() {
         if let Some(max_ms) = budget.time_ms
@@ -351,8 +368,12 @@ fn execute_expansion_loop(input: ExpansionLoopInput<'_>) -> ExpansionLoopState {
         let mut children_selected = 0usize;
 
         for child in children {
-            if !uri_matches_query_bounds(&child.uri, planned, target)
-                || child.depth > budget.depth
+            if !uri_matches_query_bounds_optimized(
+                &child.uri,
+                planned,
+                target_str.as_deref(),
+                target_prefix.as_deref(),
+            ) || child.depth > budget.depth
                 || !uri_matches_filter_projection(&child.uri, filter_projection)
             {
                 continue;
@@ -385,13 +406,15 @@ fn execute_expansion_loop(input: ExpansionLoopInput<'_>) -> ExpansionLoopState {
             queue_size_after: frontier.len(),
         });
 
-        if update_convergence_state(
-            &selected,
-            limit,
-            &mut previous_topk,
-            &mut stable_rounds,
-            config.max_convergence_rounds,
-        ) {
+        if round.is_multiple_of(8)
+            && update_convergence_state(
+                &selected,
+                limit,
+                &mut previous_topk,
+                &mut stable_rounds,
+                config.max_convergence_rounds,
+            )
+        {
             stop_reason = "converged".to_string();
             break;
         }
@@ -406,11 +429,16 @@ fn execute_expansion_loop(input: ExpansionLoopInput<'_>) -> ExpansionLoopState {
     }
 }
 
-fn uri_matches_query_bounds(uri: &str, planned: &PlannedQuery, target: Option<&AxiomUri>) -> bool {
+fn uri_matches_query_bounds_optimized(
+    uri: &str,
+    planned: &PlannedQuery,
+    target_str: Option<&str>,
+    target_prefix: Option<&str>,
+) -> bool {
     if !uri_in_scopes(uri, &planned.scopes) {
         return false;
     }
-    uri_in_target(uri, target)
+    uri_in_target_optimized(uri, target_str, target_prefix)
 }
 
 fn uri_matches_filter_projection(uri: &str, filter_projection: Option<&HashSet<Arc<str>>>) -> bool {
@@ -420,14 +448,15 @@ fn uri_matches_filter_projection(uri: &str, filter_projection: Option<&HashSet<A
     }
 }
 
-fn uri_in_target(uri: &str, target: Option<&AxiomUri>) -> bool {
-    let Some(target) = target else {
+fn uri_in_target_optimized(
+    uri: &str,
+    target_str: Option<&str>,
+    target_prefix: Option<&str>,
+) -> bool {
+    let (Some(target), Some(prefix)) = (target_str, target_prefix) else {
         return true;
     };
-    let Ok(parsed) = AxiomUri::parse(uri) else {
-        return false;
-    };
-    parsed.starts_with(target)
+    uri == target || uri.starts_with(prefix)
 }
 
 fn update_convergence_state(
@@ -478,9 +507,11 @@ fn initialize_query_frontier(input: QueryFrontierInput<'_>) -> QueryInitializati
         budget,
         query,
         query_cutoffs,
+        target_prefix,
         limit,
     } = input;
     let target = options.target_uri.clone();
+    let target_str = target.as_ref().map(ToString::to_string);
     let filter = options.filter.as_ref();
     let filter_projection = index.filter_projection_uris(filter);
     let root_records = if let Some(target_uri) = target.as_ref() {
@@ -502,7 +533,12 @@ fn initialize_query_frontier(input: QueryFrontierInput<'_>) -> QueryInitializati
     let mut global_dirs =
         index.search_directories(query, target.as_ref(), config.global_topk, filter);
     global_dirs.retain(|x| {
-        uri_matches_query_bounds(&x.uri, planned, target.as_ref()) && x.depth <= budget.depth
+        uri_matches_query_bounds_optimized(
+            &x.uri,
+            planned,
+            target_str.as_deref(),
+            target_prefix.as_deref(),
+        ) && x.depth <= budget.depth
     });
 
     let mut global_rank = index.search(
@@ -513,8 +549,12 @@ fn initialize_query_frontier(input: QueryFrontierInput<'_>) -> QueryInitializati
         filter,
     );
     global_rank.retain(|x| {
-        uri_matches_query_bounds(&x.uri, planned, target.as_ref())
-            && x.depth <= budget.depth
+        uri_matches_query_bounds_optimized(
+            &x.uri,
+            planned,
+            target_str.as_deref(),
+            target_prefix.as_deref(),
+        ) && x.depth <= budget.depth
             && query_cutoffs.allows_scored_record(index, x)
     });
 
