@@ -318,9 +318,9 @@ Release gate policy (`collect_release_gate_pack`) is evaluated as `G0..G8`:
 
 Compatibility/deprecation plan (`memories/resources/skills`):
 
-- 2026-02-24 (current): compatibility mirrors are still emitted by default.
-- Transition window: consumers should migrate to `query_results` + `hit_buckets` during 2026-Q2.
-- Removal gate: mirror-field removal requires an explicit release note and one-cycle advance notice before enforcement (see `docs/RELEASE_NOTES_2026-02-24.md`).
+- Current: compatibility mirrors are still emitted by default.
+- Transition: consumers should migrate to `query_results` + `hit_buckets`.
+- Removal gate: mirror-field removal requires an explicit release note and one-cycle advance notice before enforcement (see `docs/RELEASE_NOTES.md`).
 - Contract rule: when mirrors exist, they must be generated from `query_results`/`hit_buckets` only (no independent ranking path).
 
 Relation fields:

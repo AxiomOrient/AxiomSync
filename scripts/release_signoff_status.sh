@@ -2,8 +2,6 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TODAY="$(date -u +%F)"
-
 GATE_DOC=""
 REQUEST_DOC=""
 REPORT_DIR="${ROOT_DIR}/logs/release"
@@ -15,9 +13,9 @@ Usage:
   scripts/release_signoff_status.sh [--gate-doc <path>] [--request-doc <path>] [--report-path <path>] [--report-dir <path>]
 
 Defaults:
-  - gate doc: latest docs/FEATURE_COMPLETENESS_UAT_GATE_*.md
-  - request doc: latest docs/RELEASE_SIGNOFF_REQUEST_*.md
-  - report path: <report-dir>/RELEASE_SIGNOFF_STATUS_<today>.md
+  - gate doc: docs/FEATURE_COMPLETENESS_UAT_GATE.md (fallback: latest docs/FEATURE_COMPLETENESS_UAT_GATE_*.md)
+  - request doc: docs/RELEASE_SIGNOFF_REQUEST.md (fallback: latest docs/RELEASE_SIGNOFF_REQUEST_*.md)
+  - report path: <report-dir>/RELEASE_SIGNOFF_STATUS.md
   - report-dir: logs/release
 
 Exit codes:
@@ -40,6 +38,15 @@ resolve_latest_doc() {
   fi
   latest="$(printf '%s\n' "${matches[@]}" | LC_ALL=C sort | tail -n 1)"
   printf '%s' "${latest}"
+}
+
+display_path() {
+  local path="$1"
+  if [[ "${path}" == "${ROOT_DIR}"* ]]; then
+    printf '%s' "${path#${ROOT_DIR}/}"
+  else
+    printf '%s' "${path}"
+  fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -73,13 +80,21 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${GATE_DOC}" ]]; then
-  GATE_DOC="$(resolve_latest_doc "${ROOT_DIR}/docs/FEATURE_COMPLETENESS_UAT_GATE_*.md" "gate")"
+  if [[ -f "${ROOT_DIR}/docs/FEATURE_COMPLETENESS_UAT_GATE.md" ]]; then
+    GATE_DOC="${ROOT_DIR}/docs/FEATURE_COMPLETENESS_UAT_GATE.md"
+  else
+    GATE_DOC="$(resolve_latest_doc "${ROOT_DIR}/docs/FEATURE_COMPLETENESS_UAT_GATE_*.md" "gate")"
+  fi
 fi
 if [[ -z "${REQUEST_DOC}" ]]; then
-  REQUEST_DOC="$(resolve_latest_doc "${ROOT_DIR}/docs/RELEASE_SIGNOFF_REQUEST_*.md" "request")"
+  if [[ -f "${ROOT_DIR}/docs/RELEASE_SIGNOFF_REQUEST.md" ]]; then
+    REQUEST_DOC="${ROOT_DIR}/docs/RELEASE_SIGNOFF_REQUEST.md"
+  else
+    REQUEST_DOC="$(resolve_latest_doc "${ROOT_DIR}/docs/RELEASE_SIGNOFF_REQUEST_*.md" "request")"
+  fi
 fi
 if [[ -z "${REPORT_PATH}" ]]; then
-  REPORT_PATH="${REPORT_DIR}/RELEASE_SIGNOFF_STATUS_${TODAY}.md"
+  REPORT_PATH="${REPORT_DIR}/RELEASE_SIGNOFF_STATUS.md"
 fi
 
 if [[ ! -f "${GATE_DOC}" ]]; then
@@ -119,15 +134,16 @@ if ! is_done "${release_decision_status}"; then
   pending_roles+=("Final Release Decision")
 fi
 
-generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -p "$(dirname "${REPORT_PATH}")"
+gate_doc_display="$(display_path "${GATE_DOC}")"
+request_doc_display="$(display_path "${REQUEST_DOC}")"
+report_path_display="$(display_path "${REPORT_PATH}")"
 
 {
   echo "# Release Signoff Status"
   echo
-  echo "Generated At (UTC): ${generated_at}"
-  echo "Gate Doc: \`${GATE_DOC}\`"
-  echo "Request Doc: \`${REQUEST_DOC}\`"
+  echo "Gate Doc: \`${gate_doc_display}\`"
+  echo "Request Doc: \`${request_doc_display}\`"
   echo
   echo "## Current Status"
   echo
@@ -146,7 +162,7 @@ mkdir -p "$(dirname "${REPORT_PATH}")"
   echo
   echo "## Deterministic Re-check"
   echo
-  echo "- Command: \`scripts/release_signoff_status.sh --gate-doc ${GATE_DOC} --request-doc ${REQUEST_DOC} --report-path ${REPORT_PATH}\`"
+  echo "- Command: \`scripts/release_signoff_status.sh --gate-doc ${gate_doc_display} --request-doc ${request_doc_display} --report-path ${report_path_display}\`"
   echo "- READY condition: \`Final Release Decision\` starts with \`DONE\` in the gate document signoff section."
 } >"${REPORT_PATH}"
 

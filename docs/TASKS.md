@@ -1,155 +1,86 @@
 # Tasks
 
-Date: 2026-02-26 to 2026-02-27
-Scope: dev-branch-first implementation, verification, and refactoring follow-up workflow
-
 ## Task Table
-
 | TASK-ID | Status | Priority | Source | Action | Evidence |
 | --- | --- | --- | --- | --- | --- |
-| TASK-001 | DONE | P0 | ai | Create canonical `docs/IMPLEMENTATION-PLAN.md`. | `docs/IMPLEMENTATION-PLAN.md` |
-| TASK-002 | DONE | P1 | merged | Create canonical `docs/TASKS.md` and sync ontology baseline completion from source plan. | `docs/TASKS.md`; `rg -n "Implementation Status \\(Current\\)|none for v1 baseline plan" docs/ONTOLOGY_LAYER_IMPLEMENTATION_PLAN_2026-02-23.md` |
-| TASK-003 | DONE | P1 | ai | Run `bash scripts/quality_gates.sh` and capture gate evidence. | `bash scripts/quality_gates.sh` (exit 0); `docs/MIRROR_NOTICE_GATE_2026-02-24.json`; `docs/MIRROR_NOTICE_ROUTER_2026-02-24.json` |
-| TASK-004 | DONE | P1 | merged | Resolve mirror notice follow-up by creating required post-notice tag and moving gate status to `ready`. | `git for-each-ref --sort=creatordate --format='%(refname:short) %(creatordate:short)' refs/tags`; notice gate snapshots in `docs/` |
-| TASK-005 | DONE | P1 | merged | Complete one-cycle readiness closure (`NX-009`) in operations report/checklist. | `docs/MIRROR_MIGRATION_OPERATIONS_REPORT_2026-Q2.md`; `docs/MIRROR_NOTICE_ROUTER_2026-02-24.json` |
-| TASK-006 | BLOCKED | P0 | ai | Verify old tag-based publication checkpoint (`0.1.3`) on CI. | `gh run view 22436388999` (`conclusion=failure`, step `Run quality gates`) |
-| TASK-007 | DONE | P0 | ai | Fix CI root cause (`clippy::derivable_impls`) and harden prohibited-token scan fallback. | `crates/axiomme-core/src/models/benchmark.rs`; `scripts/check_prohibited_tokens.sh`; local clippy/gates pass evidence |
-| TASK-008 | BLOCKED | P0 | merged | Tag-driven repeated validation flow. | Policy changed to dev-first validation; `gh run cancel 22443480018`; `gh run cancel 22443474696`; `git push origin --delete 0.1.6` |
-| TASK-009 | DONE | P0 | ai | Enforce branch strategy correction: stop main/tag verification churn and continue on `dev`. | `gh run list --workflow "Quality Gates"` shows `22443480018` and `22443474696` as `completed/cancelled`; `git branch -vv` |
-| TASK-010 | DONE | P0 | ai | Align `dev` with latest validated work from `main` and keep implementation on `dev`. | `git merge --no-ff main -m "chore: align dev with latest validated main changes"` -> merge commit `f41b46e` |
-| TASK-011 | DONE | P0 | ai | Re-validate full quality gates locally on `dev` after merge. | `bash scripts/quality_gates.sh` (exit 0, 2026-02-26) |
-| TASK-012 | DONE | P0 | ai | Validate remote CI on `dev` (no new tag) and capture artifact evidence. | `gh run view 22445209109` (`conclusion=success`, jobs `gates` + `release-pack-strict` success); `gh api .../runs/22445209109/artifacts` (`mirror-notice-gate`, `release-pack-strict-report`) |
-| TASK-013 | DONE | P0 | merged | Execute feature-completeness/UAT gate and produce signoff record with verdict. | `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`; `docs/MANUAL_USECASE_VALIDATION_2026-02-26.md`; `scripts/manual_usecase_validation.sh` |
-| TASK-014 | DONE | P0 | merged | Finalize release signoff with recorded final release decision after FR-011 runtime probe evidence update. | `scripts/record_release_signoff.sh --decision GO --name aiden`; `scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` (`rc=0`); `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md` (`Final Release Decision: DONE`); `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` (`Overall: READY`) |
-| TASK-015 | DONE | P0 | ai | Harden zero-copy retrieval frontier after `Arc<str>` migration and synchronize refactoring evidence docs. | `crates/axiomme-core/src/retrieval/expansion.rs`; `docs/REFACTORING_TASKS.md`; `cargo check -p axiomme-core --lib`; `cargo test -p axiomme-core --lib`; `cargo check --workspace --all-targets` |
-| TASK-016 | DONE | P1 | merged | Complete Phase 2 decoupling: move relation/tier domain logic out of `LocalContextFs` into domain modules used by client/session layers. | `crates/axiomme-core/src/relation_documents.rs`; `crates/axiomme-core/src/tier_documents.rs`; updated call sites in `client/*` and `session/*`; `cargo test --workspace`; `cargo audit -q` |
-| TASK-017 | DONE | P1 | merged | Complete Phase 3 Task 3.1: encapsulate ontology enqueue orchestration in core API and thin CLI handler. | `crates/axiomme-core/src/client/ontology.rs`; `crates/axiomme-cli/src/commands/mod.rs`; `crates/axiomme-core/src/client/tests/ontology_enqueue.rs`; `cargo test --workspace`; `cargo audit -q` |
-| TASK-018 | DONE | P1 | merged | Complete Phase 3 Task 3.2: rename client `_service` modules to domain-focused module names and update module tree wiring. | renamed modules in `crates/axiomme-core/src/client.rs`; file moves in `crates/axiomme-core/src/client/*.rs`; `cargo test --workspace`; `cargo audit -q` |
-| TASK-019 | DONE | P1 | merged | Complete Phase 4 Task 4.1: introduce strongly typed queue event status and migrate queue API signatures away from raw status strings. | `crates/axiomme-core/src/models/queue.rs`; `crates/axiomme-core/src/state/queue.rs`; queue call-site/test migrations in `crates/axiomme-core/src/client/*`, `crates/axiomme-core/src/state/tests.rs`, `crates/axiomme-core/src/session/tests.rs`; `cargo check --workspace --all-targets`; `cargo test --workspace`; `cargo audit -q` |
-| TASK-020 | DONE | P1 | merged | Complete Phase 4 Task 4.2: replace ontology pressure magic string triggers with a structured trigger enum and keep string-array API contract via serialization boundary. | `crates/axiomme-core/src/ontology/pressure.rs`; `crates/axiomme-core/src/ontology/mod.rs`; `cargo check --workspace --all-targets`; `cargo test --workspace`; `cargo audit -q` |
-| TASK-021 | DONE | P0 | merged | Prepare deterministic release signoff request packet for `TASK-014` owners with evidence links and completion checklist. | `docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md`; updated references in `docs/TASKS.md` and `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md` |
-| TASK-022 | DONE | P0 | ai | Validate reviewer-reported `Arc<str>` type mismatch regressions and re-run workspace build/quality gates. | reviewer targets: `crates/axiomme-core/src/retrieval/expansion.rs` + `crates/axiomme-core/src/index.rs`; `cargo check -p axiomme-core --lib`; `cargo test -p axiomme-core --lib`; `cargo check --workspace --all-targets`; `cargo test --workspace`; `cargo audit -q` |
-| TASK-023 | DONE | P0 | merged | Add deterministic release-signoff status probe script and generate current status artifact for external approval follow-up. | `scripts/release_signoff_status.sh`; `scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` (`rc=2`); `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` |
-| TASK-024 | DONE | P0 | merged | Add minimal signoff-apply script to execute `NX-022` with explicit human decisions and auto-refresh status artifact. | `scripts/record_release_signoff.sh`; `scripts/record_release_signoff.sh --help`; `bash -n scripts/record_release_signoff.sh` |
-| TASK-025 | DONE | P0 | merged | Simplify release signoff flow from dual-role approval to single final release decision model. | `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`; `docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md`; `scripts/release_signoff_status.sh`; `scripts/record_release_signoff.sh` |
-| TASK-026 | DONE | P0 | user | Cross-validate Gemini project analysis claim-by-claim against actual code, then produce corrected verdicts with executable evidence. | `cargo check -p axiomme-core --lib`; `cargo test -p axiomme-core --lib`; `cargo audit -q`; file evidence in `crates/axiomme-core/src/{fs.rs,index.rs,state/queue.rs,state/migration.rs,security_audit.rs,client.rs,client/ontology.rs,relation_documents.rs,tier_documents.rs}` |
-| TASK-027 | DONE | P1 | ai | Remove remaining queue status/reconcile magic string literals from SQL aggregation and reconcile-run state paths by centralizing typed status constants/usages. | `crates/axiomme-core/src/models/reconcile.rs`; `crates/axiomme-core/src/client/queue_reconcile.rs`; `crates/axiomme-core/src/state/queue.rs`; `crates/axiomme-core/src/client/tests/relation_trace_logs.rs`; `cargo test -p axiomme-core --lib` |
-| TASK-028 | DONE | P1 | ai | Add DB-level guardrails for queue/reconcile status domains (migration-time check/normalization strategy) to prevent invalid persisted statuses. | `crates/axiomme-core/src/state/migration.rs`; `crates/axiomme-core/src/state/tests.rs`; `cargo test -p axiomme-core --lib open_rejects_outbox_with_invalid_status_domain_value open_normalizes_whitespace_and_case_for_status_columns` |
-| TASK-029 | DONE | P2 | ai | Reduce `InMemoryIndex::upsert` write-path allocation pressure (tokenization/text materialization) and preserve output compatibility. | `crates/axiomme-core/src/index.rs`; `cargo test -p axiomme-core --lib build_upsert_text_matches_legacy_join_shape_with_tags build_upsert_text_matches_legacy_join_shape_without_tags`; `cargo test -p axiomme-core --lib` |
+| TASK-030 | DONE | P0 | user | 문서 canonical/archive 재정렬, 날짜/절대경로 노이즈 제거, 최신 코드 기준 문서 정합성 갱신 | `README.md`, `docs/README.md`, `docs/ARCHITECTURE.md`, `docs/FEATURE_COMPLETENESS_UAT_GATE.md`, `docs/RELEASE_SIGNOFF_*.md`, `docs/archive/*` |
+| TASK-031 | DONE | P0 | user | `crates/axiomme-core/src/index.rs` 대형 모듈 1차 분해(exact-match 서브모듈 분리) | `crates/axiomme-core/src/index.rs`, `crates/axiomme-core/src/index/exact.rs`, `cargo test -p axiomme-core --lib`, `bash scripts/quality_gates.sh` |
+| TASK-032 | DONE | P0 | user | `crates/axiomme-core/src/index.rs` 대형 모듈 2차 분해(랭킹/스코어링 헬퍼 분리) | `crates/axiomme-core/src/index.rs`, `crates/axiomme-core/src/index/rank.rs`, `cargo check -p axiomme-core --lib`, `cargo test -p axiomme-core --lib` |
+| TASK-033 | DONE | P1 | user | `crates/axiomme-core/src/session/commit` 1차 분해(types/promotion 모듈 분리) | `crates/axiomme-core/src/session/commit/mod.rs`, `crates/axiomme-core/src/session/commit/types.rs`, `crates/axiomme-core/src/session/commit/promotion.rs`, `cargo check -p axiomme-core --lib` |
+| TASK-034 | DONE | P1 | user | `crates/axiomme-core/src/session/commit` 2차 분해(dedup/LLM selection 모듈 분리) | `crates/axiomme-core/src/session/commit/mod.rs`, `crates/axiomme-core/src/session/commit/dedup.rs`, `cargo test -p axiomme-core --lib session::commit::tests::`, `cargo test -p axiomme-core --lib` |
+| TASK-035 | DONE | P1 | user | `crates/axiomme-core/src/session/commit` 3차 분해(write path 분리) | `crates/axiomme-core/src/session/commit/mod.rs`, `crates/axiomme-core/src/session/commit/write_path.rs`, `cargo check -p axiomme-core --lib`, `bash scripts/quality_gates.sh` |
+| TASK-036 | DONE | P1 | user | `crates/axiomme-core/src/session/commit` 4차 분해(read path 분리) | `crates/axiomme-core/src/session/commit/mod.rs`, `crates/axiomme-core/src/session/commit/read_path.rs`, `cargo test -p axiomme-core --lib session::commit::tests::`, `cargo test -p axiomme-core --lib`, `bash scripts/quality_gates.sh` |
+| TASK-037 | DONE | P1 | user | `crates/axiomme-core/src/session/commit` 5차 분해(checkpoint/apply orchestration 분리) | `crates/axiomme-core/src/session/commit/mod.rs`, `crates/axiomme-core/src/session/commit/apply_flow.rs`, `cargo test -p axiomme-core --lib session::commit::tests::`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-038 | DONE | P1 | user | `crates/axiomme-core/src/session/commit` 6차 분해(promotion apply mode 핸들러 분리) | `crates/axiomme-core/src/session/commit/mod.rs`, `crates/axiomme-core/src/session/commit/apply_modes.rs`, `cargo test -p axiomme-core --lib session::commit::tests::`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-039 | DONE | P1 | user | `crates/axiomme-core/src/session/commit` 7차 분해(memory fallback 기록 경계 분리) | `crates/axiomme-core/src/session/commit/mod.rs`, `crates/axiomme-core/src/session/commit/fallbacks.rs`, `cargo test -p axiomme-core --lib session::commit::tests::`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-040 | DONE | P1 | user | `crates/axiomme-core/src/release_gate.rs` 1차 분해(workspace command side-effect 경계 분리) | `crates/axiomme-core/src/release_gate.rs`, `crates/axiomme-core/src/release_gate/workspace_command.rs`, `cargo test -p axiomme-core --lib release_gate::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-041 | DONE | P1 | user | `crates/axiomme-core/src/release_gate.rs` 2차 분해(episodic semver 파싱/정책 경계 분리) | `crates/axiomme-core/src/release_gate.rs`, `crates/axiomme-core/src/release_gate/episodic_semver.rs`, `cargo test -p axiomme-core --lib release_gate::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-042 | DONE | P1 | user | `crates/axiomme-core/src/release_gate.rs` 3차 분해(contract probe 실행 경계 분리) | `crates/axiomme-core/src/release_gate.rs`, `crates/axiomme-core/src/release_gate/contract_probe.rs`, `cargo test -p axiomme-core --lib release_gate::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-043 | DONE | P1 | user | `crates/axiomme-core/src/release_gate.rs` 4차 분해(policy 경계 분리) | `crates/axiomme-core/src/release_gate.rs`, `crates/axiomme-core/src/release_gate/policy.rs`, `cargo test -p axiomme-core --lib release_gate::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-044 | DONE | P1 | user | `crates/axiomme-core/src/release_gate.rs` 5차 분해(build-quality 경계 분리) | `crates/axiomme-core/src/release_gate.rs`, `crates/axiomme-core/src/release_gate/build_quality.rs`, `cargo test -p axiomme-core --lib release_gate::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-045 | DONE | P1 | user | `crates/axiomme-core/src/release_gate.rs` 6차 분해(workspace 경계 분리 + 경로 검증 회귀 테스트 추가) | `crates/axiomme-core/src/release_gate.rs`, `crates/axiomme-core/src/release_gate/workspace.rs`, `cargo test -p axiomme-core --lib release_gate::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-046 | DONE | P1 | user | `crates/axiomme-core/src/index.rs` 3차 분해(filter 경계 분리) | `crates/axiomme-core/src/index.rs`, `crates/axiomme-core/src/index/filter.rs`, `cargo test -p axiomme-core --lib index::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-047 | DONE | P1 | user | `crates/axiomme-core/src/index.rs` 4차 분해(ancestor/filter projection 경계 분리) | `crates/axiomme-core/src/index.rs`, `crates/axiomme-core/src/index/ancestry.rs`, `cargo test -p axiomme-core --lib index::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-048 | DONE | P1 | user | `crates/axiomme-core/src/release_gate.rs` 7차 분해(decision constructor 경계 분리) | `crates/axiomme-core/src/release_gate.rs`, `crates/axiomme-core/src/release_gate/decision.rs`, `cargo test -p axiomme-core --lib release_gate::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-049 | DONE | P1 | user | `crates/axiomme-core/src/release_gate.rs` 8차 분해(test fixture helper 경계 분리) | `crates/axiomme-core/src/release_gate.rs`, `crates/axiomme-core/src/release_gate/test_support.rs`, `cargo test -p axiomme-core --lib release_gate::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-050 | DONE | P1 | user | `crates/axiomme-core/src/index.rs` 5차 분해(lifecycle mutation 경계 분리 + quality gate drift 정합화) | `crates/axiomme-core/src/index.rs`, `crates/axiomme-core/src/index/lifecycle.rs`, `crates/axiomme-core/src/retrieval/expansion.rs`, `cargo test -p axiomme-core --lib index::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-051 | DONE | P1 | user | `crates/axiomme-core/src/release_gate.rs` 9차 분해(inline 통합 테스트 파일 분리) | `crates/axiomme-core/src/release_gate.rs`, `crates/axiomme-core/src/release_gate/tests.rs`, `cargo test -p axiomme-core --lib release_gate::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-052 | DONE | P1 | user | `crates/axiomme-core/src/index.rs` 6차 분해(search orchestration 경계 분리) | `crates/axiomme-core/src/index.rs`, `crates/axiomme-core/src/index/search_flow.rs`, `cargo test -p axiomme-core --lib index::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-053 | DONE | P1 | user | `crates/axiomme-core/src/release_gate.rs` 10차 분해(contract-integrity orchestration 경계 분리) | `crates/axiomme-core/src/release_gate.rs`, `crates/axiomme-core/src/release_gate/contract_integrity.rs`, `cargo test -p axiomme-core --lib release_gate::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
+| TASK-054 | DONE | P1 | user | `crates/axiomme-core/src/index.rs` 7차 분해(text assembly/helper 경계 분리) | `crates/axiomme-core/src/index.rs`, `crates/axiomme-core/src/index/text_assembly.rs`, `cargo test -p axiomme-core --lib index::tests::`, `cargo test -p axiomme-core --lib`, `cargo check --workspace --all-targets`, `bash scripts/quality_gates.sh` |
 
 ## Lifecycle Log
-
-1. `2026-02-26` `TASK-001` `TODO -> DOING -> DONE`
-   - Evidence: canonical implementation plan file created.
-2. `2026-02-26` `TASK-002` `TODO -> DOING -> DONE`
-   - Evidence: canonical task ledger created and synchronized with ontology plan.
-3. `2026-02-26` `TASK-003` `TODO -> DOING -> DONE`
-   - Evidence: quality gates completed with pass and notice snapshots refreshed.
-4. `2026-02-26` `TASK-004` `BLOCKED -> DOING -> DONE`
-   - Evidence: notice gate moved to `ready/post_notice_tag_and_strict_gate_passed`.
-5. `2026-02-26` `TASK-005` `TODO -> DOING -> DONE`
-   - Evidence: operations report/checklist updated to one-cycle `ready`.
-6. `2026-02-26` `TASK-006` `TODO -> DOING -> BLOCKED`
-   - Blocker: tag `0.1.3` CI failed (`run 22436388999`).
-7. `2026-02-26` `TASK-007` `TODO -> DOING -> DONE`
-   - Evidence: clippy remediation and token-scan fallback merged; local gates pass.
-8. `2026-02-26` `TASK-008` `TODO -> DOING -> BLOCKED`
-   - Blocker: tag-proliferation flow rejected; accidental `0.1.6` signal rolled back.
-9. `2026-02-26` `TASK-009` `TODO -> DOING -> DONE`
-   - Evidence: in-progress `main/tag` runs canceled and branch strategy corrected.
-10. `2026-02-26` `TASK-010` `TODO -> DOING -> DONE`
-    - Evidence: `dev` now includes latest commits via merge commit `f41b46e`.
-11. `2026-02-26` `TASK-011` `TODO -> DOING -> DONE`
-    - Evidence: full local quality gates passed on `dev` after integration.
-12. `2026-02-26` `TASK-012` `TODO -> DOING -> DONE`
-    - Evidence: remote `dev` run `22445209109` completed `success` with two artifacts.
-13. `2026-02-26` `TASK-013` `TODO -> DOING -> DONE`
-    - Evidence: feature/UAT gate document generated and manual usecase validation script stabilized via iterative self-fix.
-14. `2026-02-26` `TASK-014` `TODO -> DOING -> BLOCKED`
-    - Blocker owner/system: `platform/tooling` (`axiomme-webd` dependency), `release-manager` (human signoff).
-    - Deterministic re-check evidence:
-      - `command -v axiomme-webd`
-      - `target/debug/axiomme-cli --root <tmp-root> web --host 127.0.0.1 --port 8899`
-      - updated signoff entry in `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`
-15. `2026-02-27` `TASK-015` `TODO -> DOING -> DONE`
-    - Evidence: retrieval frontier now carries `Arc<str>` in `Node`/visited/frontier propagation; local+workspace checks pass.
-16. `2026-02-27` `TASK-016` `TODO -> DOING -> DONE`
-    - Evidence: `LocalContextFs` no longer owns relation/tier read-write-validation logic; domain modules (`relation_documents`, `tier_documents`) now serve client/session flows; workspace tests and audit pass.
-17. `2026-02-27` `TASK-017` `TODO -> DOING -> DONE`
-    - Evidence: `OntologyCommand::ActionEnqueue` now delegates to `AxiomMe::enqueue_ontology_action`; schema parse/compile/validate+enqueue orchestration moved into core API with regression coverage.
-18. `2026-02-27` `TASK-018` `TODO -> DOING -> DONE`
-    - Evidence: `_service` suffix removed from top-level client module/file names (`indexing`, `relation`, `resource`, `runtime`, etc.) and module tree wiring updated with green workspace tests/audit.
-19. `2026-02-27` `TASK-019` `TODO -> DOING -> DONE`
-    - Evidence: queue status is now strongly typed via `QueueEventStatus` enum and migrated API/call sites; verification passed with `cargo check --workspace --all-targets`, `cargo test --workspace`, `cargo audit -q`.
-20. `2026-02-27` `TASK-020` `TODO -> DOING -> DONE`
-    - Evidence: `OntologyPressureTrigger` enum introduced with typed variants + string-contract serde; pressure/trend logic migrated to typed trigger vectors and workspace checks/tests/audit passed.
-21. `2026-02-27` `TASK-014` `BLOCKED -> DOING -> BLOCKED`
-    - Evidence delta: external viewer runtime probe passed via explicit override path (`AXIOMME_WEB_VIEWER_BIN=/Users/axient/repository/AxiomMe-web/target/debug/axiomme-webd` with `/api/fs/tree` probe `probe_rc=0`).
-    - Remaining blocker owner/system: `release-owner` (final release decision not recorded).
-    - Deterministic re-check evidence:
-      - signoff entry in `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md` (`Final Release Decision`)
-22. `2026-02-27` `TASK-021` `TODO -> DOING -> DONE`
-    - Evidence: release signoff request packet created with required decision fields, reviewed evidence links, and deterministic completion steps (`docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md`).
-23. `2026-02-27` `TASK-022` `TODO -> DOING -> DONE`
-    - Evidence: reviewer-reported type mismatch sites were rechecked and already aligned (`Node.uri: Arc<str>`, `uri_path_prefix_match` tests call with `&str`); local and workspace gates passed (`cargo check/test`, `cargo audit -q`).
-24. `2026-02-27` `TASK-014` `BLOCKED -> DOING -> BLOCKED`
-    - Evidence delta: technical mergeability gates revalidated after review comments (`cargo check --workspace --all-targets`, `cargo test --workspace`, `cargo audit -q` all pass).
-    - Remaining blocker owner/system: `release-owner` (final release decision not recorded).
-    - Deterministic re-check evidence:
-      - signoff entry in `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md` (`Final Release Decision`)
-      - signoff packet `docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md`
-25. `2026-02-27` `TASK-023` `TODO -> DOING -> DONE`
-    - Evidence: release signoff status probe script added and executed (`scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` => `rc=2`), with artifact output at `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`.
-26. `2026-02-27` `TASK-014` `BLOCKED -> DOING -> BLOCKED`
-    - Evidence delta: automated probe confirms decision is still pending (`Overall: BLOCKED`, `Final Release Decision=PENDING`).
-    - Remaining blocker owner/system: `release-owner` (final release decision not recorded).
-    - Deterministic re-check evidence:
-      - `scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`
-      - `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`
-      - signoff entries in `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`
-27. `2026-02-27` `TASK-024` `TODO -> DOING -> DONE`
-    - Evidence: added signoff apply command (`scripts/record_release_signoff.sh`) that writes both signoff docs and refreshes status artifact in one step.
-28. `2026-02-27` `TASK-014` `BLOCKED -> DOING -> BLOCKED`
-    - Evidence delta: `NX-022` now has a single deterministic execution command and required human input schema.
-    - Remaining blocker owner/system: `release-owner` (explicit decision/name/date not provided yet).
-    - Deterministic re-check evidence:
-      - `scripts/record_release_signoff.sh --decision <GO|NO-GO> --name <name>`
-      - `scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`
-29. `2026-02-27` `TASK-025` `TODO -> DOING -> DONE`
-    - Evidence: signoff model simplified to one final release decision (single owner/single command path).
-30. `2026-02-27` `TASK-014` `BLOCKED -> DOING -> BLOCKED`
-    - Evidence delta: blocker now depends only on `Final Release Decision` entry (`PENDING`) and no longer requires dual role fields.
-    - Remaining blocker owner/system: `release-owner` (decision/name/date not provided yet).
-    - Deterministic re-check evidence:
-      - `scripts/record_release_signoff.sh --decision <GO|NO-GO> --name <name>`
-      - `scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`
-31. `2026-02-27` `TASK-014` `BLOCKED -> DOING -> DONE`
-    - Evidence: final release decision recorded (`GO`, signer `aiden`) and probe turned `READY` (`scripts/release_signoff_status.sh ...` => `rc=0`).
-32. `2026-02-27` `TASK-026` `TODO -> DOING -> DONE`
-    - Evidence: claim-level cross-validation completed with direct code inspection + executable gates (`cargo check -p axiomme-core --lib`, `cargo test -p axiomme-core --lib`, `cargo audit -q`).
-33. `2026-02-27` `TASK-027` `TODO -> DOING -> DONE`
-    - Evidence: `ReconcileRunStatus` enum added and wired through reconcile run path; queue aggregation/dead-letter SQL now uses enum-derived status parameters (`crates/axiomme-core/src/models/reconcile.rs`, `crates/axiomme-core/src/client/queue_reconcile.rs`, `crates/axiomme-core/src/state/queue.rs`).
-34. `2026-02-27` `TASK-028` `TODO -> DOING -> DONE`
-    - Evidence: DB schema now enforces status `CHECK` domains for fresh DBs and migration adds normalization+validation guardrails for legacy rows with regression tests (`crates/axiomme-core/src/state/migration.rs`, `crates/axiomme-core/src/state/tests.rs`).
-35. `2026-02-27` `TASK-029` `TODO -> DOING -> DONE`
-    - Evidence: `InMemoryIndex::upsert` now builds text in one preallocated pass (`build_upsert_text`) and preallocates term-frequency map; compatibility tests confirm legacy text shape (`crates/axiomme-core/src/index.rs`).
+1. `TASK-030` `TODO -> DOING`
+2. `TASK-030` `DOING -> DONE`
+   - Evidence: canonical docs 재작성, 날짜형 문서 `docs/archive/` 이관, signoff stable 문서/스크립트 경로 정렬.
+3. `TASK-031` `TODO -> DOING -> DONE`
+   - Evidence: `index.rs` exact-match 블록을 `index/exact.rs`로 분리하고 회귀 테스트 및 quality gates 통과.
+4. `TASK-032` `TODO -> DOING -> DONE`
+   - Evidence: `index.rs` 랭킹 헬퍼를 `index/rank.rs`로 분리하고 `index.rs` LOC를 1843 -> 1656으로 축소.
+5. `TASK-033` `TODO -> DOING -> DONE`
+   - Evidence: `session/commit/mod.rs` LOC를 1611 -> 1211로 축소하고, data model/constants(`types.rs`) 및 promotion helper(`promotion.rs`)를 분리.
+6. `TASK-034` `TODO -> DOING -> DONE`
+   - Evidence: `session/commit/mod.rs`에서 dedup/LLM selection 블록을 `dedup.rs`로 분리하고 LOC를 1211 -> 941로 축소.
+7. `TASK-035` `TODO -> DOING -> DONE`
+   - Evidence: `session/commit/mod.rs`의 write side-effect 경계를 `write_path.rs`로 분리하고 LOC를 941 -> 822로 축소.
+8. `TASK-036` `TODO -> DOING -> DONE`
+   - Evidence: `session/commit/mod.rs`의 read/list 경계를 `read_path.rs`로 분리하고 LOC를 822 -> 739로 축소.
+9. `TASK-037` `TODO -> DOING -> DONE`
+   - Evidence: `session/commit/mod.rs`의 checkpoint/apply state-machine 오케스트레이션을 `apply_flow.rs`로 분리하고 LOC를 739 -> 612로 축소.
+10. `TASK-038` `TODO -> DOING -> DONE`
+   - Evidence: `session/commit/mod.rs`의 apply mode 핸들러(`all_or_nothing`/`best_effort`)를 `apply_modes.rs`로 분리하고 LOC를 612 -> 512로 축소.
+11. `TASK-039` `TODO -> DOING -> DONE`
+   - Evidence: `session/commit/mod.rs`의 fallback 기록 함수(`record_memory_extractor_fallback`, `record_memory_dedup_fallback`)를 `fallbacks.rs`로 분리하고 LOC를 512 -> 491로 축소.
+12. `TASK-040` `TODO -> DOING -> DONE`
+   - Evidence: `release_gate.rs`의 workspace command 실행/테스트 모킹 경계를 `release_gate/workspace_command.rs`로 분리하고 회귀 테스트(`release_gate::tests::`) 및 quality gates를 재통과.
+13. `TASK-041` `TODO -> DOING -> DONE`
+   - Evidence: `release_gate.rs`의 episodic semver 파싱/판정 로직을 `release_gate/episodic_semver.rs`로 분리하고 LOC를 1471 -> 1245로 축소, 전체 게이트 재통과.
+14. `TASK-042` `TODO -> DOING -> DONE`
+   - Evidence: `release_gate.rs`의 contract probe 실행 경계(`run_contract_execution_probe`, `run_episodic_api_probe`, `run_ontology_contract_probe`)를 `release_gate/contract_probe.rs`로 분리하고 LOC를 1245 -> 1112로 축소, 전체 게이트 재통과.
+15. `TASK-043` `TODO -> DOING -> DONE`
+   - Evidence: `release_gate.rs`의 policy 경계(`episodic_semver_policy`, `ontology_contract_policy`)를 `release_gate/policy.rs`로 분리하고 LOC를 1112 -> 1101로 축소, 전체 게이트 재통과.
+16. `TASK-044` `TODO -> DOING -> DONE`
+   - Evidence: `release_gate.rs`의 build-quality 경계(`evaluate_build_quality_gate`)를 `release_gate/build_quality.rs`로 분리하고 LOC를 1101 -> 1081로 축소, 전체 게이트 재통과.
+17. `TASK-045` `TODO -> DOING -> DONE`
+   - Evidence: `release_gate.rs`의 workspace 경계(`resolve_workspace_dir`)를 `release_gate/workspace.rs`로 분리하고 경로 검증 회귀 테스트 3건(`resolve_workspace_dir_*`)을 추가, 전체 게이트 재통과.
+18. `TASK-046` `TODO -> DOING -> DONE`
+   - Evidence: `index.rs`의 filter 경계(`normalize_filter`, `leaf_matches_filter`, `record_matches_filter`)를 `index/filter.rs`로 분리하고 LOC를 1656 -> 1602로 축소, 전체 게이트 재통과.
+19. `TASK-047` `TODO -> DOING -> DONE`
+   - Evidence: `index.rs`의 ancestor/filter projection 경계(`has_matching_leaf_descendant`, `filter_projection_uris`)를 `index/ancestry.rs`로 분리하고 LOC를 1602 -> 1561로 축소, 전체 게이트 재통과.
+20. `TASK-048` `TODO -> DOING -> DONE`
+   - Evidence: `release_gate.rs`의 decision constructor 경계(`gate_decision`, `*_gate_decision`, `finalize_release_gate_pack_report`)를 `release_gate/decision.rs`로 분리하고 LOC를 1105 -> 993으로 축소, 전체 게이트 재통과.
+21. `TASK-049` `TODO -> DOING -> DONE`
+   - Evidence: `release_gate.rs` 테스트 픽스처 헬퍼(`eval_report`, `benchmark_gate_result`, `write_contract_gate_workspace_fixture`)를 `release_gate/test_support.rs`로 분리하고 LOC를 993 -> 878로 축소, 전체 게이트 재통과.
+22. `TASK-050` `TODO -> DOING -> DONE`
+   - Evidence: `index.rs`의 child-index/lexical lifecycle mutation 경계(`remove_lexical_stats`, `upsert_child_index_entry`, `remove_child_index_entry`)를 `index/lifecycle.rs`로 분리하고 LOC를 1561 -> 1515로 축소, 검증 중 발생한 clippy drift(`manual_is_multiple_of`)를 `retrieval/expansion.rs` 한 줄 정합화로 해소한 뒤 전체 게이트 재통과.
+23. `TASK-051` `TODO -> DOING -> DONE`
+   - Evidence: `release_gate.rs`의 inline 통합 테스트 모듈(`mod tests`)을 `release_gate/tests.rs`로 분리하고 production 파일 LOC를 878 -> 269로 축소, 분리 직후 formatting drift(파일 선행 공백 1라인)를 정리한 뒤 전체 게이트 재통과.
+24. `TASK-052` `TODO -> DOING -> DONE`
+   - Evidence: `index.rs`의 검색 오케스트레이션 경계(`search`, `search_directories`)를 `index/search_flow.rs`로 분리하고 `index.rs` LOC를 1515 -> 1391로 축소, 분리 후 전체 게이트 재통과.
+25. `TASK-053` `TODO -> DOING -> DONE`
+   - Evidence: `release_gate.rs`의 contract-integrity 오케스트레이션 경계(`evaluate_contract_integrity_gate`)를 `release_gate/contract_integrity.rs`로 분리하고 `release_gate.rs` LOC를 269 -> 245로 축소, 분리 후 전체 게이트 재통과.
+26. `TASK-054` `TODO -> DOING -> DONE`
+   - Evidence: `index.rs`의 text assembly/helper 경계(`build_upsert_text`)를 `index/text_assembly.rs`로 분리하고 `index.rs` LOC를 1391 -> 1367로 축소, 분리 후 전체 게이트 재통과.
 
 ## Next Action Mapping
-
-- [NX-015] source:merged priority:P0 status:done action:Legacy FR-011 unblock path is superseded by explicit viewer override verification and dedicated human-signoff follow-up queue evidence: `NX-021` and `NX-022` entries in this file
-- [NX-016] source:merged priority:P1 status:done action:Implement Phase 2 Task 2.1/2.2 by moving relation/tier domain logic from `fs.rs` to domain modules consumed by client/session layers evidence: `TASK-016` in this file + `crates/axiomme-core/src/relation_documents.rs` + `crates/axiomme-core/src/tier_documents.rs`
-- [NX-017] source:merged priority:P1 status:done action:Implement Phase 3 Task 3.1 by moving ontology action enqueue orchestration from CLI handler into core `AxiomMe` method evidence: `TASK-017` in this file + `crates/axiomme-core/src/client/ontology.rs` + `crates/axiomme-cli/src/commands/mod.rs`
-- [NX-018] source:merged priority:P1 status:done action:Implement Phase 3 Task 3.2 by renaming client `_service` modules to domain module names and updating module tree references evidence: `TASK-018` in this file + renamed `crates/axiomme-core/src/client/*.rs` modules + `crates/axiomme-core/src/client.rs`
-- [NX-019] source:merged priority:P1 status:done action:Implement Phase 4 Task 4.1 by replacing raw queue status string API with strongly typed queue status enum across enqueue/fetch/status transitions evidence: `TASK-019` in this file + `crates/axiomme-core/src/models/queue.rs` + `crates/axiomme-core/src/state/queue.rs` + `cargo test --workspace`
-- [NX-020] source:merged priority:P1 status:done action:Implement Phase 4 Task 4.2 by replacing ontology pressure trigger magic strings with `OntologyPressureTrigger` enum and explicit serialization at API boundary evidence: `TASK-020` in this file + `crates/axiomme-core/src/ontology/pressure.rs` + `crates/axiomme-core/src/ontology/mod.rs` + `cargo test --workspace`
-- [NX-021] source:merged priority:P0 status:done action:Unblock FR-011 runtime dependency by validating web probe through explicit viewer override path and updating gate evidence evidence: `TASK-014` lifecycle entry `2026-02-27` + `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md` (`Platform/Tooling` signoff row) + `probe_rc=0`
-- [NX-022] source:merged priority:P0 status:done action:Record final release decision (`GO` or `NO-GO`) to close final release gate evidence: `TASK-014` completion entry in this file + `scripts/record_release_signoff.sh --decision GO --name aiden` + `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` (`Overall: READY`)
-- [NX-023] source:merged priority:P0 status:done action:Create a deterministic signoff request packet for release owners with explicit approval fields and completion steps evidence: `TASK-021` in this file + `docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md`
-- [NX-024] source:merged priority:P0 status:done action:Validate reviewer-reported compile/type mismatch findings and confirm workspace mergeability gates evidence: `TASK-022` in this file + `cargo check/test` + `cargo audit -q`
-- [NX-025] source:merged priority:P0 status:done action:Add automated release-signoff status probe and publish latest pending-role artifact for deterministic external follow-up evidence: `TASK-023` in this file + `scripts/release_signoff_status.sh` + `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`
-- [NX-026] source:merged priority:P0 status:done action:Add one-command signoff apply path for NX-022 with explicit decision inputs evidence: `TASK-024` in this file + `scripts/record_release_signoff.sh`
-- [NX-027] source:merged priority:P0 status:done action:Simplify release signoff model to a single final decision evidence: `TASK-025` in this file + simplified gate/request/status scripts/docs
-- [NX-028] source:ai priority:P1 status:done action:Implement typed queue status usage end-to-end in aggregate/reconcile paths (remove remaining hard-coded status literals in queue SQL/runtime) evidence: `TASK-027` in this file + `crates/axiomme-core/src/models/reconcile.rs` + `crates/axiomme-core/src/state/queue.rs`
-- [NX-029] source:ai priority:P1 status:done action:Enforce queue/reconcile status domain at DB schema boundary to block invalid persisted values evidence: `TASK-028` in this file + `crates/axiomme-core/src/state/migration.rs` + `crates/axiomme-core/src/state/tests.rs`
-- [NX-030] source:ai priority:P2 status:done action:Reduce write-path allocation pressure in `InMemoryIndex::upsert` while preserving output compatibility evidence: `TASK-029` in this file + `crates/axiomme-core/src/index.rs` + `cargo test -p axiomme-core --lib`
 - Selected For Next: NONE

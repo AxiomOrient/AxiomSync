@@ -28,7 +28,7 @@ EOF
 done
 
 if [[ -z "${REPORT_PATH}" ]]; then
-  REPORT_PATH="$(pwd)/docs/MANUAL_USECASE_VALIDATION_${REPORT_DATE}.md"
+  REPORT_PATH="$(pwd)/logs/validation/manual_usecase_validation.md"
 fi
 mkdir -p "$(dirname "${REPORT_PATH}")"
 
@@ -122,7 +122,6 @@ EOF
 cat >"${REPORT_PATH}" <<EOF
 # Manual Usecase Validation
 
-Date: ${REPORT_DATE}
 Root: \`${ROOT_DIR}\`
 Dataset: \`${DATA_DIR}\`
 
@@ -162,7 +161,7 @@ resolve_web_viewer_bin() {
     return 0
   fi
 
-  local external_repo_candidate="/Users/axient/repository/AxiomMe-web/target/debug/axiomme-webd"
+  local external_repo_candidate="${WORKSPACE_DIR}/../AxiomMe-web/target/debug/axiomme-webd"
   if [[ -x "${external_repo_candidate}" ]]; then
     printf '%s' "${external_repo_candidate}"
     return 0

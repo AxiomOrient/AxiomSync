@@ -9,19 +9,18 @@ STATUS_DOC=""
 
 decision=""
 name=""
-decision_date="$(date -u +%F)"
 notes=""
 
 usage() {
   cat <<'EOF'
 Usage:
   scripts/record_release_signoff.sh \
-    --decision <GO|NO-GO> --name <name> [--date YYYY-MM-DD] [--notes text] [--gate-doc <path>] [--request-doc <path>] [--status-doc <path>] [--status-dir <path>]
+    --decision <GO|NO-GO> --name <name> [--notes text] [--gate-doc <path>] [--request-doc <path>] [--status-doc <path>] [--status-dir <path>]
 
 Defaults:
-  - gate doc: latest docs/FEATURE_COMPLETENESS_UAT_GATE_*.md
-  - request doc: latest docs/RELEASE_SIGNOFF_REQUEST_*.md
-  - status doc: <status-dir>/RELEASE_SIGNOFF_STATUS_<today>.md
+  - gate doc: docs/FEATURE_COMPLETENESS_UAT_GATE.md (fallback: latest docs/FEATURE_COMPLETENESS_UAT_GATE_*.md)
+  - request doc: docs/RELEASE_SIGNOFF_REQUEST.md (fallback: latest docs/RELEASE_SIGNOFF_REQUEST_*.md)
+  - status doc: <status-dir>/RELEASE_SIGNOFF_STATUS.md
   - status-dir: logs/release
 
 Applies release decision to selected gate/request docs and refreshes status report.
@@ -48,7 +47,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --decision) decision="${2:-}"; shift 2 ;;
     --name) name="${2:-}"; shift 2 ;;
-    --date) decision_date="${2:-}"; shift 2 ;;
     --notes) notes="${2:-}"; shift 2 ;;
     --gate-doc) GATE_DOC="${2:-}"; shift 2 ;;
     --request-doc) REQUEST_DOC="${2:-}"; shift 2 ;;
@@ -64,13 +62,21 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${GATE_DOC}" ]]; then
-  GATE_DOC="$(resolve_latest_doc "${ROOT_DIR}/docs/FEATURE_COMPLETENESS_UAT_GATE_*.md" "gate")"
+  if [[ -f "${ROOT_DIR}/docs/FEATURE_COMPLETENESS_UAT_GATE.md" ]]; then
+    GATE_DOC="${ROOT_DIR}/docs/FEATURE_COMPLETENESS_UAT_GATE.md"
+  else
+    GATE_DOC="$(resolve_latest_doc "${ROOT_DIR}/docs/FEATURE_COMPLETENESS_UAT_GATE_*.md" "gate")"
+  fi
 fi
 if [[ -z "${REQUEST_DOC}" ]]; then
-  REQUEST_DOC="$(resolve_latest_doc "${ROOT_DIR}/docs/RELEASE_SIGNOFF_REQUEST_*.md" "request")"
+  if [[ -f "${ROOT_DIR}/docs/RELEASE_SIGNOFF_REQUEST.md" ]]; then
+    REQUEST_DOC="${ROOT_DIR}/docs/RELEASE_SIGNOFF_REQUEST.md"
+  else
+    REQUEST_DOC="$(resolve_latest_doc "${ROOT_DIR}/docs/RELEASE_SIGNOFF_REQUEST_*.md" "request")"
+  fi
 fi
 if [[ -z "${STATUS_DOC}" ]]; then
-  STATUS_DOC="${STATUS_DIR}/RELEASE_SIGNOFF_STATUS_$(date -u +%F).md"
+  STATUS_DOC="${STATUS_DIR}/RELEASE_SIGNOFF_STATUS.md"
 fi
 
 require_non_empty() {
@@ -101,7 +107,7 @@ fi
 
 tmp_gate="$(mktemp)"
 awk \
-  -v decision_line="- Final Release Decision: \`DONE (${decision_date}, ${name}, ${decision})\`" \
+  -v decision_line="- Final Release Decision: \`DONE (${name}, ${decision})\`" \
   '
   index($0, "- Final Release Decision:") == 1 { print decision_line; next }
   { print }
@@ -110,10 +116,9 @@ mv "${tmp_gate}" "${GATE_DOC}"
 
 tmp_request="$(mktemp)"
 awk \
-  -v decision_table="| Release Owner | Final release decision (\`GO\` or \`NO-GO\`) | DONE (${decision_date}, ${name}, ${decision}) |" \
+  -v decision_table="| Release Owner | Final release decision (\`GO\` or \`NO-GO\`) | DONE (${name}, ${decision}) |" \
   -v decision_line="- Decision: \`${decision}\`" \
   -v name_line="- Name: ${name}" \
-  -v date_line="- Date (YYYY-MM-DD): ${decision_date}" \
   -v notes_line="- Notes: ${notes}" \
   '
   BEGIN { section = "" }
@@ -121,7 +126,6 @@ awk \
   index($0, "### Final Release Decision") == 1 { section = "decision"; print; next }
   section == "decision" && index($0, "- Decision:") == 1 { print decision_line; next }
   section == "decision" && index($0, "- Name:") == 1 { print name_line; next }
-  section == "decision" && index($0, "- Date (YYYY-MM-DD):") == 1 { print date_line; next }
   section == "decision" && index($0, "- Notes:") == 1 { print notes_line; section = ""; next }
   { print }
   ' "${REQUEST_DOC}" > "${tmp_request}"
