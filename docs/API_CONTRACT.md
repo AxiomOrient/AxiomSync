@@ -238,7 +238,8 @@ Session handle:
 
 Checkpoint promotion contract (`extension`):
 
-- `commit_with_mode(archive_only)` archives active messages and skips auto memory extraction.
+- `commit_with_mode(ArchiveOnly)` archives active messages and skips auto memory extraction.
+- `commit_with_mode(ArchiveAndExtract)` (default) archives and performs automated memory extraction.
 - `promote_session_memories` accepts explicit `MemoryPromotionRequest` facts only.
 - Promotion idempotency key is `(session_id, checkpoint_id)` with deterministic `request_hash`.
 - Same key + same hash returns cached result; same key + different hash returns validation conflict.
@@ -320,7 +321,7 @@ Compatibility/deprecation plan (`memories/resources/skills`):
 
 - Current: compatibility mirrors are still emitted by default.
 - Transition: consumers should migrate to `query_results` + `hit_buckets`.
-- Removal gate: mirror-field removal requires an explicit release note and one-cycle advance notice before enforcement (see `docs/RELEASE_NOTES.md`).
+- Removal gate: mirror-field removal requires an explicit update to this API contract and advance notice before enforcement.
 - Contract rule: when mirrors exist, they must be generated from `query_results`/`hit_buckets` only (no independent ranking path).
 
 Relation fields:

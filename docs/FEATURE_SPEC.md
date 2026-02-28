@@ -214,6 +214,14 @@ Expected: memory files are categorized and immediately retrievable.
 
 Expected: structure preserved, unsafe entries rejected.
 
+### Scenario D: Memory Promotion Integrity
+
+1. Trigger `promote_session_memories` with unique `checkpoint_id`.
+2. Interrupt process during I/O.
+3. Retry with same `checkpoint_id` and same request hash.
+
+Expected: 시스템은 체크포인트를 통해 중복 실행을 방지하거나, 이전 실패 지점부터 원자적으로 재개하여 데이터 무결성을 보장함.
+
 ### Scenario E: Internal Scope Governance
 
 1. Inspect `axiom://temp` during ingest.
