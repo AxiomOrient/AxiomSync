@@ -110,6 +110,9 @@ mod tests {
                 source_object_type: None,
                 target_object_type: None,
             }],
+            snippet: None,
+            matched_heading: None,
+            score_components: crate::models::ScoreComponents::default(),
         }
     }
 

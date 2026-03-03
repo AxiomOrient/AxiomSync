@@ -120,6 +120,8 @@ fn find_requires_runtime_prepare() {
         query: "oauth".to_string(),
         target: None,
         limit: 10,
+        tags: Vec::new(),
+        mime: None,
         budget_ms: None,
         budget_nodes: None,
         budget_depth: None,
@@ -180,10 +182,15 @@ fn search_runs_runtime_prepare_for_memory_backend() {
     let app = AxiomMe::new(temp.path()).expect("app");
 
     let command = Commands::Search(crate::cli::SearchArgs {
-        query: "oauth".to_string(),
+        query: Some("oauth".to_string()),
         target: Some("axiom://resources".to_string()),
         session: None,
-        limit: 5,
+        limit: Some(5),
+        tags: Vec::new(),
+        mime: None,
+        hints: Vec::new(),
+        hint_file: None,
+        request_json: None,
         score_threshold: None,
         min_match_tokens: None,
         budget_ms: None,
@@ -196,6 +203,88 @@ fn search_runs_runtime_prepare_for_memory_backend() {
         temp.path().join("resources").join(".abstract.md").exists(),
         "memory search should run runtime prepare and synthesize root tiers"
     );
+}
+
+#[test]
+fn search_preflight_requires_query_or_request_json() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+
+    let command = Commands::Search(crate::cli::SearchArgs {
+        query: None,
+        target: None,
+        session: None,
+        limit: None,
+        tags: Vec::new(),
+        mime: None,
+        hints: Vec::new(),
+        hint_file: None,
+        request_json: None,
+        score_threshold: None,
+        min_match_tokens: None,
+        budget_ms: None,
+        budget_nodes: None,
+        budget_depth: None,
+    });
+    let err = run(&app, temp.path(), command).expect_err("must reject empty query");
+    assert!(
+        format!("{err:#}").contains("search requires a positional query or --request-json <file>")
+    );
+}
+
+#[test]
+fn search_accepts_request_json_without_positional_query() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    let request_file = temp.path().join("search_request.json");
+    fs::write(
+        &request_file,
+        r#"{"query":"oauth","target_uri":"axiom://resources","limit":3}"#,
+    )
+    .expect("write request");
+
+    let command = Commands::Search(crate::cli::SearchArgs {
+        query: None,
+        target: None,
+        session: None,
+        limit: None,
+        tags: Vec::new(),
+        mime: None,
+        hints: Vec::new(),
+        hint_file: None,
+        request_json: Some(request_file),
+        score_threshold: None,
+        min_match_tokens: None,
+        budget_ms: None,
+        budget_nodes: None,
+        budget_depth: None,
+    });
+    run(&app, temp.path(), command).expect("search from request json");
+}
+
+#[test]
+fn search_rejects_invalid_hint_syntax() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+
+    let command = Commands::Search(crate::cli::SearchArgs {
+        query: Some("oauth".to_string()),
+        target: Some("axiom://resources".to_string()),
+        session: None,
+        limit: Some(5),
+        tags: Vec::new(),
+        mime: None,
+        hints: vec!["bad-hint-format".to_string()],
+        hint_file: None,
+        request_json: None,
+        score_threshold: None,
+        min_match_tokens: None,
+        budget_ms: None,
+        budget_nodes: None,
+        budget_depth: None,
+    });
+    let err = run(&app, temp.path(), command).expect_err("invalid hint must fail");
+    assert!(format!("{err:#}").contains("invalid --hint value"));
 }
 
 #[test]
@@ -396,6 +485,8 @@ fn find_runs_runtime_prepare_and_generates_root_tiers() {
         query: "oauth".to_string(),
         target: Some("axiom://resources".to_string()),
         limit: 5,
+        tags: Vec::new(),
+        mime: None,
         budget_ms: None,
         budget_nodes: None,
         budget_depth: None,

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::embedding::embed_text;
+use crate::embedding::{embed_text, tokenize_features};
 use crate::models::{IndexRecord, SearchFilter};
 use crate::uri::{AxiomUri, Scope};
 use ancestry::{
@@ -131,10 +131,12 @@ impl InMemoryIndex {
         let exact_keys = ExactRecordKeys::from_record(&record);
         let text = build_upsert_text(&record);
         let text_lower = text.to_lowercase();
-        let tokens = crate::embedding::tokenize_vec(&text);
-        let mut term_freq = HashMap::with_capacity(tokens.len());
-        for token in tokens {
-            *term_freq.entry(token).or_insert(0) += 1;
+        let mut term_freq = HashMap::new();
+        apply_weighted_token_features(&mut term_freq, tokenize_features(&text), 1, 1);
+        apply_weighted_token_features(&mut term_freq, tokenize_features(&record.name), 2, 3);
+        apply_weighted_token_features(&mut term_freq, tokenize_features(&record.uri), 2, 4);
+        for tag in &record.tags {
+            apply_weighted_token_features(&mut term_freq, tokenize_features(tag), 2, 2);
         }
         for token in term_freq.keys() {
             *self.doc_freqs.entry(token.clone()).or_insert(0) += 1;
@@ -279,6 +281,20 @@ impl InMemoryIndex {
 )]
 const fn usize_to_f32(value: usize) -> f32 {
     value as f32
+}
+
+fn apply_weighted_token_features(
+    term_freq: &mut HashMap<String, u32>,
+    features: crate::embedding::TokenFeatures,
+    plain_weight: u32,
+    symbolic_weight: u32,
+) {
+    for token in features.plain {
+        *term_freq.entry(token).or_insert(0) += plain_weight;
+    }
+    for token in features.symbolic {
+        *term_freq.entry(token).or_insert(0) += symbolic_weight;
+    }
 }
 
 #[cfg(test)]

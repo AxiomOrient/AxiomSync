@@ -89,7 +89,66 @@ fn query_has_any(tokens: &[String], terms: &[&str]) -> bool {
         .any(|token| terms.iter().any(|term| token == term))
 }
 
-fn classify_document_class(hit: &ContextHit, name_lower: &str, uri_lower: &str) -> DocumentClass {
+fn parse_document_class(value: &str) -> Option<DocumentClass> {
+    match value {
+        "code" => Some(DocumentClass::Code),
+        "config" => Some(DocumentClass::Config),
+        "spec" => Some(DocumentClass::Spec),
+        "narrative" => Some(DocumentClass::Narrative),
+        "memory" => Some(DocumentClass::Memory),
+        "skill" => Some(DocumentClass::Skill),
+        "session" => Some(DocumentClass::Session),
+        "data" => Some(DocumentClass::Data),
+        "general" => Some(DocumentClass::General),
+        _ => None,
+    }
+}
+
+fn metadata_document_class(record: Option<&IndexRecord>) -> Option<DocumentClass> {
+    let record = record?;
+    if let Some(explicit_class) = record.tags.iter().find_map(|tag| {
+        tag.strip_prefix("doc_class:")
+            .and_then(parse_document_class)
+    }) {
+        return Some(explicit_class);
+    }
+
+    let parser = record
+        .tags
+        .iter()
+        .find_map(|tag| tag.strip_prefix("parser:"))
+        .map(|value| value.to_ascii_lowercase());
+    if let Some(parser) = parser.as_deref() {
+        match parser {
+            "json" | "yaml" | "toml" => return Some(DocumentClass::Config),
+            "jsonl" | "xml" => return Some(DocumentClass::Data),
+            "markdown" => return Some(DocumentClass::Narrative),
+            _ => {}
+        }
+    }
+
+    if record.tags.iter().any(|tag| {
+        tag == "config" || tag == "yaml" || tag == "json" || tag == "toml" || tag == "ini"
+    }) {
+        return Some(DocumentClass::Config);
+    }
+    if record
+        .tags
+        .iter()
+        .any(|tag| tag.starts_with("mime:application/"))
+    {
+        return Some(DocumentClass::Data);
+    }
+
+    None
+}
+
+fn classify_document_class(
+    hit: &ContextHit,
+    record: Option<&IndexRecord>,
+    name_lower: &str,
+    uri_lower: &str,
+) -> DocumentClass {
     if hit.context_type == "memory" {
         return DocumentClass::Memory;
     }
@@ -98,6 +157,9 @@ fn classify_document_class(hit: &ContextHit, name_lower: &str, uri_lower: &str) 
     }
     if hit.context_type == "session" || hit.uri.starts_with("axiom://session/") {
         return DocumentClass::Session;
+    }
+    if let Some(class) = metadata_document_class(record) {
+        return class;
     }
     let ext = name_lower.rsplit('.').next().unwrap_or_default();
 
@@ -321,7 +383,7 @@ fn collect_doc_signals(
 ) -> DocSignals {
     let (name_lower, uri_lower) = lowercased_name_and_uri(hit, record);
     DocSignals {
-        doc_class: classify_document_class(hit, &name_lower, &uri_lower),
+        doc_class: classify_document_class(hit, record, &name_lower, &uri_lower),
         uri_or_name_overlap: query_tokens
             .iter()
             .any(|token| name_lower.contains(token) || uri_lower.contains(token)),

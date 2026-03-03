@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::catalog::sanitize_component;
 use crate::error::{AxiomError, Result};
@@ -91,6 +91,7 @@ pub struct RecordInput<'a> {
     pub abstract_text: String,
     pub content: String,
     pub tags: Vec<String>,
+    pub updated_at: DateTime<Utc>,
 }
 
 pub fn build_record(input: RecordInput<'_>) -> IndexRecord {
@@ -104,7 +105,7 @@ pub fn build_record(input: RecordInput<'_>) -> IndexRecord {
         abstract_text: input.abstract_text,
         content: input.content,
         tags: input.tags,
-        updated_at: Utc::now(),
+        updated_at: input.updated_at,
         depth: input.uri.segments().len(),
     }
 }
@@ -163,6 +164,7 @@ mod tests {
     fn build_record_sets_depth_and_parent_uri() {
         let uri = AxiomUri::parse("axiom://resources/demo/node.md").expect("parse");
         let parent = AxiomUri::parse("axiom://resources/demo").expect("parse");
+        let updated_at = Utc::now();
         let record = build_record(RecordInput {
             uri: &uri,
             parent_uri: Some(&parent),
@@ -172,8 +174,10 @@ mod tests {
             abstract_text: "node".to_string(),
             content: "content".to_string(),
             tags: vec!["markdown".to_string()],
+            updated_at,
         });
         assert_eq!(record.parent_uri.as_deref(), Some("axiom://resources/demo"));
         assert_eq!(record.depth, 2);
+        assert_eq!(record.updated_at, updated_at);
     }
 }

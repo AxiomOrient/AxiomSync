@@ -432,14 +432,39 @@ fn find_query_with_leading_hyphen_parses() {
 }
 
 #[test]
+fn find_parses_filter_flags() {
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "find",
+        "oauth",
+        "--tag",
+        "markdown",
+        "--mime",
+        "text/markdown",
+    ])
+    .expect("parse");
+
+    match cli.command {
+        Commands::Find(FindArgs {
+            query, tags, mime, ..
+        }) => {
+            assert_eq!(query, "oauth");
+            assert_eq!(tags, vec!["markdown".to_string()]);
+            assert_eq!(mime.as_deref(), Some("text/markdown"));
+        }
+        _ => panic!("expected find command"),
+    }
+}
+
+#[test]
 fn search_query_with_leading_hyphen_parses() {
     let cli = Cli::try_parse_from(["axiomme", "search", "--dash-prefixed", "--limit", "4"])
         .expect("parse");
 
     match cli.command {
         Commands::Search(SearchArgs { query, limit, .. }) => {
-            assert_eq!(query, "--dash-prefixed");
-            assert_eq!(limit, 4);
+            assert_eq!(query.as_deref(), Some("--dash-prefixed"));
+            assert_eq!(limit, Some(4));
         }
         _ => panic!("expected search command"),
     }
@@ -636,9 +661,55 @@ fn search_parses_score_and_min_match_options() {
             min_match_tokens,
             ..
         }) => {
-            assert_eq!(query, "oauth");
+            assert_eq!(query.as_deref(), Some("oauth"));
             assert_eq!(score_threshold, Some(0.35));
             assert_eq!(min_match_tokens, Some(2));
+        }
+        _ => panic!("expected search command"),
+    }
+}
+
+#[test]
+fn search_parses_filter_and_runtime_hint_flags() {
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "search",
+        "oauth",
+        "--tag",
+        "markdown",
+        "--mime",
+        "text/markdown",
+        "--hint",
+        "observation:debug queue replay",
+        "--hint-file",
+        "hints.json",
+        "--request-json",
+        "request.json",
+    ])
+    .expect("parse");
+
+    match cli.command {
+        Commands::Search(SearchArgs {
+            query,
+            tags,
+            mime,
+            hints,
+            hint_file,
+            request_json,
+            ..
+        }) => {
+            assert_eq!(query.as_deref(), Some("oauth"));
+            assert_eq!(tags, vec!["markdown".to_string()]);
+            assert_eq!(mime.as_deref(), Some("text/markdown"));
+            assert_eq!(hints, vec!["observation:debug queue replay".to_string()]);
+            assert_eq!(
+                hint_file.as_deref().and_then(|p| p.to_str()),
+                Some("hints.json")
+            );
+            assert_eq!(
+                request_json.as_deref().and_then(|p| p.to_str()),
+                Some("request.json")
+            );
         }
         _ => panic!("expected search command"),
     }

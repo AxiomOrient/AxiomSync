@@ -33,6 +33,21 @@ pub struct ContextHit {
     pub abstract_text: String,
     pub context_type: String,
     pub relations: Vec<RelationSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_heading: Option<String>,
+    #[serde(default)]
+    pub score_components: ScoreComponents,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScoreComponents {
+    pub exact: f32,
+    pub dense: f32,
+    pub sparse: f32,
+    pub path: f32,
+    pub recency: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,7 +325,8 @@ pub struct BackendStatus {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContextHit, FindResult, QueryPlan, SearchRequest, TypedQueryPlan, classify_hit_buckets,
+        ContextHit, FindResult, QueryPlan, ScoreComponents, SearchRequest, TypedQueryPlan,
+        classify_hit_buckets,
     };
 
     #[test]
@@ -380,6 +396,9 @@ mod tests {
             abstract_text: String::new(),
             context_type: "resource".to_string(),
             relations: Vec::new(),
+            snippet: None,
+            matched_heading: None,
+            score_components: ScoreComponents::default(),
         }
     }
 

@@ -115,6 +115,8 @@ pub struct MarkdownDocument {
     pub content: String,
     pub etag: String,
     pub updated_at: String,
+    pub format: String,
+    pub editable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

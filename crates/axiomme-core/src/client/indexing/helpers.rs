@@ -4,6 +4,9 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
+use std::{fs::File, io::Seek, io::SeekFrom};
+
+use chrono::{DateTime, Utc};
 
 use crate::config::TierSynthesisMode;
 use crate::error::Result;
@@ -12,11 +15,20 @@ use crate::uri::AxiomUri;
 pub(super) const MAX_INDEX_READ_BYTES: usize = 512 * 1024;
 pub(super) const MAX_TRUNCATED_MARKDOWN_TAIL_HEADING_KEYS: usize = 64;
 const MAX_MARKDOWN_HEADING_CHARS: usize = 160;
+const TRUNCATED_WINDOW_BYTES: usize = 12 * 1024;
+const TRUNCATED_WINDOW_MAX_LINES: usize = 18;
+const TRUNCATED_WINDOW_MAX_LINE_CHARS: usize = 220;
 
 #[derive(Debug, Clone)]
 pub(super) struct TierEntry {
     name: String,
     is_dir: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct TruncatedTextWindows {
+    pub middle_lines: Vec<String>,
+    pub tail_lines: Vec<String>,
 }
 
 fn saturating_duration_nanos_to_i64(duration: std::time::Duration) -> i64 {
@@ -36,6 +48,20 @@ pub(super) fn path_mtime_nanos(path: &Path) -> i64 {
         .ok()
         .as_ref()
         .map_or(0, metadata_mtime_nanos)
+}
+
+pub(super) fn metadata_mtime_utc(metadata: &fs::Metadata) -> DateTime<Utc> {
+    metadata
+        .modified()
+        .map(DateTime::<Utc>::from)
+        .unwrap_or_else(|_| Utc::now())
+}
+
+pub(super) fn path_mtime_utc(path: &Path) -> DateTime<Utc> {
+    fs::metadata(path)
+        .ok()
+        .as_ref()
+        .map_or_else(Utc::now, metadata_mtime_utc)
 }
 
 fn max_bytes_read_limit(max_bytes: usize) -> u64 {
@@ -88,6 +114,77 @@ fn clip_string_to_char_limit(input: &str, char_limit: usize) -> String {
         return input.to_string();
     }
     input.chars().take(char_limit).collect()
+}
+
+fn normalize_window_line(line: &str) -> Option<String> {
+    let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(clip_string_to_char_limit(
+        trimmed,
+        TRUNCATED_WINDOW_MAX_LINE_CHARS,
+    ))
+}
+
+fn read_window_bytes(path: &Path, start: u64, max_bytes: usize) -> Result<Vec<u8>> {
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut out = Vec::new();
+    file.take(u64::try_from(max_bytes).unwrap_or(u64::MAX))
+        .read_to_end(&mut out)?;
+    Ok(out)
+}
+
+fn collect_first_lines(window: &[u8], limit: usize) -> Vec<String> {
+    let text = String::from_utf8_lossy(window);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if let Some(normalized) = normalize_window_line(line) {
+            out.push(normalized);
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn collect_last_lines(window: &[u8], limit: usize) -> Vec<String> {
+    let text = String::from_utf8_lossy(window);
+    let mut tail = VecDeque::<String>::with_capacity(limit);
+    for line in text.lines() {
+        let Some(normalized) = normalize_window_line(line) else {
+            continue;
+        };
+        tail.push_back(normalized);
+        if tail.len() > limit {
+            tail.pop_front();
+        }
+    }
+    tail.into_iter().collect()
+}
+
+pub(super) fn collect_truncated_text_windows(
+    path: &Path,
+    indexed_head_bytes: usize,
+) -> Result<TruncatedTextWindows> {
+    let file_len = fs::metadata(path)?.len();
+    if file_len <= u64::try_from(indexed_head_bytes).unwrap_or(u64::MAX) {
+        return Ok(TruncatedTextWindows::default());
+    }
+
+    let sample_bytes = u64::try_from(TRUNCATED_WINDOW_BYTES).unwrap_or(0);
+    let middle_start = (file_len / 2).saturating_sub(sample_bytes / 2);
+    let tail_start = file_len.saturating_sub(sample_bytes);
+
+    let middle = read_window_bytes(path, middle_start, TRUNCATED_WINDOW_BYTES)?;
+    let tail = read_window_bytes(path, tail_start, TRUNCATED_WINDOW_BYTES)?;
+    Ok(TruncatedTextWindows {
+        middle_lines: collect_first_lines(&middle, TRUNCATED_WINDOW_MAX_LINES),
+        tail_lines: collect_last_lines(&tail, TRUNCATED_WINDOW_MAX_LINES),
+    })
 }
 
 pub(super) fn collect_markdown_tail_heading_keys(path: &Path, limit: usize) -> Result<Vec<String>> {

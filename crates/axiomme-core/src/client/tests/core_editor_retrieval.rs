@@ -630,6 +630,8 @@ fn document_editor_json_load_save_updates_search_index() {
     let uri = "axiom://resources/document-editor-json/config.json";
     let loaded = app.load_document(uri).expect("load document");
     assert!(loaded.content.contains("\"alpha\""));
+    assert_eq!(loaded.format, "json");
+    assert!(loaded.editable);
 
     let saved = app
         .save_document(
@@ -653,6 +655,87 @@ fn document_editor_json_load_save_updates_search_index() {
         )
         .expect("find updated token");
     assert!(found.query_results.iter().any(|x| x.uri == uri));
+}
+
+#[test]
+fn document_load_response_contains_format_and_editable() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    let corpus_dir = temp.path().join("document_editor_format_contract");
+    fs::create_dir_all(&corpus_dir).expect("mkdir");
+    fs::write(corpus_dir.join("guide.md"), "# Guide\n\ncontract").expect("write md");
+    app.add_resource(
+        corpus_dir.to_str().expect("corpus str"),
+        Some("axiom://resources/document-editor-format"),
+        None,
+        None,
+        true,
+        None,
+    )
+    .expect("add failed");
+
+    let loaded = app
+        .load_document("axiom://resources/document-editor-format/guide.md")
+        .expect("load");
+    assert_eq!(loaded.format, "markdown");
+    assert!(loaded.editable);
+}
+
+#[test]
+fn load_jsonl_is_read_only() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    let corpus_dir = temp.path().join("document_editor_jsonl_corpus");
+    fs::create_dir_all(&corpus_dir).expect("mkdir");
+    fs::write(
+        corpus_dir.join("events.jsonl"),
+        "{\"event\":\"a\"}\n{\"event\":\"b\"}\n",
+    )
+    .expect("write jsonl");
+    app.add_resource(
+        corpus_dir.to_str().expect("corpus str"),
+        Some("axiom://resources/document-editor-jsonl"),
+        None,
+        None,
+        true,
+        None,
+    )
+    .expect("add failed");
+
+    let uri = "axiom://resources/document-editor-jsonl/events.jsonl";
+    let loaded = app.load_document(uri).expect("load jsonl");
+    assert_eq!(loaded.format, "jsonl");
+    assert!(!loaded.editable);
+}
+
+#[test]
+fn save_jsonl_rejected() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    let corpus_dir = temp.path().join("document_editor_jsonl_save_corpus");
+    fs::create_dir_all(&corpus_dir).expect("mkdir");
+    fs::write(corpus_dir.join("events.jsonl"), "{\"event\":\"a\"}\n").expect("write jsonl");
+    app.add_resource(
+        corpus_dir.to_str().expect("corpus str"),
+        Some("axiom://resources/document-editor-jsonl-save"),
+        None,
+        None,
+        true,
+        None,
+    )
+    .expect("add failed");
+
+    let uri = "axiom://resources/document-editor-jsonl-save/events.jsonl";
+    let err = app
+        .save_document(uri, "{\"event\":\"c\"}\n", None)
+        .expect_err("jsonl save must fail");
+    assert!(matches!(err, AxiomError::Validation(_)));
 }
 
 #[test]

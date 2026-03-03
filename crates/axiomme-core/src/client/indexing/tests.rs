@@ -1,4 +1,6 @@
-use std::time::Duration;
+use std::fs::File;
+use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 use tempfile::tempdir;
 
@@ -330,6 +332,129 @@ fn reindex_uri_tree_truncated_markdown_appends_tail_heading_keys() {
 }
 
 #[test]
+fn reindex_uri_tree_truncated_config_appends_tail_keys() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init");
+
+    let uri = AxiomUri::parse("axiom://resources/large-config-index").expect("uri parse");
+    app.fs.create_dir_all(&uri, true).expect("mkdir");
+
+    let mut large_config = String::from("service: search\n");
+    large_config.push_str(&"x".repeat(MAX_INDEX_READ_BYTES + 512));
+    large_config.push_str("\nqueue_dead_letter_rate: 0.27\n");
+    large_config.push_str("search.om_hint.max_chars: 4096\n");
+    fs::write(app.fs.resolve_uri(&uri).join("runtime.yaml"), large_config).expect("write config");
+
+    app.reindex_uri_tree(&uri).expect("reindex");
+
+    let config_uri = "axiom://resources/large-config-index/runtime.yaml";
+    let index = app.index.read().expect("index read");
+    let record = index.get(config_uri).expect("record");
+    assert!(
+        record.content.contains("[index config tail keys]"),
+        "truncated config should include tail key section"
+    );
+    assert!(record.content.contains("queue_dead_letter_rate"));
+    drop(index);
+
+    let result = app
+        .find(
+            "queue_dead_letter_rate",
+            Some("axiom://resources/large-config-index"),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("find");
+    let first = result.query_results.first().expect("first result");
+    assert_eq!(first.uri, config_uri);
+}
+
+#[test]
+fn reindex_uri_tree_truncated_code_appends_tail_signatures() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init");
+
+    let uri = AxiomUri::parse("axiom://resources/large-code-index").expect("uri parse");
+    app.fs.create_dir_all(&uri, true).expect("mkdir");
+
+    let mut large_code = String::from("// indexing tail signature test\n");
+    large_code.push_str(&"a".repeat(MAX_INDEX_READ_BYTES + 512));
+    large_code.push_str("\npub fn queue_dead_letter_rate(limit: f64) -> f64 { limit }\n");
+    fs::write(app.fs.resolve_uri(&uri).join("worker.rs"), large_code).expect("write code");
+
+    app.reindex_uri_tree(&uri).expect("reindex");
+
+    let code_uri = "axiom://resources/large-code-index/worker.rs";
+    let index = app.index.read().expect("index read");
+    let record = index.get(code_uri).expect("record");
+    assert!(
+        record.content.contains("[index code tail signatures]"),
+        "truncated code should include tail signature section"
+    );
+    assert!(record.content.contains("queue_dead_letter_rate"));
+    drop(index);
+
+    let result = app
+        .find(
+            "queue_dead_letter_rate",
+            Some("axiom://resources/large-code-index"),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("find");
+    let first = result.query_results.first().expect("first result");
+    assert_eq!(first.uri, code_uri);
+}
+
+#[test]
+fn reindex_uri_tree_truncated_log_appends_tail_signals() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init");
+
+    let uri = AxiomUri::parse("axiom://resources/large-log-index").expect("uri parse");
+    app.fs.create_dir_all(&uri, true).expect("mkdir");
+
+    let mut large_log = "x".repeat(MAX_INDEX_READ_BYTES + 2048);
+    large_log.push('\n');
+    large_log.push_str("2026-03-01T00:00:00Z INFO heartbeat ok\n");
+    large_log.push_str("2026-03-01T00:12:10Z ERROR queue_dead_letter timeout exceeded\n");
+    fs::write(app.fs.resolve_uri(&uri).join("events.log"), large_log).expect("write log");
+
+    app.reindex_uri_tree(&uri).expect("reindex");
+
+    let log_uri = "axiom://resources/large-log-index/events.log";
+    let index = app.index.read().expect("index read");
+    let record = index.get(log_uri).expect("record");
+    assert!(
+        record.content.contains("[index log tail signals]"),
+        "truncated log should include tail signal section"
+    );
+    assert!(
+        record
+            .content
+            .contains("queue_dead_letter timeout exceeded")
+    );
+    drop(index);
+
+    let result = app
+        .find(
+            "dead_letter timeout exceeded",
+            Some("axiom://resources/large-log-index"),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("find");
+    let first = result.query_results.first().expect("first result");
+    assert_eq!(first.uri, log_uri);
+}
+
+#[test]
 fn reindex_uri_tree_updates_index_state_when_only_mtime_changes() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomMe::new(temp.path()).expect("app new");
@@ -358,6 +483,115 @@ fn reindex_uri_tree_updates_index_state_when_only_mtime_changes() {
         .expect("missing v2");
     assert_eq!(state_v1.0, state_v2.0, "hash should stay stable");
     assert!(state_v2.1 >= state_v1.1, "mtime should refresh in state");
+}
+
+fn set_file_modified_time(path: &Path, modified: SystemTime) {
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("open file for set_times");
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .expect("set modified");
+}
+
+#[test]
+fn reindex_all_does_not_refresh_static_documents() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init");
+
+    let uri = AxiomUri::parse("axiom://resources/recency-static").expect("uri parse");
+    app.fs.create_dir_all(&uri, true).expect("mkdir");
+    let file_path = app.fs.resolve_uri(&uri).join("static.md");
+    fs::write(&file_path, "# Static\n\nrecency test").expect("write");
+
+    let old_time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    set_file_modified_time(&file_path, old_time);
+
+    app.reindex_uri_tree(&uri).expect("first reindex");
+    let first_updated_at = {
+        let index = app.index.read().expect("index read");
+        index
+            .get("axiom://resources/recency-static/static.md")
+            .expect("record")
+            .updated_at
+    };
+
+    std::thread::sleep(Duration::from_millis(5));
+    app.reindex_uri_tree(&uri).expect("second reindex");
+    let second_updated_at = {
+        let index = app.index.read().expect("index read");
+        index
+            .get("axiom://resources/recency-static/static.md")
+            .expect("record")
+            .updated_at
+    };
+
+    assert_eq!(
+        first_updated_at, second_updated_at,
+        "reindex without source changes must not refresh recency"
+    );
+}
+
+#[test]
+fn modified_file_gains_recency_without_global_shift() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init");
+
+    let uri = AxiomUri::parse("axiom://resources/recency-targeted").expect("uri parse");
+    app.fs.create_dir_all(&uri, true).expect("mkdir");
+    let file_a = app.fs.resolve_uri(&uri).join("a.md");
+    let file_b = app.fs.resolve_uri(&uri).join("b.md");
+    fs::write(&file_a, "# A\n\ntoken").expect("write a");
+    fs::write(&file_b, "# B\n\ntoken").expect("write b");
+
+    let old_a = SystemTime::UNIX_EPOCH + Duration::from_secs(1_650_000_000);
+    let old_b = SystemTime::UNIX_EPOCH + Duration::from_secs(1_660_000_000);
+    set_file_modified_time(&file_a, old_a);
+    set_file_modified_time(&file_b, old_b);
+
+    app.reindex_uri_tree(&uri).expect("baseline reindex");
+    let (a_before, b_before) = {
+        let index = app.index.read().expect("index read");
+        let a = index
+            .get("axiom://resources/recency-targeted/a.md")
+            .expect("record a")
+            .updated_at;
+        let b = index
+            .get("axiom://resources/recency-targeted/b.md")
+            .expect("record b")
+            .updated_at;
+        (a, b)
+    };
+
+    std::thread::sleep(Duration::from_millis(5));
+    fs::write(&file_b, "# B\n\ntoken updated").expect("write b update");
+    let new_b = SystemTime::now();
+    set_file_modified_time(&file_b, new_b);
+    let file_b_uri = AxiomUri::parse("axiom://resources/recency-targeted/b.md").expect("uri");
+    app.reindex_document_with_ancestors(&file_b_uri)
+        .expect("targeted reindex");
+
+    let (a_after, b_after) = {
+        let index = app.index.read().expect("index read");
+        let a = index
+            .get("axiom://resources/recency-targeted/a.md")
+            .expect("record a")
+            .updated_at;
+        let b = index
+            .get("axiom://resources/recency-targeted/b.md")
+            .expect("record b")
+            .updated_at;
+        (a, b)
+    };
+
+    assert_eq!(
+        a_before, a_after,
+        "unchanged peer document must keep recency"
+    );
+    assert!(b_after > b_before, "modified file must gain recency");
 }
 
 #[test]

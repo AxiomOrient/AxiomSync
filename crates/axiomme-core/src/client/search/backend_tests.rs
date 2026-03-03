@@ -260,6 +260,66 @@ fn doc_aware_reranker_prioritizes_config_documents() {
 }
 
 #[test]
+fn doc_aware_reranker_prefers_doc_class_tag_before_uri_heuristics() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    app.initialize().expect("init");
+
+    let tagged_config = IndexRecord {
+        id: "cfg-meta-1".to_string(),
+        uri: "axiom://resources/spec/guide.md".to_string(),
+        parent_uri: Some("axiom://resources/spec".to_string()),
+        is_leaf: true,
+        context_type: "resource".to_string(),
+        name: "guide.md".to_string(),
+        abstract_text: "service settings".to_string(),
+        content: "queue.dead_letter_rate and retry policy".to_string(),
+        tags: vec![
+            "doc_class:config".to_string(),
+            "parser:yaml".to_string(),
+            "mime:application/yaml".to_string(),
+        ],
+        updated_at: Utc::now(),
+        depth: 3,
+    };
+    let schema = IndexRecord {
+        id: "spec-meta-1".to_string(),
+        uri: "axiom://resources/spec/schema.md".to_string(),
+        parent_uri: Some("axiom://resources/spec".to_string()),
+        is_leaf: true,
+        context_type: "resource".to_string(),
+        name: "schema.md".to_string(),
+        abstract_text: "contract schema".to_string(),
+        content: "openapi contract details".to_string(),
+        tags: vec!["markdown".to_string()],
+        updated_at: Utc::now(),
+        depth: 3,
+    };
+    {
+        let mut index = app.index.write().expect("index write");
+        index.upsert(tagged_config);
+        index.upsert(schema);
+    }
+
+    let mut result = sample_find_result(vec![
+        hit("axiom://resources/spec/schema.md", 0.93),
+        hit("axiom://resources/spec/guide.md", 0.86),
+    ]);
+    app.apply_reranker_with_mode(
+        "config queue dead_letter_rate",
+        &mut result,
+        2,
+        RerankerMode::DocAwareV1,
+    )
+    .expect("rerank");
+
+    assert_eq!(
+        result.query_results[0].uri,
+        "axiom://resources/spec/guide.md"
+    );
+}
+
+#[test]
 fn search_injects_om_hint_and_records_om_metrics_in_request_log() {
     let (_temp, app) = setup_test_app();
     upsert_records(
@@ -989,6 +1049,9 @@ fn hit(uri: &str, score: f32) -> ContextHit {
         abstract_text: String::new(),
         context_type: "resource".to_string(),
         relations: Vec::new(),
+        snippet: None,
+        matched_heading: None,
+        score_components: crate::models::ScoreComponents::default(),
     }
 }
 

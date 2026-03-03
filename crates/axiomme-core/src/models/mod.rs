@@ -56,8 +56,8 @@ pub use release::{
 pub use search::{
     BackendStatus, ContextHit, EmbeddingBackendStatus, FindResult, HitBuckets, IndexRecord,
     MetadataFilter, QueryPlan, RelationLink, RelationSummary, RetrievalStep, RetrievalTrace,
-    RuntimeHint, RuntimeHintKind, SearchBudget, SearchFilter, SearchOptions, SearchRequest,
-    TracePoint, TraceStats, TypedQueryPlan, classify_hit_buckets,
+    RuntimeHint, RuntimeHintKind, ScoreComponents, SearchBudget, SearchFilter, SearchOptions,
+    SearchRequest, TracePoint, TraceStats, TypedQueryPlan, classify_hit_buckets,
 };
 pub use session::{
     CommitMode, CommitResult, CommitStats, ContextUsage, MemoryCandidate, MemoryCategory,
