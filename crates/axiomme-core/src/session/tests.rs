@@ -1182,6 +1182,77 @@ fn om_write_path_accepts_explicit_thread_scope_binding() {
 }
 
 #[test]
+fn observer_async_skip_continuation_does_not_write_suggested_response_to_thread_or_continuation_state()
+ {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+
+    let session = Session::new("s-thread-skip-continuation", fs, state, index)
+        .with_om_scope(OmScope::Thread, Some("thread-skip"), Some("resource-skip"))
+        .expect("scope");
+    session.load().expect("load failed");
+    session
+        .add_message(
+            "user",
+            format!(
+                "Please fix AXIOMME_RERANKER handling in src/client/search/mod.rs and verify tests. {}",
+                "x".repeat(26_000)
+            ),
+        )
+        .expect("append");
+
+    let scope_key = "thread:thread-skip";
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
+    let observe_event = queued
+        .iter()
+        .find(|event| event.event_type == "om_observe_buffer_requested")
+        .expect("observe event");
+    let expected_generation = required_payload_u32(
+        &observe_event.payload_json,
+        "expected_generation",
+        "expected_generation must exist",
+    );
+    session
+        .process_om_observe_buffer_requested(scope_key, expected_generation, observe_event.id)
+        .expect("process observer buffer request");
+
+    let thread_states = session
+        .state
+        .list_om_thread_states(scope_key)
+        .expect("list thread states");
+    let preferred_state = thread_states
+        .iter()
+        .find(|state| state.thread_id == "thread:thread-skip")
+        .or_else(|| thread_states.first())
+        .expect("thread state");
+    assert!(
+        preferred_state.current_task.is_some(),
+        "async observer should still preserve current task"
+    );
+    assert_eq!(
+        preferred_state.suggested_response, None,
+        "skip continuation hints path must not persist suggested response to thread state"
+    );
+
+    let continuation = session
+        .state
+        .resolve_om_continuation_state(scope_key, Some("thread:thread-skip"))
+        .expect("resolve continuation")
+        .expect("continuation state");
+    assert!(continuation.current_task.is_some());
+    assert_eq!(
+        continuation.suggested_response, None,
+        "skip continuation hints path must not persist suggested response to continuation state"
+    );
+}
+
+#[test]
 fn om_write_path_accepts_explicit_resource_scope_binding() {
     let temp = tempdir().expect("tempdir");
     let fs = LocalContextFs::new(temp.path());
@@ -1831,7 +1902,6 @@ fn observer_enqueues_om_reflect_buffer_requested_at_activation_threshold() {
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -1933,7 +2003,6 @@ fn observer_enqueues_om_reflect_requested_when_reflector_block_after_is_met() {
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -2035,7 +2104,6 @@ fn om_write_path_still_checks_reflection_when_observer_threshold_not_reached() {
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -2120,7 +2188,6 @@ fn om_write_path_resets_stale_buffer_boundary_and_retriggers_interval() {
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -2184,7 +2251,6 @@ fn om_write_path_skips_async_observer_when_new_tokens_are_below_min_gate() {
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })

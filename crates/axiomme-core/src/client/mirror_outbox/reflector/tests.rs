@@ -52,7 +52,6 @@ fn om_record(active_observations: &str) -> crate::om::OmRecord {
         buffered_reflection: None,
         buffered_reflection_tokens: None,
         buffered_reflection_input_tokens: None,
-        reflected_observation_line_count: None,
         created_at: now,
         updated_at: now,
     }
@@ -100,6 +99,11 @@ fn reflector_prompt_contract_json_contains_v2_contract_fields() {
 #[test]
 fn parse_reflector_response_value_reads_object_payload() {
     let payload = serde_json::json!({
+        "header": {
+            "contract_name": "axiomme.om.prompt",
+            "contract_version": "2.0.0",
+            "protocol_version": "om-v2"
+        },
         "reflection": "one two three",
         "reflected_observation_line_count": 3,
         "usage": {"input_tokens": 11, "output_tokens": 7},
@@ -114,7 +118,7 @@ fn parse_reflector_response_value_reads_object_payload() {
     assert_eq!(parsed.usage.input_tokens, 11);
     assert_eq!(parsed.usage.output_tokens, 7);
     assert_eq!(parsed.reflection_token_count, 4);
-    assert_eq!(parsed.current_task, None);
+    assert_eq!(parsed.current_task.as_deref(), Some("Primary: summarize"));
     assert_eq!(
         parsed.suggested_response.as_deref(),
         Some("Ask for confirmation")
@@ -124,6 +128,11 @@ fn parse_reflector_response_value_reads_object_payload() {
 #[test]
 fn parse_reflector_response_value_accepts_mastra_alias_fields() {
     let payload = serde_json::json!({
+        "header": {
+            "contract_name": "axiomme.om.prompt",
+            "contract_version": "2.0.0",
+            "protocol_version": "om-v2"
+        },
         "observations": "compact summary",
         "reflectedObservationLineCount": 2,
         "usage": {"inputTokens": 9, "outputTokens": 4},
@@ -138,7 +147,7 @@ fn parse_reflector_response_value_accepts_mastra_alias_fields() {
     assert_eq!(parsed.usage.input_tokens, 9);
     assert_eq!(parsed.usage.output_tokens, 4);
     assert_eq!(parsed.reflection_token_count, 3);
-    assert_eq!(parsed.current_task, None);
+    assert_eq!(parsed.current_task.as_deref(), Some("Primary: summarize"));
     assert_eq!(
         parsed.suggested_response.as_deref(),
         Some("Wait for user confirmation")
@@ -146,10 +155,54 @@ fn parse_reflector_response_value_accepts_mastra_alias_fields() {
 }
 
 #[test]
+fn parse_reflector_response_value_accepts_continuation_only_payload() {
+    let payload = serde_json::json!({
+        "header": {
+            "contract_name": "axiomme.om.prompt",
+            "contract_version": "2.0.0",
+            "protocol_version": "om-v2"
+        },
+        "current_task": "Primary: implement release hardening",
+        "suggested_response": "Proceed with targeted verification"
+    });
+    let parsed =
+        parse_reflector_response_value(&payload, "a\nb\nc", DEFAULT_OM_REFLECTOR_MAX_CHARS)
+            .expect("parsed");
+    assert!(parsed.reflection.is_empty());
+    assert_eq!(parsed.reflection_token_count, 0);
+    assert_eq!(
+        parsed.current_task.as_deref(),
+        Some("Primary: implement release hardening")
+    );
+    assert_eq!(
+        parsed.suggested_response.as_deref(),
+        Some("Proceed with targeted verification")
+    );
+}
+
+#[test]
+fn parse_reflector_response_value_rejects_metadata_only_payload() {
+    let payload = serde_json::json!({
+        "header": {
+            "contract_name": "axiomme.om.prompt",
+            "contract_version": "2.0.0",
+            "protocol_version": "om-v2"
+        },
+        "usage": {"input_tokens": 21, "output_tokens": 8},
+        "reflected_observation_line_count": 3
+    });
+    assert!(
+        parse_reflector_response_value(&payload, "a\nb\nc", DEFAULT_OM_REFLECTOR_MAX_CHARS)
+            .is_none(),
+        "metadata-only payload must not be parsed as a valid reflector response"
+    );
+}
+
+#[test]
 fn parse_llm_reflector_response_accepts_embedded_json_content() {
     let payload = serde_json::json!({
         "message": {
-            "content": "```json\n{\"reflection\":\"compact summary\",\"reflected_observation_line_count\":2}\n```"
+            "content": "```json\n{\"header\":{\"contract_name\":\"axiomme.om.prompt\",\"contract_version\":\"2.0.0\",\"protocol_version\":\"om-v2\"},\"reflection\":\"compact summary\",\"reflected_observation_line_count\":2}\n```"
         }
     });
     let parsed = parse_llm_reflector_response(
@@ -162,10 +215,38 @@ fn parse_llm_reflector_response_accepts_embedded_json_content() {
 }
 
 #[test]
+fn parse_llm_reflector_response_accepts_continuation_only_json_payload() {
+    let payload = serde_json::json!({
+        "header": {
+            "contract_name": "axiomme.om.prompt",
+            "contract_version": "2.0.0",
+            "protocol_version": "om-v2"
+        },
+        "current_task": "Primary: refine om boundary",
+        "suggested_response": "Run focused release checks"
+    });
+    let parsed = parse_llm_reflector_response(
+        &payload,
+        "line-1\nline-2\nline-3",
+        DEFAULT_OM_REFLECTOR_MAX_CHARS,
+    )
+    .expect("parsed");
+    assert!(parsed.reflection.is_empty());
+    assert_eq!(
+        parsed.current_task.as_deref(),
+        Some("Primary: refine om boundary")
+    );
+    assert_eq!(
+        parsed.suggested_response.as_deref(),
+        Some("Run focused release checks")
+    );
+}
+
+#[test]
 fn parse_llm_reflector_response_accepts_xml_observations_content() {
     let payload = serde_json::json!({
         "message": {
-            "content": "<observations>\n* 🔴 user prefers direct answers\n* 🟡 agent updated auth flow\n</observations>\n<current-task>\nPrimary: debug auth\n</current-task>\n<suggested-response>\nAsk user to confirm\n</suggested-response>"
+            "content": "<contract-name>axiomme.om.prompt</contract-name>\n<contract-version>2.0.0</contract-version>\n<protocol-version>om-v2</protocol-version>\n<observations>\n* 🔴 user prefers direct answers\n* 🟡 agent updated auth flow\n</observations>\n<current-task>\nPrimary: debug auth\n</current-task>\n<suggested-response>\nAsk user to confirm\n</suggested-response>"
         }
     });
     let parsed = parse_llm_reflector_response(
@@ -177,7 +258,7 @@ fn parse_llm_reflector_response_accepts_xml_observations_content() {
     assert!(parsed.reflection.contains("user prefers direct answers"));
     assert!(parsed.reflection.contains("agent updated auth flow"));
     assert!(parsed.reflection_token_count > 0);
-    assert_eq!(parsed.current_task, None);
+    assert_eq!(parsed.current_task.as_deref(), Some("Primary: debug auth"));
     assert_eq!(
         parsed.suggested_response.as_deref(),
         Some("Ask user to confirm")
@@ -188,7 +269,7 @@ fn parse_llm_reflector_response_accepts_xml_observations_content() {
 fn parse_llm_reflector_response_accepts_list_items_without_xml_tags() {
     let payload = serde_json::json!({
         "message": {
-            "content": "* 🔴 user prefers direct answers\n- 🟡 agent updated auth flow\n1. 🟢 assistant suggested follow-up"
+            "content": "<contract-name>axiomme.om.prompt</contract-name>\n<contract-version>2.0.0</contract-version>\n<protocol-version>om-v2</protocol-version>\n* 🔴 user prefers direct answers\n- 🟡 agent updated auth flow\n1. 🟢 assistant suggested follow-up"
         }
     });
     let parsed = parse_llm_reflector_response(
@@ -206,7 +287,7 @@ fn parse_llm_reflector_response_accepts_list_items_without_xml_tags() {
 fn parse_llm_reflector_response_uses_trimmed_content_when_no_xml_or_list() {
     let payload = serde_json::json!({
         "message": {
-            "content": "keep concise summary for future turns"
+            "content": "<contract-name>axiomme.om.prompt</contract-name>\n<contract-version>2.0.0</contract-version>\n<protocol-version>om-v2</protocol-version>\nkeep concise summary for future turns"
         }
     });
     let parsed = parse_llm_reflector_response(
@@ -216,6 +297,170 @@ fn parse_llm_reflector_response_uses_trimmed_content_when_no_xml_or_list() {
     )
     .expect("parsed");
     assert_eq!(parsed.reflection, "keep concise summary for future turns");
+}
+
+#[test]
+fn parse_llm_reflector_response_rejects_xml_without_contract_marker() {
+    let payload = serde_json::json!({
+        "message": {
+            "content": "<observations>\nline-a\nline-b\n</observations>"
+        }
+    });
+    let err = parse_llm_reflector_response(
+        &payload,
+        "line-1\nline-2\nline-3",
+        DEFAULT_OM_REFLECTOR_MAX_CHARS,
+    )
+    .expect_err("must reject xml fallback without contract marker");
+    match err {
+        AxiomError::OmInference {
+            inference_source,
+            kind,
+            ..
+        } => {
+            assert_eq!(inference_source, OmInferenceSource::Reflector);
+            assert_eq!(kind, OmInferenceFailureKind::Schema);
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
+fn parse_llm_reflector_response_rejects_xml_without_protocol_marker() {
+    let payload = serde_json::json!({
+        "message": {
+            "content": "<contract-name>axiomme.om.prompt</contract-name>\n<contract-version>2.0.0</contract-version>\n<observations>\nline-a\nline-b\n</observations>"
+        }
+    });
+    let err = parse_llm_reflector_response(
+        &payload,
+        "line-1\nline-2\nline-3",
+        DEFAULT_OM_REFLECTOR_MAX_CHARS,
+    )
+    .expect_err("must reject xml fallback without protocol marker");
+    match err {
+        AxiomError::OmInference {
+            inference_source,
+            kind,
+            ..
+        } => {
+            assert_eq!(inference_source, OmInferenceSource::Reflector);
+            assert_eq!(kind, OmInferenceFailureKind::Schema);
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
+fn parse_llm_reflector_response_rejects_marker_like_plain_text_without_structured_contract() {
+    let payload = serde_json::json!({
+        "message": {
+            "content": "summary: contract_name axiomme.om.prompt contract_version 2.0.0 protocol_version om-v2\n- line-a\n- line-b"
+        }
+    });
+    let err = parse_llm_reflector_response(
+        &payload,
+        "line-1\nline-2\nline-3",
+        DEFAULT_OM_REFLECTOR_MAX_CHARS,
+    )
+    .expect_err("must reject non-structured contract marker text");
+    assert!(matches!(
+        err,
+        AxiomError::OmInference {
+            inference_source: OmInferenceSource::Reflector,
+            kind: OmInferenceFailureKind::Schema,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn parse_llm_reflector_response_rejects_contract_version_mismatch() {
+    let payload = serde_json::json!({
+        "header": {
+            "contract_name": "axiomme.om.prompt",
+            "contract_version": "9.9.9",
+            "protocol_version": "om-v2"
+        },
+        "reflection": "compact summary",
+        "reflected_observation_line_count": 2
+    });
+    let err =
+        parse_llm_reflector_response(&payload, "line-1\nline-2", DEFAULT_OM_REFLECTOR_MAX_CHARS)
+            .expect_err("must reject mismatched contract version");
+    match err {
+        AxiomError::OmInference {
+            inference_source,
+            kind,
+            message,
+        } => {
+            assert_eq!(inference_source, OmInferenceSource::Reflector);
+            assert_eq!(kind, OmInferenceFailureKind::Schema);
+            assert!(
+                message.contains("contract_version mismatch"),
+                "unexpected message: {message}"
+            );
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
+fn parse_llm_reflector_response_rejects_protocol_version_mismatch() {
+    let payload = serde_json::json!({
+        "header": {
+            "contract_name": "axiomme.om.prompt",
+            "contract_version": "2.0.0",
+            "protocol_version": "om-v999"
+        },
+        "reflection": "compact summary",
+        "reflected_observation_line_count": 2
+    });
+    let err =
+        parse_llm_reflector_response(&payload, "line-1\nline-2", DEFAULT_OM_REFLECTOR_MAX_CHARS)
+            .expect_err("must reject mismatched protocol version");
+    match err {
+        AxiomError::OmInference {
+            inference_source,
+            kind,
+            message,
+        } => {
+            assert_eq!(inference_source, OmInferenceSource::Reflector);
+            assert_eq!(kind, OmInferenceFailureKind::Schema);
+            assert!(
+                message.contains("protocol_version mismatch"),
+                "unexpected message: {message}"
+            );
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
+fn parse_llm_reflector_response_rejects_xml_protocol_version_mismatch_marker() {
+    let payload = serde_json::json!({
+        "message": {
+            "content": "<contract-name>axiomme.om.prompt</contract-name>\n<contract-version>2.0.0</contract-version>\n<protocol-version>om-v999</protocol-version>\n<observations>\n- compact summary\n</observations>"
+        }
+    });
+    let err =
+        parse_llm_reflector_response(&payload, "line-1\nline-2", DEFAULT_OM_REFLECTOR_MAX_CHARS)
+            .expect_err("must reject xml contract marker with protocol mismatch");
+    match err {
+        AxiomError::OmInference {
+            inference_source,
+            kind,
+            message,
+        } => {
+            assert_eq!(inference_source, OmInferenceSource::Reflector);
+            assert_eq!(kind, OmInferenceFailureKind::Schema);
+            assert!(
+                message.contains("missing contract marker"),
+                "unexpected message: {message}"
+            );
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
 }
 
 #[test]
@@ -280,6 +525,7 @@ fn reflector_model_feature_flag_off_forces_deterministic_output() {
         0,
         OmReflectorCallOptions::DEFAULT,
         &config,
+        &[],
     )
     .expect("resolve");
     let expected = deterministic_reflector_response(
@@ -315,10 +561,10 @@ fn prepare_reflector_attempt_input_buffered_uses_slice_plan() {
     config.llm_buffer_activation = 0.5;
 
     let prepared =
-        prepare_reflector_attempt_input(&record, OmReflectorCallOptions::BUFFERED, &config);
-    assert_eq!(prepared.active_observations, "l1");
-    assert_eq!(prepared.target_threshold_tokens, 13);
-    assert_eq!(prepared.reflection_input_tokens_override, Some(25));
+        prepare_reflector_attempt_input(&record, OmReflectorCallOptions::BUFFERED, &config, &[]);
+    assert_eq!(prepared.active_observations, "");
+    assert_eq!(prepared.target_threshold_tokens, 40);
+    assert_eq!(prepared.reflection_input_tokens_override, Some(0));
 }
 
 #[test]
@@ -327,7 +573,7 @@ fn prepare_reflector_attempt_input_default_uses_full_observations() {
     let config = reflector_config(OmReflectorMode::Deterministic, true);
 
     let prepared =
-        prepare_reflector_attempt_input(&record, OmReflectorCallOptions::DEFAULT, &config);
+        prepare_reflector_attempt_input(&record, OmReflectorCallOptions::DEFAULT, &config, &[]);
     assert_eq!(prepared.active_observations, "line-1\nline-2");
     assert_eq!(
         prepared.target_threshold_tokens,
@@ -356,14 +602,17 @@ fn resolve_reflection_cover_entry_ids_default_uses_all_entries_in_oldest_first_o
 }
 
 #[test]
-fn resolve_reflection_cover_entry_ids_buffered_uses_slice_prefix_mapping() {
+fn resolve_reflection_cover_entry_ids_buffered_selects_oldest_entry_when_first_entry_exceeds_target()
+ {
     let mut record = om_record("l1\nl2\nl3\nl4");
     record.observation_token_count = 100;
     record.buffered_reflection = Some("buffered summary".to_string());
 
-    let mut snapshot = OmReflectorConfigSnapshot::default();
-    snapshot.llm_target_observation_tokens = Some(80);
-    snapshot.llm_buffer_activation = Some(0.5);
+    let snapshot = OmReflectorConfigSnapshot {
+        llm_target_observation_tokens: Some(80),
+        llm_buffer_activation: Some(0.5),
+        ..OmReflectorConfigSnapshot::default()
+    };
 
     let entries = vec![
         active_entry("entry-old", "l1\nl2", "2026-01-01T00:00:01Z"),
@@ -376,6 +625,93 @@ fn resolve_reflection_cover_entry_ids_buffered_uses_slice_prefix_mapping() {
         &entries,
     );
     assert_eq!(covers, vec!["entry-old".to_string()]);
+}
+
+#[test]
+fn resolve_reflection_cover_entry_ids_buffered_selects_entry_on_boundary_match() {
+    let mut record = om_record("l1\nl2\nl3\nl4");
+    record.observation_token_count = 80;
+    record.buffered_reflection = Some("buffered summary".to_string());
+
+    let snapshot = OmReflectorConfigSnapshot {
+        llm_target_observation_tokens: Some(80),
+        llm_buffer_activation: Some(0.5),
+        ..OmReflectorConfigSnapshot::default()
+    };
+
+    let entries = vec![
+        active_entry("entry-old", "l1\nl2", "2026-01-01T00:00:01Z"),
+        active_entry("entry-new", "l3\nl4", "2026-01-01T00:00:02Z"),
+    ];
+    let covers = resolve_reflection_cover_entry_ids(
+        &record,
+        OmReflectorCallOptions::DEFAULT,
+        &snapshot,
+        &entries,
+    );
+    assert_eq!(covers, vec!["entry-old".to_string()]);
+}
+
+#[test]
+fn prepare_reflector_attempt_input_buffered_aligns_with_cover_selection() {
+    let mut record = om_record("l1\nl2\nl3\nl4");
+    record.observation_token_count = 80;
+    record.buffered_reflection = Some("buffered summary".to_string());
+    let snapshot = OmReflectorConfigSnapshot {
+        llm_target_observation_tokens: Some(80),
+        llm_buffer_activation: Some(0.5),
+        ..OmReflectorConfigSnapshot::default()
+    };
+    let config = OmReflectorConfig::from_snapshot(&snapshot);
+    let entries = vec![
+        active_entry("entry-old", "l1\nl2", "2026-01-01T00:00:01Z"),
+        active_entry("entry-new", "l3\nl4", "2026-01-01T00:00:02Z"),
+    ];
+
+    let attempt = prepare_reflector_attempt_input(
+        &record,
+        OmReflectorCallOptions::BUFFERED,
+        &config,
+        &entries,
+    );
+    let covers = resolve_reflection_cover_entry_ids(
+        &record,
+        OmReflectorCallOptions::DEFAULT,
+        &snapshot,
+        &entries,
+    );
+
+    assert_eq!(attempt.active_observations, "l1\nl2");
+    assert_eq!(attempt.reflection_input_tokens_override, Some(40));
+    assert_eq!(covers, vec!["entry-old".to_string()]);
+}
+
+#[test]
+fn resolve_reflection_cover_entry_ids_buffered_selects_all_entries_on_full_slice() {
+    let mut record = om_record("l1\nl2\nl3\nl4");
+    record.observation_token_count = 80;
+    record.buffered_reflection = Some("buffered summary".to_string());
+
+    let snapshot = OmReflectorConfigSnapshot {
+        llm_target_observation_tokens: Some(200),
+        llm_buffer_activation: Some(0.5),
+        ..OmReflectorConfigSnapshot::default()
+    };
+
+    let entries = vec![
+        active_entry("entry-old", "l1\nl2", "2026-01-01T00:00:01Z"),
+        active_entry("entry-new", "l3\nl4", "2026-01-01T00:00:02Z"),
+    ];
+    let covers = resolve_reflection_cover_entry_ids(
+        &record,
+        OmReflectorCallOptions::DEFAULT,
+        &snapshot,
+        &entries,
+    );
+    assert_eq!(
+        covers,
+        vec!["entry-old".to_string(), "entry-new".to_string()]
+    );
 }
 
 #[test]

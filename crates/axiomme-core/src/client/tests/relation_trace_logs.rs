@@ -5,6 +5,30 @@ fn write_ontology_schema(app: &AxiomMe, schema: &str) {
     app.fs.write(&uri, schema, true).expect("write schema");
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PromptContractSignatures {
+    observer_single_blake3: &'static str,
+    reflector_blake3: &'static str,
+}
+
+fn expected_prompt_contract_signatures(
+    contract_version: &str,
+    protocol_version: &str,
+) -> Option<PromptContractSignatures> {
+    match (contract_version.trim(), protocol_version.trim()) {
+        ("2.0.0", "om-v2") => Some(PromptContractSignatures {
+            observer_single_blake3: "20df8daec297e5a00614c9085857ec3e3dd6a5ac84ab888e6dc63eb71df599e1",
+            reflector_blake3: "4abe5d55a4af7411c1e4ff64588b8eede233a6c1b08adbaa3806c1d56eb02533",
+        }),
+        _ => None,
+    }
+}
+
+fn contract_signature(value: &serde_json::Value) -> String {
+    let canonical = serde_json::to_string(value).expect("serialize contract json");
+    blake3::hash(canonical.as_bytes()).to_hex().to_string()
+}
+
 #[test]
 fn find_and_search_apply_metadata_filters() {
     let temp = tempdir().expect("tempdir");
@@ -98,6 +122,132 @@ fn episodic_api_probe_validates_om_contract() {
         crate::om::OmParseMode::Strict,
     );
     assert_eq!(parsed.observations.trim(), "alpha");
+
+    let request = crate::om::OmObserverRequest {
+        scope: crate::om::OmScope::Thread,
+        scope_key: "thread:thread-1".to_string(),
+        model: crate::om::OmInferenceModelConfig {
+            provider: "local-http".to_string(),
+            model: "qwen2.5:7b".to_string(),
+            max_output_tokens: 1024,
+            temperature_milli: 0,
+        },
+        active_observations: "existing summary".to_string(),
+        other_conversations: None,
+        pending_messages: vec![crate::om::OmPendingMessage {
+            id: "m-1".to_string(),
+            role: "user".to_string(),
+            text: "fix auth flow".to_string(),
+            created_at_rfc3339: Some("2026-03-04T00:00:00Z".to_string()),
+        }],
+    };
+    let known_ids = vec!["m-1".to_string()];
+    let observer_contract = crate::om::build_observer_prompt_contract_v2(
+        &request,
+        &known_ids,
+        false,
+        Some("thread-1"),
+        4096,
+    );
+    let observer_contract_value =
+        serde_json::to_value(&observer_contract).expect("serialize observer contract");
+    assert_eq!(
+        observer_contract_value,
+        serde_json::json!({
+            "header": {
+                "contract_name": crate::om::OM_PROMPT_CONTRACT_NAME,
+                "contract_version": crate::om::OM_PROMPT_CONTRACT_VERSION,
+                "protocol_version": crate::om::OM_PROTOCOL_VERSION,
+                "request_kind": "observer_single",
+                "scope": "thread",
+                "scope_key": "thread:thread-1"
+            },
+            "known_message_ids": ["m-1"],
+            "preferred_thread_id": "thread-1",
+            "skip_continuation_hints": false,
+            "has_other_conversation_context": false,
+            "limits": {
+                "max_output_tokens": 1024,
+                "observation_max_chars": 4096,
+                "reflection_max_chars": null
+            },
+            "output_contract": {
+                "format": "xml",
+                "required_sections": [
+                    "contract-name",
+                    "contract-version",
+                    "protocol-version",
+                    "observations",
+                    "current-task",
+                    "suggested-response"
+                ],
+                "continuation_enabled": true
+            }
+        })
+    );
+
+    let reflector_request = crate::om::OmReflectorRequest {
+        scope: crate::om::OmScope::Thread,
+        scope_key: "thread:thread-1".to_string(),
+        model: request.model.clone(),
+        generation_count: 4,
+        active_observations: "line-a\nline-b".to_string(),
+    };
+    let reflector_contract =
+        crate::om::build_reflector_prompt_contract_v2(&reflector_request, 2, false, 2048);
+    let reflector_contract_value =
+        serde_json::to_value(&reflector_contract).expect("serialize reflector contract");
+    assert_eq!(
+        reflector_contract_value,
+        serde_json::json!({
+            "header": {
+                "contract_name": crate::om::OM_PROMPT_CONTRACT_NAME,
+                "contract_version": crate::om::OM_PROMPT_CONTRACT_VERSION,
+                "protocol_version": crate::om::OM_PROTOCOL_VERSION,
+                "request_kind": "reflector",
+                "scope": "thread",
+                "scope_key": "thread:thread-1"
+            },
+            "generation_count": 4,
+            "compression_level": 2,
+            "skip_continuation_hints": false,
+            "limits": {
+                "max_output_tokens": 1024,
+                "observation_max_chars": null,
+                "reflection_max_chars": 2048
+            },
+            "output_contract": {
+                "format": "xml",
+                "required_sections": [
+                    "contract-name",
+                    "contract-version",
+                    "protocol-version",
+                    "observations",
+                    "current-task",
+                    "suggested-response"
+                ],
+                "continuation_enabled": true
+            }
+        })
+    );
+    let contract_version = crate::om::OM_PROMPT_CONTRACT_VERSION;
+    let protocol_version = crate::om::OM_PROTOCOL_VERSION;
+    let signatures = expected_prompt_contract_signatures(contract_version, protocol_version)
+        .unwrap_or_else(|| {
+            panic!(
+                "unregistered prompt contract signature policy: contract_version={contract_version}, protocol_version={protocol_version}"
+            )
+        });
+    assert_eq!(
+        contract_signature(&observer_contract_value),
+        signatures.observer_single_blake3,
+        "observer prompt contract signature changed without explicit policy update"
+    );
+    assert_eq!(
+        contract_signature(&reflector_contract_value),
+        signatures.reflector_blake3,
+        "reflector prompt contract signature changed without explicit policy update"
+    );
 }
 
 #[test]

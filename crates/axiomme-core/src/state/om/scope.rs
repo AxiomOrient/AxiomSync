@@ -1,9 +1,15 @@
 use chrono::{DateTime, Utc};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::error::Result;
+use crate::om::{
+    ContinuationPolicyV2, OmContinuationCandidateV2, OmContinuationStateV2,
+    resolve_continuation_update,
+};
 
-use super::{OmActiveEntry, OmContinuationState, OmThreadState, SqliteStateStore};
+use super::{
+    OmActiveEntry, OmContinuationHints, OmContinuationState, OmThreadState, SqliteStateStore,
+};
 
 impl SqliteStateStore {
     pub fn upsert_om_scope_session(&self, scope_key: &str, session_id: &str) -> Result<()> {
@@ -169,8 +175,7 @@ impl SqliteStateStore {
         &self,
         scope_key: &str,
         canonical_thread_id: &str,
-        current_task: Option<&str>,
-        suggested_response: Option<&str>,
+        continuation_hints: OmContinuationHints<'_>,
         confidence: f64,
         source_kind: &str,
         updated_at: Option<DateTime<Utc>>,
@@ -181,14 +186,67 @@ impl SqliteStateStore {
         if scope_key.is_empty() || canonical_thread_id.is_empty() || source_kind.is_empty() {
             return Ok(());
         }
-        let current_task = normalize_optional_text(current_task);
-        let suggested_response = normalize_optional_text(suggested_response);
+        let current_task = normalize_optional_text(continuation_hints.current_task);
+        let suggested_response = normalize_optional_text(continuation_hints.suggested_response);
         if current_task.is_none() && suggested_response.is_none() {
             return Ok(());
         }
 
         let now = updated_at.unwrap_or_else(Utc::now).to_rfc3339();
         self.with_conn(|conn| {
+            let previous_row = conn
+                .query_row(
+                    r"
+                    SELECT current_task, suggested_response, confidence, source_kind, updated_at
+                    FROM om_continuation_state
+                    WHERE scope_key = ?1 AND canonical_thread_id = ?2
+                    ",
+                    params![scope_key, canonical_thread_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, f64>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let previous_state = previous_row.as_ref().map(
+                |(prev_task, prev_response, prev_confidence, prev_source_kind, prev_updated_at)| {
+                    OmContinuationStateV2 {
+                        scope_key: scope_key.to_string(),
+                        thread_id: canonical_thread_id.to_string(),
+                        current_task: prev_task.clone(),
+                        suggested_response: prev_response.clone(),
+                        confidence_milli: super::continuation_confidence_to_milli(*prev_confidence),
+                        source_kind: super::continuation_source_kind_from_storage(prev_source_kind),
+                        source_message_ids: Vec::new(),
+                        updated_at_rfc3339: prev_updated_at.clone(),
+                        staleness_budget_ms: 0,
+                    }
+                },
+            );
+            let candidate = OmContinuationCandidateV2 {
+                scope_key: scope_key.to_string(),
+                thread_id: canonical_thread_id.to_string(),
+                current_task,
+                suggested_response,
+                confidence_milli: super::continuation_confidence_to_milli(confidence),
+                source_kind: super::continuation_source_kind_from_storage(source_kind),
+                source_message_ids: Vec::new(),
+                updated_at_rfc3339: now.clone(),
+                staleness_budget_ms: 0,
+            };
+            let Some(merged) = resolve_continuation_update(
+                previous_state.as_ref(),
+                &candidate,
+                ContinuationPolicyV2::default(),
+            ) else {
+                return Ok(());
+            };
+            let source_kind = super::continuation_source_kind_to_storage(merged.source_kind);
             conn.execute(
                 r"
                 INSERT INTO om_continuation_state(
@@ -197,28 +255,20 @@ impl SqliteStateStore {
                 )
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 ON CONFLICT(scope_key, canonical_thread_id) DO UPDATE SET
-                    current_task=COALESCE(excluded.current_task, om_continuation_state.current_task),
-                    suggested_response=COALESCE(excluded.suggested_response, om_continuation_state.suggested_response),
-                    confidence=CASE
-                        WHEN excluded.current_task IS NULL AND excluded.suggested_response IS NULL
-                        THEN om_continuation_state.confidence
-                        ELSE excluded.confidence
-                    END,
-                    source_kind=CASE
-                        WHEN excluded.current_task IS NULL AND excluded.suggested_response IS NULL
-                        THEN om_continuation_state.source_kind
-                        ELSE excluded.source_kind
-                    END,
+                    current_task=excluded.current_task,
+                    suggested_response=excluded.suggested_response,
+                    confidence=excluded.confidence,
+                    source_kind=excluded.source_kind,
                     updated_at=excluded.updated_at
                 ",
                 params![
                     scope_key,
                     canonical_thread_id,
-                    current_task,
-                    suggested_response,
-                    confidence,
+                    merged.current_task,
+                    merged.suggested_response,
+                    super::continuation_confidence_from_milli(merged.confidence_milli),
                     source_kind,
-                    now
+                    merged.updated_at_rfc3339
                 ],
             )?;
             Ok(())

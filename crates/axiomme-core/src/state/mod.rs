@@ -16,7 +16,7 @@ mod queue;
 mod queue_lane;
 mod search;
 
-pub(crate) use om::OmActiveEntry;
+pub(crate) use om::{OmActiveEntry, OmContinuationHints};
 pub(crate) use promotion_checkpoint::PromotionCheckpointPhase;
 
 #[derive(Clone)]
@@ -205,9 +205,10 @@ impl SqliteStateStore {
 
     pub fn remove_index_state_with_prefix(&self, uri_prefix: &str) -> Result<usize> {
         self.with_conn(|conn| {
+            let escaped_prefix = escape_sql_like_pattern(uri_prefix);
             let affected = conn.execute(
-                "DELETE FROM index_state WHERE uri = ?1 OR uri LIKE ?2",
-                params![uri_prefix, format!("{uri_prefix}/%")],
+                "DELETE FROM index_state WHERE uri = ?1 OR uri LIKE ?2 ESCAPE '\\'",
+                params![uri_prefix, format!("{escaped_prefix}/%")],
             )?;
             Ok(affected)
         })
@@ -301,6 +302,12 @@ impl SqliteStateStore {
             Ok(out)
         })
     }
+}
+
+fn escape_sql_like_pattern(raw: &str) -> String {
+    raw.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 fn usize_to_i64_saturating(value: usize) -> i64 {

@@ -1,10 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use chrono::Utc;
 
 use crate::config::{
-    OmHintBounds, OmHintPolicy, RETRIEVAL_BACKEND_MEMORY, RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
+    OmHintBounds, OmHintPolicy, OmHintReaderMode, RETRIEVAL_BACKEND_MEMORY,
+    RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
 };
 use crate::context_ops::validate_filter;
 use crate::error::{AxiomError, Result};
@@ -14,7 +15,10 @@ use crate::models::{
     SearchRequest,
 };
 use crate::om::{
-    OmObservationChunk, OmScope, build_bounded_observation_hint, resolve_canonical_thread_id,
+    OmContinuationSourceKind, OmContinuationStateV2, OmHintPolicyV2, OmObservationChunk,
+    OmObservationEntryV2, OmObservationOriginKind, OmObservationPriority, OmScope,
+    build_bounded_observation_hint, materialize_search_visible_snapshot,
+    resolve_canonical_thread_id,
 };
 use crate::om_bridge::OmHintReadStateV1;
 use crate::session::resolve_om_scope_binding_for_session_with_config;
@@ -36,7 +40,7 @@ const DEFAULT_OM_SCOPE_LOOKUP_FALLBACK_LIMIT: usize = 4;
 const OM_HINT_SNAPSHOT_BUFFERED_TAIL_LIMIT: usize = 2;
 const OM_HINT_COMPACTION_RESERVED_HIGH_LIMIT: usize = 1;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct OmSearchMetrics {
     context_tokens_before_om: u32,
     context_tokens_after_om: u32,
@@ -46,8 +50,12 @@ struct OmSearchMetrics {
     om_hint_applied: bool,
     om_hint_reader_snapshot_v2: bool,
     om_snapshot_buffered_chunk_count: u32,
+    om_snapshot_buffered_chunk_ids: Vec<String>,
     om_hint_compaction_priority_v2: bool,
     om_hint_high_priority_selected_count: u32,
+    om_snapshot_visible_entry_ids: Vec<String>,
+    om_snapshot_visible_activated_entry_ids: Vec<String>,
+    om_snapshot_visible_buffered_entry_ids: Vec<String>,
     om_hint_current_task_reserved: bool,
     session_recent_hint_count: u32,
     session_hint_count_final: u32,
@@ -71,10 +79,17 @@ struct SessionHintSnapshot {
 #[derive(Debug, Clone, Default)]
 struct OmHintSnapshotV2 {
     scope_key: String,
+    snapshot_version: String,
+    materialized_at: String,
     search_visible_observations: String,
+    rendered_hint: Option<String>,
     current_task: Option<String>,
     suggested_response: Option<String>,
     activated_message_ids: Vec<String>,
+    buffered_chunk_ids: Vec<String>,
+    selected_entry_ids: Vec<String>,
+    activated_visible_entry_ids: Vec<String>,
+    buffered_visible_entry_ids: Vec<String>,
     observation_tokens_active: u32,
     observer_trigger_count_total: u32,
     reflector_trigger_count_total: u32,
@@ -86,13 +101,19 @@ impl OmHintSnapshotV2 {
     fn to_read_state(&self, bounds: OmHintBounds) -> OmHintReadStateV1 {
         OmHintReadStateV1 {
             scope_key: self.scope_key.clone(),
-            hint: bounded_om_hint_from_snapshot(
-                &self.search_visible_observations,
-                self.current_task.as_deref(),
-                self.suggested_response.as_deref(),
-                bounds,
-            ),
+            hint: self.rendered_hint.clone().or_else(|| {
+                bounded_om_hint_from_snapshot(
+                    &self.search_visible_observations,
+                    self.current_task.as_deref(),
+                    self.suggested_response.as_deref(),
+                    bounds,
+                )
+            }),
+            snapshot_version: Some(self.snapshot_version.clone()),
+            materialized_at: Some(self.materialized_at.clone()),
             activated_message_ids: self.activated_message_ids.clone(),
+            buffered_chunk_ids: self.buffered_chunk_ids.clone(),
+            selected_entry_ids: self.selected_entry_ids.clone(),
             observation_tokens_active: self.observation_tokens_active,
             observer_trigger_count_total: self.observer_trigger_count_total,
             reflector_trigger_count_total: self.reflector_trigger_count_total,
@@ -114,7 +135,7 @@ struct SearchOptionsInput {
     request_type: &'static str,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct SearchRequestLogInput<'a> {
     query: &'a str,
     requested_limit: usize,
@@ -128,7 +149,19 @@ struct SearchRequestLogInput<'a> {
     result_count: Option<usize>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct SnapshotVisibleEntrySelection {
+    selected_entry_ids: Vec<String>,
+    activated_visible_entry_ids: Vec<String>,
+    buffered_visible_entry_ids: Vec<String>,
+}
+
 impl AxiomMe {
+    #[inline]
+    fn om_snapshot_hint_reader_enabled(&self) -> bool {
+        self.config.om.enabled && self.config.om.hint_reader == OmHintReaderMode::SnapshotV2
+    }
+
     #[must_use]
     pub fn search_requires_runtime_prepare(&self) -> bool {
         true
@@ -266,22 +299,39 @@ impl AxiomMe {
         hint_policy: OmHintPolicy,
         hint_bounds: OmHintBounds,
     ) -> Result<SessionHintSnapshot> {
-        let mut metrics = OmSearchMetrics::default();
-        metrics.om_hint_reader_snapshot_v2 = self.config.om.enabled;
+        let snapshot_reader_enabled = self.om_snapshot_hint_reader_enabled();
+        let mut metrics = OmSearchMetrics {
+            om_hint_reader_snapshot_v2: snapshot_reader_enabled,
+            ..OmSearchMetrics::default()
+        };
         let ctx = self.session(Some(session_id)).get_context_for_search(
             query,
             hint_policy.context_max_archives,
             hint_policy.context_max_messages,
         )?;
         let om_snapshot =
-            self.fetch_session_om_hint_snapshot_with_enabled(session_id, self.config.om.enabled)?;
+            self.fetch_session_om_hint_snapshot_with_enabled(session_id, snapshot_reader_enabled)?;
         metrics.om_snapshot_buffered_chunk_count = om_snapshot.as_ref().map_or(0, |snapshot| {
             saturating_usize_to_u32(snapshot.buffered_chunk_count)
         });
+        metrics.om_snapshot_buffered_chunk_ids = om_snapshot
+            .as_ref()
+            .map_or_else(Vec::new, |snapshot| snapshot.buffered_chunk_ids.clone());
         metrics.om_hint_compaction_priority_v2 = om_snapshot.is_some();
         metrics.om_hint_high_priority_selected_count = om_snapshot.as_ref().map_or(0, |snapshot| {
             saturating_usize_to_u32(snapshot.high_priority_selected_count)
         });
+        metrics.om_snapshot_visible_entry_ids = om_snapshot
+            .as_ref()
+            .map_or_else(Vec::new, |snapshot| snapshot.selected_entry_ids.clone());
+        metrics.om_snapshot_visible_activated_entry_ids =
+            om_snapshot.as_ref().map_or_else(Vec::new, |snapshot| {
+                snapshot.activated_visible_entry_ids.clone()
+            });
+        metrics.om_snapshot_visible_buffered_entry_ids =
+            om_snapshot.as_ref().map_or_else(Vec::new, |snapshot| {
+                snapshot.buffered_visible_entry_ids.clone()
+            });
         metrics.om_hint_current_task_reserved = om_snapshot
             .as_ref()
             .is_some_and(|snapshot| snapshot.current_task.is_some());
@@ -491,7 +541,7 @@ impl AxiomMe {
         &self,
         session_id: &str,
     ) -> Result<Option<OmHintReadStateV1>> {
-        self.fetch_session_om_state_with_enabled(session_id, self.config.om.enabled)
+        self.fetch_session_om_state_with_enabled(session_id, self.om_snapshot_hint_reader_enabled())
     }
 
     pub(crate) fn fetch_om_state_by_scope_key(
@@ -502,7 +552,7 @@ impl AxiomMe {
         self.fetch_om_state_by_scope_key_with_enabled(
             scope_key,
             preferred_thread_id,
-            self.config.om.enabled,
+            self.om_snapshot_hint_reader_enabled(),
         )
     }
 
@@ -645,61 +695,105 @@ impl AxiomMe {
             .resolve_om_continuation_state(&record.scope_key, preferred_thread_id)?;
         let continuation_current_task = continuation_state
             .as_ref()
-            .and_then(|state| state.current_task.as_deref());
+            .and_then(|state| state.current_task.as_deref())
+            .and_then(non_empty_trimmed);
         let continuation_suggested_response = continuation_state
             .as_ref()
-            .and_then(|state| state.suggested_response.as_deref());
-        let (thread_state_current_task, thread_state_suggested_response) = if record.scope
-            == OmScope::Session
-            || (continuation_current_task.is_some() && continuation_suggested_response.is_some())
-        {
+            .and_then(|state| state.suggested_response.as_deref())
+            .and_then(non_empty_trimmed);
+        let has_continuation =
+            continuation_current_task.is_some() || continuation_suggested_response.is_some();
+        let (current_task, suggested_response) = if has_continuation {
+            (
+                continuation_current_task.map(ToString::to_string),
+                continuation_suggested_response.map(ToString::to_string),
+            )
+        } else if record.scope == OmScope::Session {
             (None, None)
         } else {
             let thread_states = self.state.list_om_thread_states(&record.scope_key)?;
-            let preferred_state = preferred_thread_id.and_then(|thread_id| {
-                thread_states
-                    .iter()
-                    .find(|state| state.thread_id == thread_id)
-            });
-            let fallback_state = thread_states.first();
-            let current_task = preferred_state
+            let selected_state = preferred_thread_id
+                .and_then(|thread_id| {
+                    thread_states
+                        .iter()
+                        .find(|state| state.thread_id == thread_id)
+                })
+                .or_else(|| thread_states.first());
+            let current_task = selected_state
                 .and_then(|state| state.current_task.as_deref())
-                .or_else(|| fallback_state.and_then(|state| state.current_task.as_deref()))
+                .and_then(non_empty_trimmed)
                 .map(ToString::to_string);
-            let suggested_response = preferred_state
+            let suggested_response = selected_state
                 .and_then(|state| state.suggested_response.as_deref())
-                .or_else(|| fallback_state.and_then(|state| state.suggested_response.as_deref()))
+                .and_then(non_empty_trimmed)
                 .map(ToString::to_string);
             (current_task, suggested_response)
         };
-        let current_task = continuation_current_task.or(thread_state_current_task.as_deref());
-        let suggested_response =
-            continuation_suggested_response.or(thread_state_suggested_response.as_deref());
-        let buffered_chunks = self.state.list_om_observation_chunks(&record.id)?;
-        let (search_visible_observations_base, buffered_chunk_count) =
-            build_search_visible_observations(&record.active_observations, &buffered_chunks);
         let active_entries = self.state.list_om_active_entries(&record.scope_key)?;
         let (reserved_high_texts, reserved_high_ids) = select_reserved_high_priority_entries(
             &active_entries,
             preferred_thread_id,
             OM_HINT_COMPACTION_RESERVED_HIGH_LIMIT,
         );
+        let high_priority_selected_count = reserved_high_ids.len();
+        let buffered_chunks = self.state.list_om_observation_chunks(&record.id)?;
+        let fallback_thread_id = preferred_thread_id
+            .or(record.thread_id.as_deref())
+            .or(record.session_id.as_deref())
+            .unwrap_or(record.scope_key.as_str());
+        let (buffered_entries, buffered_chunk_ids) = build_snapshot_buffered_entries(
+            &record.scope_key,
+            fallback_thread_id,
+            &buffered_chunks,
+        );
+        let materialized_at = record.updated_at.to_rfc3339();
+        let continuation_for_snapshot = build_snapshot_continuation_state(
+            record,
+            fallback_thread_id,
+            &current_task,
+            &suggested_response,
+            &materialized_at,
+        );
+        let hint_policy_v2 = OmHintPolicyV2 {
+            max_lines: self.config.search.om_hint_bounds.max_lines,
+            max_chars: self.config.search.om_hint_bounds.max_chars,
+            reserve_current_task_line: true,
+            reserve_suggested_response_line: true,
+            high_priority_slots: OM_HINT_COMPACTION_RESERVED_HIGH_LIMIT,
+            include_buffered_entries: true,
+        };
+        let snapshot = materialize_search_visible_snapshot(
+            &record.scope_key,
+            &build_snapshot_activated_entries(&record.scope_key, &active_entries),
+            &buffered_entries,
+            continuation_for_snapshot.as_ref(),
+            &materialized_at,
+            hint_policy_v2,
+        );
+        let visible_entry_selection = snapshot_visible_entry_selection(&snapshot.visible_entries);
         let search_visible_observations = compact_observation_text_for_hint(
-            &search_visible_observations_base,
+            &snapshot_visible_observation_text(&snapshot.visible_entries),
             &reserved_high_texts,
         );
 
         Ok(OmHintSnapshotV2 {
             scope_key: record.scope_key.clone(),
+            snapshot_version: snapshot.snapshot_version.clone(),
+            materialized_at: snapshot.materialized_at_rfc3339.clone(),
             search_visible_observations,
-            current_task: current_task.map(ToString::to_string),
-            suggested_response: suggested_response.map(ToString::to_string),
+            rendered_hint: snapshot.rendered_hint,
+            current_task,
+            suggested_response,
             activated_message_ids: record.last_activated_message_ids.clone(),
+            buffered_chunk_ids,
+            selected_entry_ids: visible_entry_selection.selected_entry_ids,
+            activated_visible_entry_ids: visible_entry_selection.activated_visible_entry_ids,
+            buffered_visible_entry_ids: visible_entry_selection.buffered_visible_entry_ids,
             observation_tokens_active: record.observation_token_count,
             observer_trigger_count_total: record.observer_trigger_count_total,
             reflector_trigger_count_total: record.reflector_trigger_count_total,
-            buffered_chunk_count,
-            high_priority_selected_count: reserved_high_ids.len(),
+            buffered_chunk_count: buffered_entries.len(),
+            high_priority_selected_count,
         })
     }
 }
@@ -722,11 +816,34 @@ fn filter_recent_messages_by_ids(
         .collect::<Vec<_>>()
 }
 
-fn build_search_visible_observations(
-    active_observations: &str,
+fn build_snapshot_activated_entries(
+    scope_key: &str,
+    active_entries: &[OmActiveEntry],
+) -> Vec<OmObservationEntryV2> {
+    active_entries
+        .iter()
+        .filter_map(|entry| {
+            non_empty_trimmed(&entry.text).map(|text| OmObservationEntryV2 {
+                entry_id: entry.entry_id.clone(),
+                scope_key: scope_key.to_string(),
+                thread_id: entry.canonical_thread_id.clone(),
+                priority: parse_observation_priority(entry.priority.as_str()),
+                text: text.to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: parse_observation_origin(entry.origin_kind.as_str()),
+                created_at_rfc3339: entry.created_at.to_rfc3339(),
+                superseded_by: None,
+            })
+        })
+        .collect::<Vec<_>>()
+}
+
+fn build_snapshot_buffered_entries(
+    scope_key: &str,
+    fallback_thread_id: &str,
     buffered_chunks: &[OmObservationChunk],
-) -> (String, usize) {
-    let mut segments = buffered_chunks
+) -> (Vec<OmObservationEntryV2>, Vec<String>) {
+    let selected_buffered = buffered_chunks
         .iter()
         .rev()
         .filter_map(|chunk| {
@@ -734,16 +851,154 @@ fn build_search_visible_observations(
             if normalized.is_empty() {
                 None
             } else {
-                Some(normalized.to_string())
+                Some((
+                    chunk.id.clone(),
+                    normalized.to_string(),
+                    chunk.message_ids.clone(),
+                    chunk.created_at.to_rfc3339(),
+                ))
             }
         })
         .take(OM_HINT_SNAPSHOT_BUFFERED_TAIL_LIMIT)
         .collect::<Vec<_>>();
-    let buffered_chunk_count = segments.len();
-    if let Some(active) = non_empty_trimmed(active_observations) {
-        segments.push(active.to_string());
+    let buffered_chunk_ids = selected_buffered
+        .iter()
+        .map(|(chunk_id, _, _, _)| chunk_id.clone())
+        .collect::<Vec<_>>();
+    let buffered_entries = selected_buffered
+        .into_iter()
+        .map(
+            |(chunk_id, text, message_ids, created_at_rfc3339)| OmObservationEntryV2 {
+                entry_id: format!("buffered:{scope_key}:{chunk_id}"),
+                scope_key: scope_key.to_string(),
+                thread_id: fallback_thread_id.to_string(),
+                priority: infer_buffered_entry_priority(&text),
+                text,
+                source_message_ids: message_ids,
+                origin_kind: OmObservationOriginKind::Chunk,
+                created_at_rfc3339,
+                superseded_by: None,
+            },
+        )
+        .collect::<Vec<_>>();
+    (buffered_entries, buffered_chunk_ids)
+}
+
+fn infer_buffered_entry_priority(text: &str) -> OmObservationPriority {
+    let lowered = text.to_ascii_lowercase();
+    if text.contains('🔴')
+        || lowered.starts_with("priority:high")
+        || lowered.contains(" priority:high")
+        || lowered.starts_with("high:")
+        || lowered.starts_with("[high]")
+        || lowered.contains("\npriority:high")
+        || lowered.contains("\nhigh:")
+        || lowered.contains("\n[high]")
+    {
+        OmObservationPriority::High
+    } else {
+        OmObservationPriority::Medium
     }
-    (segments.join("\n\n"), buffered_chunk_count)
+}
+
+fn build_snapshot_continuation_state(
+    record: &crate::om::OmRecord,
+    fallback_thread_id: &str,
+    current_task: &Option<String>,
+    suggested_response: &Option<String>,
+    updated_at_rfc3339: &str,
+) -> Option<OmContinuationStateV2> {
+    if current_task.is_none() && suggested_response.is_none() {
+        return None;
+    }
+    Some(OmContinuationStateV2 {
+        scope_key: record.scope_key.clone(),
+        thread_id: fallback_thread_id.to_string(),
+        current_task: current_task.clone(),
+        suggested_response: suggested_response.clone(),
+        confidence_milli: 1000,
+        source_kind: OmContinuationSourceKind::ObserverDeterministic,
+        source_message_ids: Vec::new(),
+        updated_at_rfc3339: updated_at_rfc3339.to_string(),
+        staleness_budget_ms: 0,
+    })
+}
+
+fn snapshot_visible_observation_text(entries: &[OmObservationEntryV2]) -> String {
+    entries
+        .iter()
+        .filter_map(|entry| non_empty_trimmed(&entry.text).map(ToString::to_string))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn snapshot_visible_entry_selection(
+    entries: &[OmObservationEntryV2],
+) -> SnapshotVisibleEntrySelection {
+    let mut selection = SnapshotVisibleEntrySelection::default();
+    let mut ordered_sources = Vec::<String>::new();
+    let mut selected_by_source = HashMap::<String, (String, bool)>::new();
+    for entry in entries {
+        let Some(entry_id) = non_empty_trimmed(&entry.entry_id) else {
+            continue;
+        };
+        let selected_entry_id = entry_id.to_string();
+        let is_buffered = selected_entry_id.starts_with("buffered:");
+        let source_key = snapshot_visible_entry_source_key(entry_id);
+        if let Some(existing) = selected_by_source.get_mut(&source_key) {
+            // Prefer activated entries over buffered tails for the same chunk/source key.
+            if existing.1 && !is_buffered {
+                *existing = (selected_entry_id, false);
+            }
+            continue;
+        }
+        ordered_sources.push(source_key.clone());
+        selected_by_source.insert(source_key, (selected_entry_id, is_buffered));
+    }
+    for source_key in ordered_sources {
+        if let Some((selected_entry_id, is_buffered)) = selected_by_source.remove(&source_key) {
+            if is_buffered {
+                selection
+                    .buffered_visible_entry_ids
+                    .push(selected_entry_id.clone());
+            } else {
+                selection
+                    .activated_visible_entry_ids
+                    .push(selected_entry_id.clone());
+            }
+            selection.selected_entry_ids.push(selected_entry_id);
+        }
+    }
+    selection
+}
+
+fn snapshot_visible_entry_source_key(entry_id: &str) -> String {
+    if let Some(chunk_id) = entry_id.strip_prefix("observation:") {
+        return format!("chunk:{}", chunk_id.trim());
+    }
+    if let Some(buffered_tail) = entry_id.strip_prefix("buffered:")
+        && let Some(chunk_id) = buffered_tail.rsplit(':').next()
+    {
+        return format!("chunk:{}", chunk_id.trim());
+    }
+    format!("entry:{}", entry_id.trim())
+}
+
+fn parse_observation_priority(value: &str) -> OmObservationPriority {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "high" => OmObservationPriority::High,
+        "low" => OmObservationPriority::Low,
+        _ => OmObservationPriority::Medium,
+    }
+}
+
+fn parse_observation_origin(value: &str) -> OmObservationOriginKind {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "reflection" => OmObservationOriginKind::Reflection,
+        "chunk" => OmObservationOriginKind::Chunk,
+        "summary" => OmObservationOriginKind::Summary,
+        _ => OmObservationOriginKind::Observation,
+    }
 }
 
 fn select_reserved_high_priority_entries(
@@ -1063,6 +1318,42 @@ fn annotate_om_query_plan_visibility(
                     u8::from(metrics.om_hint_current_task_reserved)
                 ),
             );
+            if !metrics.om_snapshot_visible_entry_ids.is_empty() {
+                append_query_plan_note(
+                    result,
+                    &format!(
+                        "om_snapshot_visible_entries:{}",
+                        metrics.om_snapshot_visible_entry_ids.join(",")
+                    ),
+                );
+            }
+            if !metrics.om_snapshot_visible_activated_entry_ids.is_empty() {
+                append_query_plan_note(
+                    result,
+                    &format!(
+                        "om_snapshot_visible_activated_entries:{}",
+                        metrics.om_snapshot_visible_activated_entry_ids.join(",")
+                    ),
+                );
+            }
+            if !metrics.om_snapshot_visible_buffered_entry_ids.is_empty() {
+                append_query_plan_note(
+                    result,
+                    &format!(
+                        "om_snapshot_visible_buffered_entries:{}",
+                        metrics.om_snapshot_visible_buffered_entry_ids.join(",")
+                    ),
+                );
+            }
+        }
+        if !metrics.om_snapshot_buffered_chunk_ids.is_empty() {
+            append_query_plan_note(
+                result,
+                &format!(
+                    "om_snapshot_buffered_chunk_ids:{}",
+                    metrics.om_snapshot_buffered_chunk_ids.join(",")
+                ),
+            );
         }
     }
     append_query_plan_note(
@@ -1137,8 +1428,13 @@ fn search_request_details(input: SearchRequestLogInput<'_>) -> serde_json::Value
         "om_hint_applied": metrics.om_hint_applied,
         "om_hint_reader": if metrics.om_hint_reader_snapshot_v2 { "snapshot_v2" } else { "none" },
         "om_snapshot_buffered_chunk_count": metrics.om_snapshot_buffered_chunk_count,
+        "om_snapshot_buffered_chunk_ids": metrics.om_snapshot_buffered_chunk_ids,
         "om_hint_compaction": if metrics.om_hint_compaction_priority_v2 { "priority_v2" } else { "none" },
         "om_hint_high_priority_selected_count": metrics.om_hint_high_priority_selected_count,
+        "om_snapshot_visible_entry_ids": metrics.om_snapshot_visible_entry_ids,
+        "om_hint_selected_entry_ids": metrics.om_snapshot_visible_entry_ids,
+        "om_snapshot_visible_activated_entry_ids": metrics.om_snapshot_visible_activated_entry_ids,
+        "om_snapshot_visible_buffered_entry_ids": metrics.om_snapshot_visible_buffered_entry_ids,
         "om_hint_current_task_reserved": metrics.om_hint_current_task_reserved,
         "session_recent_hint_count": metrics.session_recent_hint_count,
         "session_hint_count_final": metrics.session_hint_count_final,
@@ -1257,11 +1553,13 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        SearchOptionsInput, build_search_options, normalize_hint_text, parse_optional_target_uri,
-        validate_search_cutoff_options,
+        SearchOptionsInput, build_search_options, infer_buffered_entry_priority,
+        normalize_hint_text, parse_optional_target_uri, snapshot_visible_entry_selection,
+        snapshot_visible_entry_source_key, validate_search_cutoff_options,
     };
     use crate::error::AxiomError;
     use crate::models::{MetadataFilter, SearchBudget};
+    use crate::om::{OmObservationEntryV2, OmObservationOriginKind, OmObservationPriority};
     use crate::uri::AxiomUri;
 
     #[test]
@@ -1355,6 +1653,198 @@ mod tests {
             vec!["auth".to_string(), "oauth".to_string()]
         );
         assert_eq!(resolved_filter.mime.as_deref(), Some("text/markdown"));
+    }
+
+    #[test]
+    fn infer_buffered_entry_priority_preserves_high_signals() {
+        assert_eq!(
+            infer_buffered_entry_priority("priority:high patch queue replay"),
+            crate::om::OmObservationPriority::High
+        );
+        assert_eq!(
+            infer_buffered_entry_priority("[high] rollback risk"),
+            crate::om::OmObservationPriority::High
+        );
+        assert_eq!(
+            infer_buffered_entry_priority("high: fix stale hint"),
+            crate::om::OmObservationPriority::High
+        );
+        assert_eq!(
+            infer_buffered_entry_priority("normal buffered note"),
+            crate::om::OmObservationPriority::Medium
+        );
+    }
+
+    #[test]
+    fn snapshot_visible_entry_source_key_maps_observation_and_buffered_to_same_chunk() {
+        assert_eq!(
+            snapshot_visible_entry_source_key("observation:chunk-7"),
+            "chunk:chunk-7"
+        );
+        assert_eq!(
+            snapshot_visible_entry_source_key("buffered:session:s1:chunk-7"),
+            "chunk:chunk-7"
+        );
+        assert_eq!(
+            snapshot_visible_entry_source_key("reflection:session:s1:42"),
+            "entry:reflection:session:s1:42"
+        );
+    }
+
+    #[test]
+    fn snapshot_visible_entry_ids_dedupes_same_chunk_source_keeping_first_entry() {
+        let entries = vec![
+            OmObservationEntryV2 {
+                entry_id: "observation:chunk-1".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "a".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Observation,
+                created_at_rfc3339: "2026-03-04T00:00:00Z".to_string(),
+                superseded_by: None,
+            },
+            OmObservationEntryV2 {
+                entry_id: "buffered:session:s1:chunk-1".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "a-tail".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Chunk,
+                created_at_rfc3339: "2026-03-04T00:00:01Z".to_string(),
+                superseded_by: None,
+            },
+            OmObservationEntryV2 {
+                entry_id: "reflection:session:s1:99".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "r".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Reflection,
+                created_at_rfc3339: "2026-03-04T00:00:02Z".to_string(),
+                superseded_by: None,
+            },
+        ];
+
+        let selection = snapshot_visible_entry_selection(&entries);
+        assert_eq!(
+            selection.selected_entry_ids,
+            vec![
+                "observation:chunk-1".to_string(),
+                "reflection:session:s1:99".to_string(),
+            ]
+        );
+        assert_eq!(
+            selection.activated_visible_entry_ids,
+            vec![
+                "observation:chunk-1".to_string(),
+                "reflection:session:s1:99".to_string(),
+            ]
+        );
+        assert!(selection.buffered_visible_entry_ids.is_empty());
+    }
+
+    #[test]
+    fn snapshot_visible_entry_selection_prefers_activated_over_buffered_for_same_source() {
+        let entries = vec![
+            OmObservationEntryV2 {
+                entry_id: "buffered:session:s1:chunk-7".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "buffered".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Chunk,
+                created_at_rfc3339: "2026-03-04T00:00:00Z".to_string(),
+                superseded_by: None,
+            },
+            OmObservationEntryV2 {
+                entry_id: "observation:chunk-7".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "active".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Observation,
+                created_at_rfc3339: "2026-03-04T00:00:01Z".to_string(),
+                superseded_by: None,
+            },
+            OmObservationEntryV2 {
+                entry_id: "reflection:session:s1:12".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::High,
+                text: "reflection".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Reflection,
+                created_at_rfc3339: "2026-03-04T00:00:02Z".to_string(),
+                superseded_by: None,
+            },
+        ];
+        let selection = snapshot_visible_entry_selection(&entries);
+        assert_eq!(
+            selection.selected_entry_ids,
+            vec![
+                "observation:chunk-7".to_string(),
+                "reflection:session:s1:12".to_string(),
+            ]
+        );
+        assert!(selection.buffered_visible_entry_ids.is_empty());
+        assert_eq!(
+            selection.activated_visible_entry_ids,
+            vec![
+                "observation:chunk-7".to_string(),
+                "reflection:session:s1:12".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn snapshot_visible_entry_selection_keeps_buffered_when_no_activated_pair_exists() {
+        let entries = vec![
+            OmObservationEntryV2 {
+                entry_id: "buffered:session:s1:chunk-11".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "buffered only".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Chunk,
+                created_at_rfc3339: "2026-03-04T00:00:00Z".to_string(),
+                superseded_by: None,
+            },
+            OmObservationEntryV2 {
+                entry_id: "reflection:session:s1:13".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "reflection".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Reflection,
+                created_at_rfc3339: "2026-03-04T00:00:01Z".to_string(),
+                superseded_by: None,
+            },
+        ];
+
+        let selection = snapshot_visible_entry_selection(&entries);
+        assert_eq!(
+            selection.selected_entry_ids,
+            vec![
+                "buffered:session:s1:chunk-11".to_string(),
+                "reflection:session:s1:13".to_string(),
+            ]
+        );
+        assert_eq!(
+            selection.buffered_visible_entry_ids,
+            vec!["buffered:session:s1:chunk-11".to_string()]
+        );
+        assert_eq!(
+            selection.activated_visible_entry_ids,
+            vec!["reflection:session:s1:13".to_string()]
+        );
     }
 }
 

@@ -10,12 +10,12 @@ use crate::llm_io::{
 };
 use crate::om::{
     DEFAULT_REFLECTOR_BUFFER_ACTIVATION, DEFAULT_REFLECTOR_OBSERVATION_TOKENS,
+    OM_PROMPT_CONTRACT_NAME, OM_PROMPT_CONTRACT_VERSION, OM_PROTOCOL_VERSION,
     OmInferenceModelConfig, OmInferenceUsage, OmReflectorPromptInput, OmReflectorRequest,
     OmReflectorResponse, build_reflection_draft, build_reflector_prompt_contract_v2,
     build_reflector_system_prompt, build_reflector_user_prompt, om_observer_error,
     om_reflector_error, om_status_kind, parse_memory_section_xml_accuracy_first,
-    plan_buffered_reflection_slice, resolve_reflector_model_enabled,
-    validate_reflection_compression,
+    resolve_reflector_model_enabled, validate_reflection_compression,
 };
 use crate::om_bridge::{
     OM_OUTBOX_SCHEMA_VERSION_V1, OmObserveBufferRequestedV1, OmReflectBufferRequestedV1,
@@ -134,9 +134,17 @@ pub(super) fn resolve_reflector_response(
     expected_generation: u32,
     options: OmReflectorCallOptions,
     config_snapshot: &OmReflectorConfigSnapshot,
+    active_entries: &[OmActiveEntry],
 ) -> Result<OmReflectorResponse> {
     let config = OmReflectorConfig::from_snapshot(config_snapshot);
-    resolve_reflector_response_with_config(record, scope_key, expected_generation, options, &config)
+    resolve_reflector_response_with_config(
+        record,
+        scope_key,
+        expected_generation,
+        options,
+        &config,
+        active_entries,
+    )
 }
 
 pub(super) fn buffered_or_resolved_reflector_response(
@@ -145,6 +153,7 @@ pub(super) fn buffered_or_resolved_reflector_response(
     expected_generation: u32,
     options: OmReflectorCallOptions,
     config_snapshot: &OmReflectorConfigSnapshot,
+    active_entries: &[OmActiveEntry],
 ) -> Result<OmReflectorResponse> {
     if let Some(buffered) = record
         .buffered_reflection
@@ -171,6 +180,7 @@ pub(super) fn buffered_or_resolved_reflector_response(
         expected_generation,
         options,
         config_snapshot,
+        active_entries,
     )
 }
 
@@ -180,6 +190,7 @@ fn resolve_reflector_response_with_config(
     expected_generation: u32,
     options: OmReflectorCallOptions,
     config: &OmReflectorConfig,
+    active_entries: &[OmActiveEntry],
 ) -> Result<OmReflectorResponse> {
     let deterministic =
         deterministic_reflector_response(&record.active_observations, config.max_chars);
@@ -188,11 +199,23 @@ fn resolve_reflector_response_with_config(
     }
     match config.mode {
         OmReflectorMode::Deterministic => Ok(deterministic),
-        OmReflectorMode::Llm => {
-            llm_reflector_response(record, scope_key, expected_generation, options, config)
-        }
+        OmReflectorMode::Llm => llm_reflector_response(
+            record,
+            scope_key,
+            expected_generation,
+            options,
+            config,
+            active_entries,
+        ),
         OmReflectorMode::Auto => {
-            match llm_reflector_response(record, scope_key, expected_generation, options, config) {
+            match llm_reflector_response(
+                record,
+                scope_key,
+                expected_generation,
+                options,
+                config,
+                active_entries,
+            ) {
                 Ok(response) => Ok(response),
                 Err(err) => {
                     if config.llm_strict {
@@ -232,22 +255,31 @@ struct OmReflectorAttemptInput {
     reflection_input_tokens_override: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BufferedReflectionSelection {
+    selected_entry_ids: Vec<String>,
+    sliced_observations: String,
+    slice_token_estimate: u32,
+    compression_target_tokens: u32,
+}
+
 fn prepare_reflector_attempt_input(
     record: &crate::om::OmRecord,
     options: OmReflectorCallOptions,
     config: &OmReflectorConfig,
+    active_entries: &[OmActiveEntry],
 ) -> OmReflectorAttemptInput {
     if options == OmReflectorCallOptions::BUFFERED {
-        let plan = plan_buffered_reflection_slice(
-            &record.active_observations,
+        let selection = select_buffered_reflection_entries(
+            active_entries,
             record.observation_token_count,
             config.llm_target_observation_tokens,
             config.llm_buffer_activation,
         );
         return OmReflectorAttemptInput {
-            active_observations: plan.sliced_observations,
-            target_threshold_tokens: plan.compression_target_tokens,
-            reflection_input_tokens_override: Some(plan.slice_token_estimate),
+            active_observations: selection.sliced_observations,
+            target_threshold_tokens: selection.compression_target_tokens,
+            reflection_input_tokens_override: Some(selection.slice_token_estimate),
         };
     }
 
@@ -264,6 +296,7 @@ fn llm_reflector_response(
     expected_generation: u32,
     options: OmReflectorCallOptions,
     config: &OmReflectorConfig,
+    active_entries: &[OmActiveEntry],
 ) -> Result<OmReflectorResponse> {
     if record.active_observations.trim().is_empty() {
         return Ok(deterministic_reflector_response(
@@ -302,7 +335,7 @@ fn llm_reflector_response(
         generation_count: expected_generation,
         active_observations: String::new(),
     };
-    let attempt_input = prepare_reflector_attempt_input(record, options, config);
+    let attempt_input = prepare_reflector_attempt_input(record, options, config, active_entries);
     let request = OmReflectorRequest {
         active_observations: attempt_input.active_observations.clone(),
         ..request
@@ -438,6 +471,7 @@ fn parse_llm_reflector_response(
     active_observations: &str,
     max_chars: usize,
 ) -> Result<OmReflectorResponse> {
+    validate_reflector_contract_header_for_value(value)?;
     if let Some(parsed) = parse_reflector_response_value(value, active_observations, max_chars) {
         return Ok(parsed);
     }
@@ -450,18 +484,23 @@ fn parse_llm_reflector_response(
     if let Some(parsed) =
         parse_reflector_response_xml_content(&content, active_observations, max_chars)
     {
+        require_reflector_contract_marker_in_content(&content)?;
         return Ok(parsed);
     }
     if let Some(json_fragment) = extract_json_fragment(&content)
         && let Ok(parsed_json) = serde_json::from_str::<Value>(&json_fragment)
-        && let Some(parsed) =
-            parse_reflector_response_value(&parsed_json, active_observations, max_chars)
     {
-        return Ok(parsed);
+        validate_reflector_contract_header_for_value(&parsed_json)?;
+        if let Some(parsed) =
+            parse_reflector_response_value(&parsed_json, active_observations, max_chars)
+        {
+            return Ok(parsed);
+        }
     }
     if let Some(parsed) =
         parse_reflector_response_text_content(&content, active_observations, max_chars)
     {
+        require_reflector_contract_marker_in_content(&content)?;
         return Ok(parsed);
     }
     Err(om_reflector_error(
@@ -470,16 +509,191 @@ fn parse_llm_reflector_response(
     ))
 }
 
+fn require_reflector_contract_marker_in_content(content: &str) -> Result<()> {
+    if content_contains_contract_marker(content) {
+        return Ok(());
+    }
+    Err(om_reflector_error(
+        OmInferenceFailureKind::Schema,
+        "reflector response content missing contract marker".to_string(),
+    ))
+}
+
+fn content_contains_contract_marker(content: &str) -> bool {
+    content_contains_json_contract_marker(content) || content_contains_xml_contract_marker(content)
+}
+
+fn content_contains_json_contract_marker(content: &str) -> bool {
+    let Some(json_fragment) = extract_json_fragment(content) else {
+        return false;
+    };
+    let Ok(parsed) = serde_json::from_str::<Value>(&json_fragment) else {
+        return false;
+    };
+    let Some(object) = reflector_response_object(&parsed) else {
+        return false;
+    };
+    let Some(header) = object.get("header").and_then(Value::as_object) else {
+        return false;
+    };
+    matches_contract_header(header)
+}
+
+fn content_contains_xml_contract_marker(content: &str) -> bool {
+    let lowered = content.to_ascii_lowercase();
+    xml_tag_value(&lowered, "contract-name")
+        .is_some_and(|value| value == OM_PROMPT_CONTRACT_NAME.to_ascii_lowercase())
+        && xml_tag_value(&lowered, "contract-version")
+            .is_some_and(|value| value == OM_PROMPT_CONTRACT_VERSION.to_ascii_lowercase())
+        && xml_tag_value(&lowered, "protocol-version")
+            .is_some_and(|value| value == OM_PROTOCOL_VERSION.to_ascii_lowercase())
+}
+
+fn xml_tag_value(content: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = content.find(&open)? + open.len();
+    let end = content[start..].find(&close)? + start;
+    Some(content[start..end].trim().to_string())
+}
+
+fn matches_contract_header(header: &serde_json::Map<String, Value>) -> bool {
+    header
+        .get("contract_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| value == OM_PROMPT_CONTRACT_NAME)
+        && header
+            .get("contract_version")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| value == OM_PROMPT_CONTRACT_VERSION)
+        && header
+            .get("protocol_version")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| value == OM_PROTOCOL_VERSION)
+}
+
+fn validate_reflector_contract_header_for_value(value: &Value) -> Result<()> {
+    let Some(object) = reflector_response_object(value) else {
+        return Ok(());
+    };
+    validate_reflector_contract_header(object, reflector_known_json_schema(object))
+}
+
+fn reflector_response_object(value: &Value) -> Option<&serde_json::Map<String, Value>> {
+    let object = value.as_object()?;
+    Some(
+        object
+            .get("result")
+            .and_then(|inner| inner.as_object())
+            .unwrap_or(object),
+    )
+}
+
+fn reflector_known_json_schema(object: &serde_json::Map<String, Value>) -> bool {
+    object.get("reflection").is_some()
+        || object.get("observations").is_some()
+        || object.get("summary").is_some()
+        || object.get("text").is_some()
+        || object.get("content").is_some()
+        || object.get("reflected_observation_line_count").is_some()
+        || object.get("reflectedObservationLineCount").is_some()
+        || object.get("line_count").is_some()
+        || object.get("lineCount").is_some()
+        || object.get("reflection_token_count").is_some()
+        || object.get("reflectionTokenCount").is_some()
+        || object.get("token_count").is_some()
+        || object.get("tokenCount").is_some()
+        || object.get("usage").is_some()
+        || object.get("current_task").is_some()
+        || object.get("currentTask").is_some()
+        || object.get("suggested_response").is_some()
+        || object.get("suggestedResponse").is_some()
+        || object.get("suggested_continuation").is_some()
+        || object.get("suggestedContinuation").is_some()
+}
+
+fn validate_reflector_contract_header(
+    object: &serde_json::Map<String, Value>,
+    require_header: bool,
+) -> Result<()> {
+    let Some(header) = object.get("header").and_then(Value::as_object) else {
+        if require_header {
+            return Err(om_reflector_error(
+                OmInferenceFailureKind::Schema,
+                "reflector response missing contract header".to_string(),
+            ));
+        }
+        return Ok(());
+    };
+    let contract_name = header
+        .get("contract_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            om_reflector_error(
+                OmInferenceFailureKind::Schema,
+                "reflector response header missing contract_name".to_string(),
+            )
+        })?;
+    if contract_name != OM_PROMPT_CONTRACT_NAME {
+        return Err(om_reflector_error(
+            OmInferenceFailureKind::Schema,
+            format!(
+                "reflector response contract_name mismatch: expected {OM_PROMPT_CONTRACT_NAME}, got {contract_name}"
+            ),
+        ));
+    }
+    let contract_version = header
+        .get("contract_version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            om_reflector_error(
+                OmInferenceFailureKind::Schema,
+                "reflector response header missing contract_version".to_string(),
+            )
+        })?;
+    if contract_version != OM_PROMPT_CONTRACT_VERSION {
+        return Err(om_reflector_error(
+            OmInferenceFailureKind::Schema,
+            format!(
+                "reflector response contract_version mismatch: expected {OM_PROMPT_CONTRACT_VERSION}, got {contract_version}"
+            ),
+        ));
+    }
+    let protocol_version = header
+        .get("protocol_version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            om_reflector_error(
+                OmInferenceFailureKind::Schema,
+                "reflector response header missing protocol_version".to_string(),
+            )
+        })?;
+    if protocol_version != OM_PROTOCOL_VERSION {
+        return Err(om_reflector_error(
+            OmInferenceFailureKind::Schema,
+            format!(
+                "reflector response protocol_version mismatch: expected {OM_PROTOCOL_VERSION}, got {protocol_version}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn parse_reflector_response_value(
     value: &Value,
     _active_observations: &str,
     max_chars: usize,
 ) -> Option<OmReflectorResponse> {
-    let object = value.as_object()?;
-    let object = object
-        .get("result")
-        .and_then(|inner| inner.as_object())
-        .unwrap_or(object);
+    let object = reflector_response_object(value)?;
 
     let reflection_raw = object
         .get("reflection")
@@ -488,14 +702,30 @@ fn parse_reflector_response_value(
         .or_else(|| object.get("text"))
         .or_else(|| object.get("content"))
         .and_then(|value| value.as_str());
-    let has_known_schema = reflection_raw.is_some()
-        || object.get("reflected_observation_line_count").is_some()
-        || object.get("line_count").is_some()
-        || object.get("usage").is_some();
+    let has_known_schema = reflector_known_json_schema(object);
     if !has_known_schema {
         return None;
     }
     let reflection = normalize_reflection_text(reflection_raw.unwrap_or(""), max_chars);
+    let current_task = object
+        .get("current_task")
+        .or_else(|| object.get("currentTask"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let suggested_response = object
+        .get("suggested_response")
+        .or_else(|| object.get("suggestedResponse"))
+        .or_else(|| object.get("suggested_continuation"))
+        .or_else(|| object.get("suggestedContinuation"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    if reflection.is_empty() && current_task.is_none() && suggested_response.is_none() {
+        return None;
+    }
 
     let usage = object
         .get("usage")
@@ -524,16 +754,8 @@ fn parse_reflector_response_value(
     Some(OmReflectorResponse {
         reflection,
         reflection_token_count,
-        current_task: None,
-        suggested_response: object
-            .get("suggested_response")
-            .or_else(|| object.get("suggestedResponse"))
-            .or_else(|| object.get("suggested_continuation"))
-            .or_else(|| object.get("suggestedContinuation"))
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string),
+        current_task,
+        suggested_response,
         usage,
     })
 }
@@ -555,7 +777,7 @@ fn parse_reflector_response_xml_content(
     Some(OmReflectorResponse {
         reflection_token_count: estimate_text_tokens(&reflection),
         reflection,
-        current_task: None,
+        current_task: parsed.current_task,
         suggested_response: parsed.suggested_response,
         usage: OmInferenceUsage::default(),
     })
@@ -566,17 +788,37 @@ fn parse_reflector_response_text_content(
     _active_observations: &str,
     max_chars: usize,
 ) -> Option<OmReflectorResponse> {
-    let reflection = normalize_reflection_text(content, max_chars);
+    let reflection = normalize_reflection_text(&strip_contract_marker_lines(content), max_chars);
     if reflection.is_empty() {
         return None;
     }
+    let parsed = parse_memory_section_xml_accuracy_first(content);
     Some(OmReflectorResponse {
         reflection_token_count: estimate_text_tokens(&reflection),
         reflection,
-        current_task: None,
-        suggested_response: parse_memory_section_xml_accuracy_first(content).suggested_response,
+        current_task: parsed.current_task,
+        suggested_response: parsed.suggested_response,
         usage: OmInferenceUsage::default(),
     })
+}
+
+fn strip_contract_marker_lines(content: &str) -> String {
+    content
+        .lines()
+        .filter(|line| {
+            let lowered = line.to_ascii_lowercase();
+            !(lowered.contains("contract_name")
+                || lowered.contains("contract_version")
+                || lowered.contains("protocol_version")
+                || lowered.contains("<contract-name>")
+                || lowered.contains("</contract-name>")
+                || lowered.contains("<contract-version>")
+                || lowered.contains("</contract-version>")
+                || lowered.contains("<protocol-version>")
+                || lowered.contains("</protocol-version>"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(super) fn resolve_reflection_cover_entry_ids(
@@ -589,13 +831,6 @@ pub(super) fn resolve_reflection_cover_entry_ids(
         return Vec::new();
     }
 
-    let mut ordered_entries = active_entries.to_vec();
-    ordered_entries.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.entry_id.cmp(&right.entry_id))
-    });
-
     let has_buffered_reflection = record
         .buffered_reflection
         .as_deref()
@@ -606,31 +841,20 @@ pub(super) fn resolve_reflection_cover_entry_ids(
         options
     };
     if effective_options == OmReflectorCallOptions::DEFAULT {
-        return ordered_entries
+        return sorted_active_entries(active_entries)
             .into_iter()
             .map(|entry| entry.entry_id)
             .collect();
     }
 
     let config = OmReflectorConfig::from_snapshot(config_snapshot);
-    let plan = plan_buffered_reflection_slice(
-        &record.active_observations,
+    select_buffered_reflection_entries(
+        active_entries,
         record.observation_token_count,
         config.llm_target_observation_tokens,
         config.llm_buffer_activation,
-    );
-    let mut remaining_lines =
-        usize::try_from(plan.reflected_observation_line_count).unwrap_or(usize::MAX);
-    let mut selected = Vec::<String>::new();
-    for entry in ordered_entries {
-        if remaining_lines == 0 {
-            break;
-        }
-        selected.push(entry.entry_id.clone());
-        let line_count = count_non_empty_lines(&entry.text).max(1);
-        remaining_lines = remaining_lines.saturating_sub(line_count);
-    }
-    selected
+    )
+    .selected_entry_ids
 }
 
 pub(super) fn parse_om_reflect_buffer_requested_payload(
@@ -772,11 +996,83 @@ pub(super) fn parse_observe_session_id(
     Ok(session_id.to_string())
 }
 
-fn count_non_empty_lines(text: &str) -> usize {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .count()
+fn sorted_active_entries(active_entries: &[OmActiveEntry]) -> Vec<OmActiveEntry> {
+    let mut ordered_entries = active_entries.to_vec();
+    ordered_entries.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.entry_id.cmp(&right.entry_id))
+    });
+    ordered_entries
+}
+
+fn select_buffered_reflection_entries(
+    active_entries: &[OmActiveEntry],
+    observation_token_count: u32,
+    reflection_threshold: u32,
+    buffer_activation: f32,
+) -> BufferedReflectionSelection {
+    let target_tokens = (f64::from(reflection_threshold) * f64::from(buffer_activation))
+        .floor()
+        .clamp(0.0, f64::from(u32::MAX)) as u32;
+    if target_tokens == 0 {
+        return BufferedReflectionSelection {
+            selected_entry_ids: Vec::new(),
+            sliced_observations: String::new(),
+            slice_token_estimate: 0,
+            compression_target_tokens: 0,
+        };
+    }
+
+    let ordered_entries = sorted_active_entries(active_entries);
+    let total_chars = ordered_entries
+        .iter()
+        .map(|entry| entry.text.trim().chars().count())
+        .sum::<usize>();
+    if total_chars == 0 {
+        return BufferedReflectionSelection {
+            selected_entry_ids: Vec::new(),
+            sliced_observations: String::new(),
+            slice_token_estimate: 0,
+            compression_target_tokens: target_tokens,
+        };
+    }
+    let total_chars_f64 = total_chars as f64;
+
+    let mut selected = Vec::<String>::new();
+    let mut covered_tokens = 0u32;
+    let mut selected_texts = Vec::<&str>::new();
+    for entry in &ordered_entries {
+        let entry_text = entry.text.trim();
+        if entry_text.is_empty() {
+            continue;
+        }
+        let entry_chars = entry_text.chars().count();
+        let entry_tokens = if observation_token_count > 0 {
+            (f64::from(observation_token_count) * (entry_chars as f64 / total_chars_f64))
+                .round()
+                .clamp(1.0, f64::from(u32::MAX)) as u32
+        } else {
+            estimate_text_tokens(entry_text).max(1)
+        };
+        if covered_tokens.saturating_add(entry_tokens) > target_tokens {
+            if selected.is_empty() {
+                covered_tokens = covered_tokens.saturating_add(entry_tokens);
+                selected.push(entry.entry_id.clone());
+                selected_texts.push(entry_text);
+            }
+            break;
+        }
+        covered_tokens = covered_tokens.saturating_add(entry_tokens);
+        selected.push(entry.entry_id.clone());
+        selected_texts.push(entry_text);
+    }
+    BufferedReflectionSelection {
+        selected_entry_ids: selected,
+        sliced_observations: selected_texts.join("\n"),
+        slice_token_estimate: covered_tokens,
+        compression_target_tokens: target_tokens,
+    }
 }
 
 fn normalize_reflection_text(text: &str, max_chars: usize) -> String {

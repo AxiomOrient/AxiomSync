@@ -439,11 +439,12 @@ dependencies = [
 
 [[package]]
 name = "episodic"
-version = "0.1.0"
-source = "git+file:///Users/axient/repository/episodic?rev=9f4c075bf26b81c8a81fbb6539c46ec20ea8a181#9f4c075bf26b81c8a81fbb6539c46ec20ea8a181"
+version = "0.2.1"
+source = "git+https://github.com/AxiomOrient/episodic.git?rev=53dfe97bc7df8e32dbee5f7b2be862a6da9171c5#53dfe97bc7df8e32dbee5f7b2be862a6da9171c5"
 dependencies = [
  "chrono",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 

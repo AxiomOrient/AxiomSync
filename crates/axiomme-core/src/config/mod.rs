@@ -18,8 +18,8 @@ pub(crate) use indexing::{
 pub(crate) use indexing::{resolve_internal_tier_policy, resolve_tier_synthesis_mode};
 pub(crate) use memory::{MemoryConfig, MemoryDedupConfigSnapshot, MemoryExtractorConfigSnapshot};
 pub(crate) use om::{
-    OmConfig, OmObserverConfigSnapshot, OmReflectorConfigSnapshot, OmRuntimeEnvConfig,
-    OmRuntimeLimitsConfig, OmScopeConfig,
+    OmConfig, OmHintReaderMode, OmObserverConfigSnapshot, OmReflectorConfigSnapshot,
+    OmRuntimeEnvConfig, OmRuntimeLimitsConfig, OmScopeConfig,
 };
 pub(crate) use search::{
     OmHintBounds, OmHintPolicy, QUERY_PLAN_BACKEND_POLICY_MEMORY_ONLY, RETRIEVAL_BACKEND_MEMORY,

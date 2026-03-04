@@ -5,7 +5,11 @@ use rusqlite::{OptionalExtension, Transaction, params, types::Type};
 
 use crate::error::{AxiomError, Result};
 use crate::llm_io::estimate_text_tokens;
-use crate::om::{OmObservationChunk, OmOriginType, OmRecord, OmScope, resolve_canonical_thread_id};
+use crate::om::{
+    ContinuationPolicyV2, OmContinuationCandidateV2, OmContinuationSourceKind,
+    OmContinuationStateV2, OmObservationChunk, OmOriginType, OmRecord, OmScope,
+    resolve_canonical_thread_id, resolve_continuation_update,
+};
 
 use super::{
     OmReflectionApplyContext, OmReflectionApplyOutcome, OmReflectionBufferPayload, SqliteStateStore,
@@ -35,6 +39,12 @@ pub struct OmContinuationState {
     pub canonical_thread_id: String,
     pub current_task: Option<String>,
     pub suggested_response: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct OmContinuationHints<'a> {
+    pub current_task: Option<&'a str>,
+    pub suggested_response: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,7 +174,7 @@ impl SqliteStateStore {
                     record.buffered_reflection,
                     record.buffered_reflection_tokens.map(i64::from),
                     record.buffered_reflection_input_tokens.map(i64::from),
-                    record.reflected_observation_line_count.map(i64::from),
+                    Option::<i64>::None,
                     record.created_at.to_rfc3339(),
                     record.updated_at.to_rfc3339(),
                 ],
@@ -256,9 +266,6 @@ impl SqliteStateStore {
                         .map(i64_to_u32_saturating),
                     buffered_reflection_input_tokens: row
                         .get::<_, Option<i64>>(26)?
-                        .map(i64_to_u32_saturating),
-                    reflected_observation_line_count: row
-                        .get::<_, Option<i64>>(27)?
                         .map(i64_to_u32_saturating),
                     created_at: parse_required_rfc3339(28, &created_at_raw)?,
                     updated_at: parse_required_rfc3339(29, &updated_at_raw)?,
@@ -365,9 +372,6 @@ impl SqliteStateStore {
                         buffered_reflection_input_tokens: row
                             .get::<_, Option<i64>>(26)?
                             .map(i64_to_u32_saturating),
-                        reflected_observation_line_count: row
-                            .get::<_, Option<i64>>(27)?
-                            .map(i64_to_u32_saturating),
                         created_at: parse_required_rfc3339(28, &created_at_raw)?,
                         updated_at: parse_required_rfc3339(29, &updated_at_raw)?,
                     })
@@ -434,22 +438,29 @@ impl SqliteStateStore {
             let row = tx
                 .query_row(
                     r"
-                    SELECT generation_count
+                    SELECT id, generation_count
                     FROM om_records
                     WHERE scope_key = ?1
                     ",
                     params![scope_key],
-                    |row| row.get::<_, i64>(0),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
                 )
                 .optional()?;
 
-            let Some(generation_count) = row.map(i64_to_u32_saturating) else {
+            let Some((resolved_record_id, generation_count_raw)) = row else {
                 return Err(AxiomError::NotFound(format!(
                     "om record not found for scope_key={scope_key}"
                 )));
             };
+            let generation_count = i64_to_u32_saturating(generation_count_raw);
             if generation_count != expected_generation {
                 return Ok(false);
+            }
+            if chunk.record_id != resolved_record_id {
+                return Err(AxiomError::Validation(format!(
+                    "om observation chunk record_id mismatch for scope_key={scope_key}: expected {resolved_record_id}, got {}",
+                    chunk.record_id
+                )));
             }
 
             let already_applied = tx
@@ -824,16 +835,21 @@ impl SqliteStateStore {
             let continuation_current_task = normalize_optional_text(context.current_task);
             let continuation_suggested_response =
                 normalize_optional_text(context.suggested_response);
-            if continuation_current_task.is_some() || continuation_suggested_response.is_some() {
+            let continuation_hints = OmContinuationHints {
+                current_task: continuation_current_task.as_deref(),
+                suggested_response: continuation_suggested_response.as_deref(),
+            };
+            if continuation_hints.current_task.is_some()
+                || continuation_hints.suggested_response.is_some()
+            {
                 upsert_om_continuation_state_tx(
                     tx,
                     scope_key,
                     &canonical_thread_id,
-                    continuation_current_task.as_deref(),
-                    continuation_suggested_response.as_deref(),
+                    continuation_hints,
                     continuation_confidence(
-                        continuation_current_task.as_deref(),
-                        continuation_suggested_response.as_deref(),
+                        continuation_hints.current_task,
+                        continuation_hints.suggested_response,
                     ),
                     OM_CONTINUATION_SOURCE_REFLECTION,
                     &now_rfc3339,
@@ -890,36 +906,37 @@ fn insert_observation_entries_for_chunk_tx(
         fallback,
     );
 
-    let lines = non_empty_lines(&chunk.observations);
-    for (index, line) in lines.iter().enumerate() {
-        let entry_id = format!("observation:{}:{}:{index}", chunk.id, chunk.seq);
-        tx.execute(
-            r"
-            INSERT INTO om_entries(
-                entry_id, scope_key, canonical_thread_id, priority, text,
-                source_message_ids_json, origin_kind, created_at, superseded_by
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)
-            ON CONFLICT(entry_id) DO UPDATE SET
-                canonical_thread_id = excluded.canonical_thread_id,
-                priority = excluded.priority,
-                text = excluded.text,
-                source_message_ids_json = excluded.source_message_ids_json,
-                origin_kind = excluded.origin_kind,
-                created_at = excluded.created_at
-            ",
-            params![
-                entry_id,
-                &scope_key,
-                &canonical_thread_id,
-                OM_ENTRY_PRIORITY_MEDIUM,
-                line,
-                source_message_ids_json,
-                OM_ENTRY_ORIGIN_OBSERVATION,
-                chunk.created_at.to_rfc3339(),
-            ],
-        )?;
+    let entry_text = chunk.observations.trim();
+    if entry_text.is_empty() {
+        return Ok(());
     }
+    let entry_id = format!("observation:{}", chunk.id);
+    tx.execute(
+        r"
+        INSERT INTO om_entries(
+            entry_id, scope_key, canonical_thread_id, priority, text,
+            source_message_ids_json, origin_kind, created_at, superseded_by
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)
+        ON CONFLICT(entry_id) DO UPDATE SET
+            canonical_thread_id = excluded.canonical_thread_id,
+            priority = excluded.priority,
+            text = excluded.text,
+            source_message_ids_json = excluded.source_message_ids_json,
+            origin_kind = excluded.origin_kind,
+            created_at = excluded.created_at
+        ",
+        params![
+            entry_id,
+            &scope_key,
+            &canonical_thread_id,
+            OM_ENTRY_PRIORITY_MEDIUM,
+            entry_text,
+            source_message_ids_json,
+            OM_ENTRY_ORIGIN_OBSERVATION,
+            chunk.created_at.to_rfc3339(),
+        ],
+    )?;
     Ok(())
 }
 
@@ -1007,12 +1024,65 @@ fn upsert_om_continuation_state_tx(
     tx: &Transaction<'_>,
     scope_key: &str,
     canonical_thread_id: &str,
-    current_task: Option<&str>,
-    suggested_response: Option<&str>,
+    continuation_hints: OmContinuationHints<'_>,
     confidence: f64,
     source_kind: &str,
     updated_at: &str,
 ) -> Result<()> {
+    let previous_row = tx
+        .query_row(
+            r"
+            SELECT current_task, suggested_response, confidence, source_kind, updated_at
+            FROM om_continuation_state
+            WHERE scope_key = ?1 AND canonical_thread_id = ?2
+            ",
+            params![scope_key, canonical_thread_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let previous_state = previous_row.as_ref().map(
+        |(prev_task, prev_response, prev_confidence, prev_source_kind, prev_updated_at)| {
+            OmContinuationStateV2 {
+                scope_key: scope_key.to_string(),
+                thread_id: canonical_thread_id.to_string(),
+                current_task: prev_task.clone(),
+                suggested_response: prev_response.clone(),
+                confidence_milli: continuation_confidence_to_milli(*prev_confidence),
+                source_kind: continuation_source_kind_from_storage(prev_source_kind),
+                source_message_ids: Vec::new(),
+                updated_at_rfc3339: prev_updated_at.clone(),
+                staleness_budget_ms: 0,
+            }
+        },
+    );
+    let candidate = OmContinuationCandidateV2 {
+        scope_key: scope_key.to_string(),
+        thread_id: canonical_thread_id.to_string(),
+        current_task: normalize_optional_text(continuation_hints.current_task),
+        suggested_response: normalize_optional_text(continuation_hints.suggested_response),
+        confidence_milli: continuation_confidence_to_milli(confidence),
+        source_kind: continuation_source_kind_from_storage(source_kind),
+        source_message_ids: Vec::new(),
+        updated_at_rfc3339: updated_at.to_string(),
+        staleness_budget_ms: 0,
+    };
+    let Some(merged) = resolve_continuation_update(
+        previous_state.as_ref(),
+        &candidate,
+        ContinuationPolicyV2::default(),
+    ) else {
+        return Ok(());
+    };
+    let source_kind = continuation_source_kind_to_storage(merged.source_kind);
+
     tx.execute(
         r"
         INSERT INTO om_continuation_state(
@@ -1021,28 +1091,20 @@ fn upsert_om_continuation_state_tx(
         )
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         ON CONFLICT(scope_key, canonical_thread_id) DO UPDATE SET
-            current_task = COALESCE(excluded.current_task, om_continuation_state.current_task),
-            suggested_response = COALESCE(excluded.suggested_response, om_continuation_state.suggested_response),
-            confidence = CASE
-                WHEN excluded.current_task IS NULL AND excluded.suggested_response IS NULL
-                THEN om_continuation_state.confidence
-                ELSE excluded.confidence
-            END,
-            source_kind = CASE
-                WHEN excluded.current_task IS NULL AND excluded.suggested_response IS NULL
-                THEN om_continuation_state.source_kind
-                ELSE excluded.source_kind
-            END,
+            current_task = excluded.current_task,
+            suggested_response = excluded.suggested_response,
+            confidence = excluded.confidence,
+            source_kind = excluded.source_kind,
             updated_at = excluded.updated_at
         ",
         params![
             scope_key,
             canonical_thread_id,
-            current_task,
-            suggested_response,
-            confidence,
+            merged.current_task,
+            merged.suggested_response,
+            continuation_confidence_from_milli(merged.confidence_milli),
             source_kind,
-            updated_at,
+            merged.updated_at_rfc3339,
         ],
     )?;
     Ok(())
@@ -1052,6 +1114,35 @@ fn normalize_optional_text(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
+}
+
+pub(super) fn continuation_source_kind_from_storage(raw: &str) -> OmContinuationSourceKind {
+    match raw.trim() {
+        "reflection" => OmContinuationSourceKind::Reflector,
+        "explicit_user_task" => OmContinuationSourceKind::ExplicitUserTask,
+        "observer_deterministic" => OmContinuationSourceKind::ObserverDeterministic,
+        "observer" | "observer_llm" | "observer_interval" => OmContinuationSourceKind::ObserverLlm,
+        _ => OmContinuationSourceKind::ObserverLlm,
+    }
+}
+
+pub(super) const fn continuation_source_kind_to_storage(
+    value: OmContinuationSourceKind,
+) -> &'static str {
+    match value {
+        OmContinuationSourceKind::ObserverLlm => "observer_llm",
+        OmContinuationSourceKind::ObserverDeterministic => "observer_deterministic",
+        OmContinuationSourceKind::Reflector => "reflection",
+        OmContinuationSourceKind::ExplicitUserTask => "explicit_user_task",
+    }
+}
+
+pub(super) fn continuation_confidence_to_milli(raw: f64) -> u16 {
+    (raw * 1000.0).round().clamp(0.0, 1000.0) as u16
+}
+
+pub(super) fn continuation_confidence_from_milli(raw: u16) -> f64 {
+    f64::from(raw) / 1000.0
 }
 
 fn continuation_confidence(current_task: Option<&str>, suggested_response: Option<&str>) -> f64 {
@@ -1064,12 +1155,4 @@ fn continuation_confidence(current_task: Option<&str>, suggested_response: Optio
     } else {
         0.0
     }
-}
-
-fn non_empty_lines(text: &str) -> Vec<String> {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
 }

@@ -49,10 +49,7 @@ fn append_truncated_section(text: &mut String, title: &str, lines: &[String]) {
     let mut seen = std::collections::HashSet::<String>::new();
     let deduped = lines
         .iter()
-        .filter_map(|line| {
-            let key = line.to_ascii_lowercase();
-            if seen.insert(key) { Some(line) } else { None }
-        })
+        .filter(|line| seen.insert(line.to_ascii_lowercase()))
         .collect::<Vec<_>>();
     if deduped.is_empty() {
         return;

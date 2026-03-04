@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::om::{OM_PROMPT_CONTRACT_NAME, OM_PROMPT_CONTRACT_VERSION, OM_PROTOCOL_VERSION};
 use serde_json::Value;
 
 use super::super::{
@@ -58,11 +59,7 @@ pub(in crate::session::om) fn parse_observer_observations_text(
         .or_else(|| object.get("text"))
         .or_else(|| object.get("content"))
         .and_then(|value| value.as_str());
-    let has_known_schema = observations_raw.is_some()
-        || object.get("observed_message_ids").is_some()
-        || object.get("observed_message_id").is_some()
-        || object.get("observation_token_count").is_some()
-        || object.get("usage").is_some();
+    let has_known_schema = observer_known_json_schema(object);
     if !has_known_schema {
         return None;
     }
@@ -71,6 +68,22 @@ pub(in crate::session::om) fn parse_observer_observations_text(
         observation_max_chars,
     );
     (!observations.is_empty()).then_some(observations)
+}
+
+fn observer_known_json_schema(object: &serde_json::Map<String, Value>) -> bool {
+    object.get("observations").is_some()
+        || object.get("observation").is_some()
+        || object.get("summary").is_some()
+        || object.get("text").is_some()
+        || object.get("observed_message_ids").is_some()
+        || object.get("observedMessageIds").is_some()
+        || object.get("observed_message_id").is_some()
+        || object.get("observedMessageId").is_some()
+        || object.get("observation_token_count").is_some()
+        || object.get("observationTokenCount").is_some()
+        || object.get("token_count").is_some()
+        || object.get("tokenCount").is_some()
+        || object.get("usage").is_some()
 }
 
 pub(in crate::session::om) fn parse_observed_message_ids(
@@ -128,6 +141,7 @@ pub(in crate::session::om) fn parse_llm_observer_response(
     known_ids: &[String],
     observation_max_chars: usize,
 ) -> Result<OmObserverResponse> {
+    validate_observer_contract_header_for_value(value)?;
     if let Some(parsed) = parse_observer_response_value(value, known_ids, observation_max_chars) {
         return Ok(parsed);
     }
@@ -140,6 +154,7 @@ pub(in crate::session::om) fn parse_llm_observer_response(
     if let Some(parsed) =
         parse_observer_response_xml_content(&content, known_ids, observation_max_chars)
     {
+        require_observer_contract_marker_in_content(&content)?;
         return Ok(parsed);
     }
     let json_fragment = extract_json_fragment(&content).ok_or_else(|| {
@@ -154,12 +169,90 @@ pub(in crate::session::om) fn parse_llm_observer_response(
             format!("content json parse failed: {err}"),
         )
     })?;
+    validate_observer_contract_header_for_value(&parsed)?;
     parse_observer_response_value(&parsed, known_ids, observation_max_chars).ok_or_else(|| {
         om_observer_error(
             OmInferenceFailureKind::Schema,
             "response schema is unsupported".to_string(),
         )
     })
+}
+
+pub(in crate::session::om) fn require_observer_contract_marker_in_content(
+    content: &str,
+) -> Result<()> {
+    if content_contains_contract_marker(content) {
+        return Ok(());
+    }
+    Err(om_observer_error(
+        OmInferenceFailureKind::Schema,
+        "observer response content missing contract marker".to_string(),
+    ))
+}
+
+fn content_contains_contract_marker(content: &str) -> bool {
+    content_contains_json_contract_marker(content) || content_contains_xml_contract_marker(content)
+}
+
+fn content_contains_json_contract_marker(content: &str) -> bool {
+    let Some(json_fragment) = extract_json_fragment(content) else {
+        return false;
+    };
+    let Ok(parsed) = serde_json::from_str::<Value>(&json_fragment) else {
+        return false;
+    };
+    let Some(object) = observer_response_object(&parsed) else {
+        return false;
+    };
+    let Some(header) = object.get("header").and_then(Value::as_object) else {
+        return false;
+    };
+    matches_contract_header(header)
+}
+
+fn content_contains_xml_contract_marker(content: &str) -> bool {
+    let lowered = content.to_ascii_lowercase();
+    xml_tag_value(&lowered, "contract-name")
+        .is_some_and(|value| value == OM_PROMPT_CONTRACT_NAME.to_ascii_lowercase())
+        && xml_tag_value(&lowered, "contract-version")
+            .is_some_and(|value| value == OM_PROMPT_CONTRACT_VERSION.to_ascii_lowercase())
+        && xml_tag_value(&lowered, "protocol-version")
+            .is_some_and(|value| value == OM_PROTOCOL_VERSION.to_ascii_lowercase())
+}
+
+fn xml_tag_value(content: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = content.find(&open)? + open.len();
+    let end = content[start..].find(&close)? + start;
+    Some(content[start..end].trim().to_string())
+}
+
+fn matches_contract_header(header: &serde_json::Map<String, Value>) -> bool {
+    header
+        .get("contract_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| value == OM_PROMPT_CONTRACT_NAME)
+        && header
+            .get("contract_version")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| value == OM_PROMPT_CONTRACT_VERSION)
+        && header
+            .get("protocol_version")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| value == OM_PROTOCOL_VERSION)
+}
+
+pub(in crate::session::om) fn validate_observer_contract_header_for_value(
+    value: &Value,
+) -> Result<()> {
+    if let Some(object) = observer_response_object(value) {
+        validate_observer_contract_header(object, observer_known_json_schema(object))?;
+    }
+    Ok(())
 }
 
 pub(in crate::session::om) fn parse_observer_response_value(
@@ -211,6 +304,79 @@ pub(in crate::session::om) fn parse_observer_response_value(
         ),
         usage,
     })
+}
+
+fn validate_observer_contract_header(
+    object: &serde_json::Map<String, Value>,
+    require_header: bool,
+) -> Result<()> {
+    let Some(header) = object.get("header").and_then(Value::as_object) else {
+        if require_header {
+            return Err(om_observer_error(
+                OmInferenceFailureKind::Schema,
+                "observer response missing contract header".to_string(),
+            ));
+        }
+        return Ok(());
+    };
+    let contract_name = header
+        .get("contract_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            om_observer_error(
+                OmInferenceFailureKind::Schema,
+                "observer response header missing contract_name".to_string(),
+            )
+        })?;
+    if contract_name != OM_PROMPT_CONTRACT_NAME {
+        return Err(om_observer_error(
+            OmInferenceFailureKind::Schema,
+            format!(
+                "observer response contract_name mismatch: expected {OM_PROMPT_CONTRACT_NAME}, got {contract_name}"
+            ),
+        ));
+    }
+    let contract_version = header
+        .get("contract_version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            om_observer_error(
+                OmInferenceFailureKind::Schema,
+                "observer response header missing contract_version".to_string(),
+            )
+        })?;
+    if contract_version != OM_PROMPT_CONTRACT_VERSION {
+        return Err(om_observer_error(
+            OmInferenceFailureKind::Schema,
+            format!(
+                "observer response contract_version mismatch: expected {OM_PROMPT_CONTRACT_VERSION}, got {contract_version}"
+            ),
+        ));
+    }
+    let protocol_version = header
+        .get("protocol_version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            om_observer_error(
+                OmInferenceFailureKind::Schema,
+                "observer response header missing protocol_version".to_string(),
+            )
+        })?;
+    if protocol_version != OM_PROTOCOL_VERSION {
+        return Err(om_observer_error(
+            OmInferenceFailureKind::Schema,
+            format!(
+                "observer response protocol_version mismatch: expected {OM_PROTOCOL_VERSION}, got {protocol_version}"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 pub(in crate::session::om) fn parse_observer_response_xml_content(

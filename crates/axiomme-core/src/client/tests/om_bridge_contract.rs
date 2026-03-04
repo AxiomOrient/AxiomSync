@@ -96,11 +96,29 @@ fn om_bridge_read_hint_state_accepts_explicit_scope_binding() {
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
         .expect("upsert om");
+    let persisted_record = app
+        .state
+        .get_om_record_by_scope_key("thread:t-om-bridge-read")
+        .expect("record lookup")
+        .expect("record missing");
+    app.state
+        .append_om_observation_chunk(&crate::om::OmObservationChunk {
+            id: "obs-chunk-om-bridge-read".to_string(),
+            record_id: persisted_record.id.clone(),
+            seq: 1,
+            cycle_id: "cycle-om-bridge-read".to_string(),
+            observations: "thread scoped hint".to_string(),
+            token_count: 12,
+            message_tokens: 12,
+            message_ids: vec!["m-om-bridge-read".to_string()],
+            last_observed_at: now,
+            created_at: now,
+        })
+        .expect("append observation chunk");
 
     let hint_state = app
         .om_bridge_read_hint_state(crate::om_bridge::OmHintReadRequestV1 {
@@ -114,6 +132,11 @@ fn om_bridge_read_hint_state_accepts_explicit_scope_binding() {
         .expect("read hint")
         .expect("hint state");
     assert_eq!(hint_state.scope_key, "thread:t-om-bridge-read");
+    assert_eq!(
+        hint_state.snapshot_version.as_deref(),
+        Some(crate::om::OM_SEARCH_VISIBLE_SNAPSHOT_V2_VERSION)
+    );
+    assert!(hint_state.materialized_at.is_some());
     assert!(
         hint_state
             .hint
@@ -248,7 +271,6 @@ fn om_bridge_enqueue_reflect_and_replay_applies_generation_cas() {
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -348,7 +370,6 @@ fn om_bridge_replay_om_only_does_not_process_non_om_events() {
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -425,7 +446,6 @@ fn om_bridge_replay_om_only_clears_reflection_flags_after_dead_lettered_reflect_
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -508,7 +528,6 @@ fn om_bridge_replay_om_only_does_not_clear_reflection_flags_on_generation_mismat
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -584,7 +603,6 @@ fn om_bridge_replay_om_only_clears_reflection_flags_after_dead_lettered_reflect_
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })

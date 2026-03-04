@@ -41,10 +41,10 @@ const ONTOLOGY_CONTRACT_PROBE_TEST_NAME: &str =
     "ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable";
 const EPISODIC_DEPENDENCY_NAME: &str = "episodic";
 const EPISODIC_REQUIRED_MAJOR: u64 = 0;
-const EPISODIC_REQUIRED_MINOR: u64 = 1;
-const EPISODIC_REQUIRED_GIT_URL: &str = "file:///Users/axient/repository/episodic";
-const EPISODIC_REQUIRED_GIT_REV: &str = "9f4c075bf26b81c8a81fbb6539c46ec20ea8a181";
-const EPISODIC_LOCK_SOURCE_PREFIX: &str = "git+file:///Users/axient/repository/episodic";
+const EPISODIC_REQUIRED_MINOR: u64 = 2;
+const EPISODIC_REQUIRED_GIT_URL: &str = "https://github.com/AxiomOrient/episodic.git";
+const EPISODIC_REQUIRED_GIT_REV: &str = "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5";
+const EPISODIC_LOCK_SOURCE_PREFIX: &str = "git+https://github.com/AxiomOrient/episodic.git";
 const EPISODIC_ALLOWED_MANIFEST_OPERATORS: &[&str] = &["exact_rev"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

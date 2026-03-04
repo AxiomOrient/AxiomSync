@@ -69,6 +69,7 @@ impl AxiomMe {
         {
             return Ok(true);
         }
+        let active_entries = self.state.list_om_active_entries(scope_key)?;
 
         let reflection = resolve_reflector_response(
             &record,
@@ -76,6 +77,7 @@ impl AxiomMe {
             expected_generation,
             OmReflectorCallOptions::BUFFERED,
             &self.config.om.reflector,
+            &active_entries,
         )?;
         let _buffered = self.state.buffer_om_reflection_with_cas(
             scope_key,
@@ -115,6 +117,7 @@ impl AxiomMe {
         if record.generation_count != expected_generation {
             return Ok(true);
         }
+        let active_entries = self.state.list_om_active_entries(scope_key)?;
 
         let reflection = buffered_or_resolved_reflector_response(
             &record,
@@ -122,8 +125,8 @@ impl AxiomMe {
             expected_generation,
             OmReflectorCallOptions::DEFAULT,
             &self.config.om.reflector,
+            &active_entries,
         )?;
-        let active_entries = self.state.list_om_active_entries(scope_key)?;
         let covers_entry_ids = resolve_reflection_cover_entry_ids(
             &record,
             OmReflectorCallOptions::DEFAULT,

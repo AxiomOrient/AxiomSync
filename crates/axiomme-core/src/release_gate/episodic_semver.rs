@@ -164,6 +164,7 @@ pub(super) fn parse_lockfile_episodic_dependency(
         .and_then(toml::Value::as_array)
         .ok_or_else(|| "lockfile_missing_package_array".to_string())?;
 
+    let mut candidates = Vec::<EpisodicLockDependency>::new();
     for package in packages {
         let Some(package_table) = package.as_table() else {
             continue;
@@ -188,14 +189,38 @@ pub(super) fn parse_lockfile_episodic_dependency(
             .as_deref()
             .and_then(|value| value.split('#').nth(1))
             .map(str::to_string);
-        return Ok(EpisodicLockDependency {
+        candidates.push(EpisodicLockDependency {
             version,
             source,
             revision,
         });
     }
 
-    Err("missing_episodic_lock_entry".to_string())
+    if candidates.is_empty() {
+        return Err("missing_episodic_lock_entry".to_string());
+    }
+    if candidates.len() == 1 {
+        return Ok(candidates.remove(0));
+    }
+
+    let required_candidates = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.source.as_deref().is_some_and(|source| {
+                source.starts_with(EPISODIC_LOCK_SOURCE_PREFIX)
+                    && source.contains(&format!("#{EPISODIC_REQUIRED_GIT_REV}"))
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    match required_candidates.len() {
+        1 => Ok(required_candidates
+            .into_iter()
+            .next()
+            .expect("single required candidate")),
+        0 => Err("ambiguous_episodic_lock_entry_no_required_source_match".to_string()),
+        _ => Err("ambiguous_episodic_lock_entry_multiple_required_source_matches".to_string()),
+    }
 }
 
 pub(super) fn episodic_manifest_req_contract_matches(raw: &str) -> bool {
@@ -206,4 +231,60 @@ pub(super) fn episodic_lock_version_contract_matches(raw: &str) -> bool {
     Version::parse(raw.trim()).is_ok_and(|version| {
         version.major == EPISODIC_REQUIRED_MAJOR && version.minor == EPISODIC_REQUIRED_MINOR
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        parse_lockfile_episodic_dependency, EPISODIC_LOCK_SOURCE_PREFIX, EPISODIC_REQUIRED_GIT_REV,
+    };
+
+    #[test]
+    fn parse_lockfile_episodic_dependency_prefers_required_source_when_multiple_entries_exist() {
+        let lockfile = format!(
+            r#"
+[[package]]
+name = "episodic"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "episodic"
+version = "0.2.0"
+source = "{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}"
+"#
+        );
+        let parsed =
+            parse_lockfile_episodic_dependency(&lockfile).expect("parse lock dependency");
+        let expected_source = format!("{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}");
+        assert_eq!(parsed.version, "0.2.0");
+        assert_eq!(parsed.source.as_deref(), Some(expected_source.as_str()));
+        assert_eq!(
+            parsed.revision.as_deref(),
+            Some(EPISODIC_REQUIRED_GIT_REV)
+        );
+    }
+
+    #[test]
+    fn parse_lockfile_episodic_dependency_rejects_multiple_entries_without_required_match() {
+        let lockfile = format!(
+            r#"
+[[package]]
+name = "episodic"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "episodic"
+version = "0.1.9"
+source = "{EPISODIC_LOCK_SOURCE_PREFIX}#oldrev"
+"#
+        );
+        let err =
+            parse_lockfile_episodic_dependency(&lockfile).expect_err("must reject ambiguity");
+        assert_eq!(
+            err,
+            "ambiguous_episodic_lock_entry_no_required_source_match"
+        );
+    }
 }

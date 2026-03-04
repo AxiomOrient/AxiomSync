@@ -1447,7 +1447,6 @@ mod tests {
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         });
@@ -1492,7 +1491,6 @@ mod tests {
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         });

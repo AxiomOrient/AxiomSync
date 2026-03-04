@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
@@ -19,6 +19,23 @@ fn msg(id: &str, role: &str, text: &str) -> OmObserverMessageCandidate {
         created_at: Utc::now(),
         source_thread_id: Some("s-test".to_string()),
         source_session_id: Some("s-test".to_string()),
+    }
+}
+
+fn msg_with_thread(
+    id: &str,
+    role: &str,
+    text: &str,
+    source_thread_id: &str,
+    source_session_id: &str,
+) -> OmObserverMessageCandidate {
+    OmObserverMessageCandidate {
+        id: id.to_string(),
+        role: role.to_string(),
+        text: text.to_string(),
+        created_at: Utc::now(),
+        source_thread_id: Some(source_thread_id.to_string()),
+        source_session_id: Some(source_session_id.to_string()),
     }
 }
 
@@ -128,7 +145,7 @@ fn parse_observer_response_value_accepts_mastra_alias_fields() {
 fn parse_llm_observer_response_accepts_embedded_json_content() {
     let payload = serde_json::json!({
         "message": {
-            "content": "```json\n{\"observations\":\"[assistant] keep signal\",\"observed_message_ids\":[\"m9\"]}\n```"
+            "content": "```json\n{\"header\":{\"contract_name\":\"axiomme.om.prompt\",\"contract_version\":\"2.0.0\",\"protocol_version\":\"om-v2\"},\"observations\":\"[assistant] keep signal\",\"observed_message_ids\":[\"m9\"]}\n```"
         }
     });
     let known_ids = vec!["m9".to_string()];
@@ -143,10 +160,36 @@ fn parse_llm_observer_response_accepts_embedded_json_content() {
 }
 
 #[test]
+fn parse_llm_observer_response_rejects_missing_contract_header_for_json_schema() {
+    let payload = serde_json::json!({
+        "observations": "line-a",
+        "observed_message_ids": ["m9"]
+    });
+    let known_ids = vec!["m9".to_string()];
+    let err = parse_llm_observer_response(
+        &payload,
+        &known_ids,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    )
+    .expect_err("must reject missing contract header for known schema");
+    match err {
+        AxiomError::OmInference {
+            inference_source,
+            kind,
+            ..
+        } => {
+            assert_eq!(inference_source, OmInferenceSource::Observer);
+            assert_eq!(kind, OmInferenceFailureKind::Schema);
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
 fn parse_llm_observer_response_accepts_xml_observations_content() {
     let payload = serde_json::json!({
         "message": {
-            "content": "<observations>\n* 🔴 (09:15) User prefers direct answers\n* 🟡 (09:20) User asked about auth flow\n</observations>\n<current-task>\nPrimary: debug auth\n</current-task>\n<suggested-response>\nAsk user to confirm\n</suggested-response>"
+            "content": "<contract-name>axiomme.om.prompt</contract-name>\n<contract-version>2.0.0</contract-version>\n<protocol-version>om-v2</protocol-version>\n<observations>\n* 🔴 (09:15) User prefers direct answers\n* 🟡 (09:20) User asked about auth flow\n</observations>\n<current-task>\nPrimary: debug auth\n</current-task>\n<suggested-response>\nAsk user to confirm\n</suggested-response>"
         }
     });
     let known_ids = vec!["m7".to_string(), "m8".to_string()];
@@ -170,7 +213,7 @@ fn parse_llm_observer_response_accepts_xml_observations_content() {
 fn parse_llm_observer_response_accepts_list_items_without_xml_tags() {
     let payload = serde_json::json!({
         "message": {
-            "content": "* 🔴 (09:15) User prefers direct answers\n- 🟡 (09:20) User asked about auth flow\n1. 🟢 (09:22) Assistant suggested follow-up"
+            "content": "<contract-name>axiomme.om.prompt</contract-name>\n<contract-version>2.0.0</contract-version>\n<protocol-version>om-v2</protocol-version>\n* 🔴 (09:15) User prefers direct answers\n- 🟡 (09:20) User asked about auth flow\n1. 🟢 (09:22) Assistant suggested follow-up"
         }
     });
     let known_ids = vec!["m7".to_string()];
@@ -191,6 +234,84 @@ fn parse_llm_observer_response_accepts_list_items_without_xml_tags() {
 }
 
 #[test]
+fn parse_llm_observer_response_rejects_xml_without_contract_marker() {
+    let payload = serde_json::json!({
+        "message": {
+            "content": "<observations>\nline-a\nline-b\n</observations>"
+        }
+    });
+    let known_ids = vec!["m7".to_string()];
+    let err = parse_llm_observer_response(
+        &payload,
+        &known_ids,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    )
+    .expect_err("must reject xml fallback without contract marker");
+    match err {
+        AxiomError::OmInference {
+            inference_source,
+            kind,
+            ..
+        } => {
+            assert_eq!(inference_source, OmInferenceSource::Observer);
+            assert_eq!(kind, OmInferenceFailureKind::Schema);
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
+fn parse_llm_observer_response_rejects_xml_without_protocol_marker() {
+    let payload = serde_json::json!({
+        "message": {
+            "content": "<contract-name>axiomme.om.prompt</contract-name>\n<contract-version>2.0.0</contract-version>\n<observations>\nline-a\nline-b\n</observations>"
+        }
+    });
+    let known_ids = vec!["m7".to_string()];
+    let err = parse_llm_observer_response(
+        &payload,
+        &known_ids,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    )
+    .expect_err("must reject xml fallback without protocol marker");
+    match err {
+        AxiomError::OmInference {
+            inference_source,
+            kind,
+            ..
+        } => {
+            assert_eq!(inference_source, OmInferenceSource::Observer);
+            assert_eq!(kind, OmInferenceFailureKind::Schema);
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
+fn parse_llm_observer_response_rejects_marker_like_plain_text_without_structured_contract() {
+    let payload = serde_json::json!({
+        "message": {
+            "content": "notes: contract_name axiomme.om.prompt contract_version 2.0.0 protocol_version om-v2\n- line-a\n- line-b"
+        }
+    });
+    let known_ids = vec!["m7".to_string()];
+    let err = parse_llm_observer_response(
+        &payload,
+        &known_ids,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    )
+    .expect_err("must reject non-structured contract marker text");
+    assert!(matches!(
+        err,
+        AxiomError::OmInference {
+            inference_source: OmInferenceSource::Observer,
+            kind: OmInferenceFailureKind::Schema,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn parse_llm_observer_response_returns_schema_taxonomy_for_invalid_payload() {
     let payload = serde_json::json!({"unexpected": "shape"});
     let known_ids = vec!["m9".to_string()];
@@ -208,6 +329,99 @@ fn parse_llm_observer_response_returns_schema_taxonomy_for_invalid_payload() {
         } => {
             assert_eq!(inference_source, OmInferenceSource::Observer);
             assert_eq!(kind, OmInferenceFailureKind::Schema);
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
+fn parse_llm_observer_response_rejects_contract_version_mismatch() {
+    let payload = serde_json::json!({
+        "observations": "line-a",
+        "observed_message_ids": ["m9"],
+        "header": {
+            "contract_name": "axiomme.om.prompt",
+            "contract_version": "9.9.9",
+            "protocol_version": "om-v2"
+        }
+    });
+    let known_ids = vec!["m9".to_string()];
+    let err = parse_llm_observer_response(
+        &payload,
+        &known_ids,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    )
+    .expect_err("must reject contract version mismatch");
+    match err {
+        AxiomError::OmInference {
+            inference_source,
+            kind,
+            ..
+        } => {
+            assert_eq!(inference_source, OmInferenceSource::Observer);
+            assert_eq!(kind, OmInferenceFailureKind::Schema);
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
+fn parse_llm_observer_response_rejects_protocol_version_mismatch() {
+    let payload = serde_json::json!({
+        "observations": "line-a",
+        "observed_message_ids": ["m9"],
+        "header": {
+            "contract_name": "axiomme.om.prompt",
+            "contract_version": "2.0.0",
+            "protocol_version": "om-v999"
+        }
+    });
+    let known_ids = vec!["m9".to_string()];
+    let err = parse_llm_observer_response(
+        &payload,
+        &known_ids,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    )
+    .expect_err("must reject protocol version mismatch");
+    match err {
+        AxiomError::OmInference {
+            inference_source,
+            kind,
+            ..
+        } => {
+            assert_eq!(inference_source, OmInferenceSource::Observer);
+            assert_eq!(kind, OmInferenceFailureKind::Schema);
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
+fn parse_llm_observer_response_rejects_xml_protocol_version_mismatch_marker() {
+    let payload = serde_json::json!({
+        "message": {
+            "content": "<contract-name>axiomme.om.prompt</contract-name>\n<contract-version>2.0.0</contract-version>\n<protocol-version>om-v999</protocol-version>\n<observations>\n- keep signal\n</observations>"
+        }
+    });
+    let known_ids = vec!["m9".to_string()];
+    let err = parse_llm_observer_response(
+        &payload,
+        &known_ids,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    )
+    .expect_err("must reject xml contract marker with protocol mismatch");
+    match err {
+        AxiomError::OmInference {
+            inference_source,
+            kind,
+            message,
+        } => {
+            assert_eq!(inference_source, OmInferenceSource::Observer);
+            assert_eq!(kind, OmInferenceFailureKind::Schema);
+            assert!(
+                message.contains("missing contract marker"),
+                "unexpected message: {message}"
+            );
         }
         other => panic!("unexpected error type: {other}"),
     }
@@ -289,16 +503,22 @@ fn build_observer_thread_messages_groups_and_sorts_by_thread_and_time() {
 fn parse_llm_multi_thread_observer_response_aggregates_primary_thread_metadata() {
     let payload = serde_json::json!({
         "message": {
-            "content": "<observations>\n<thread id=\"s-main\">\nDate: Dec 4, 2025\n* 🔴 (14:30) User prefers direct answers\n<current-task>Primary: implement auth</current-task>\n<suggested-response>Continue auth changes</suggested-response>\n</thread>\n<thread id=\"s-peer\">\n* 🟡 (15:00) Peer session context\n<current-task>Primary: peer task</current-task>\n</thread>\n</observations>"
+            "content": "<contract-name>axiomme.om.prompt</contract-name>\n<contract-version>2.0.0</contract-version>\n<protocol-version>om-v2</protocol-version>\n<observations>\n<thread id=\"s-main\">\nDate: Dec 4, 2025\n* 🔴 (14:30) User prefers direct answers\n<current-task>Primary: implement auth</current-task>\n<suggested-response>Continue auth changes</suggested-response>\n</thread>\n<thread id=\"s-peer\">\n* 🟡 (15:00) Peer session context\n<current-task>Primary: peer task</current-task>\n</thread>\n</observations>"
         }
     });
     let known_ids = vec!["m1".to_string(), "m2".to_string()];
+    let known_ids_by_thread = BTreeMap::from([
+        ("s-main".to_string(), vec!["m1".to_string()]),
+        ("s-peer".to_string(), vec!["m2".to_string()]),
+    ]);
     let parsed = parse_llm_multi_thread_observer_response(
         &payload,
         "s-main",
         &known_ids,
+        &known_ids_by_thread,
         crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
     )
+    .expect("parse result")
     .expect("multi-thread parse");
 
     assert!(
@@ -330,6 +550,116 @@ fn parse_llm_multi_thread_observer_response_aggregates_primary_thread_metadata()
             .any(|state| state.thread_id == "s-main"
                 && state.current_task.as_deref() == Some("Primary: implement auth"))
     );
+}
+
+#[test]
+fn parse_llm_multi_thread_observer_response_rejects_contract_version_mismatch() {
+    let payload = serde_json::json!({
+        "header": {
+            "contract_name": "axiomme.om.prompt",
+            "contract_version": "9.9.9",
+            "protocol_version": "om-v2"
+        },
+        "message": {
+            "content": "<contract-name>axiomme.om.prompt</contract-name>\n<contract-version>2.0.0</contract-version>\n<protocol-version>om-v2</protocol-version>\n<observations>\n<thread id=\"s-main\">\n* 🔴 (14:30) User prefers direct answers\n</thread>\n</observations>"
+        }
+    });
+    let known_ids = vec!["m1".to_string()];
+    let known_ids_by_thread = BTreeMap::from([("s-main".to_string(), vec!["m1".to_string()])]);
+    let err = parse_llm_multi_thread_observer_response(
+        &payload,
+        "s-main",
+        &known_ids,
+        &known_ids_by_thread,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    )
+    .expect_err("must reject contract version mismatch");
+    match err {
+        AxiomError::OmInference {
+            inference_source,
+            kind,
+            ..
+        } => {
+            assert_eq!(inference_source, OmInferenceSource::Observer);
+            assert_eq!(kind, OmInferenceFailureKind::Schema);
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
+fn parse_llm_multi_thread_observer_response_rejects_xml_without_contract_marker() {
+    let payload = serde_json::json!({
+        "message": {
+            "content": "<observations>\n<thread id=\"s-main\">\n* 🔴 (14:30) User prefers direct answers\n</thread>\n</observations>"
+        }
+    });
+    let known_ids = vec!["m1".to_string()];
+    let known_ids_by_thread = BTreeMap::from([("s-main".to_string(), vec!["m1".to_string()])]);
+    let err = parse_llm_multi_thread_observer_response(
+        &payload,
+        "s-main",
+        &known_ids,
+        &known_ids_by_thread,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    )
+    .expect_err("must reject missing content marker");
+    assert!(matches!(
+        err,
+        AxiomError::OmInference {
+            inference_source: OmInferenceSource::Observer,
+            kind: OmInferenceFailureKind::Schema,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn parse_llm_multi_thread_observer_response_limits_observed_ids_to_present_threads() {
+    let payload = serde_json::json!({
+        "message": {
+            "content": "<contract-name>axiomme.om.prompt</contract-name>\n<contract-version>2.0.0</contract-version>\n<protocol-version>om-v2</protocol-version>\n<observations>\n<thread id=\"s-main\">\n* 🔴 (14:30) User prefers direct answers\n</thread>\n</observations>"
+        }
+    });
+    let known_ids = vec!["m1".to_string(), "m2".to_string()];
+    let known_ids_by_thread = BTreeMap::from([
+        ("s-main".to_string(), vec!["m1".to_string()]),
+        ("s-peer".to_string(), vec!["m2".to_string()]),
+    ]);
+    let parsed = parse_llm_multi_thread_observer_response(
+        &payload,
+        "s-main",
+        &known_ids,
+        &known_ids_by_thread,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    )
+    .expect("parse")
+    .expect("response");
+    assert_eq!(parsed.response.observed_message_ids, vec!["m1".to_string()]);
+}
+
+#[test]
+fn parse_llm_multi_thread_observer_response_falls_back_to_primary_thread_ids_when_unmapped() {
+    let payload = serde_json::json!({
+        "message": {
+            "content": "<contract-name>axiomme.om.prompt</contract-name>\n<contract-version>2.0.0</contract-version>\n<protocol-version>om-v2</protocol-version>\n<observations>\n<thread id=\"hallucinated-thread\">\n* 🔴 (14:30) User prefers direct answers\n</thread>\n</observations>"
+        }
+    });
+    let known_ids = vec!["m1".to_string(), "m2".to_string()];
+    let known_ids_by_thread = BTreeMap::from([
+        ("s-main".to_string(), vec!["m1".to_string()]),
+        ("s-peer".to_string(), vec!["m2".to_string()]),
+    ]);
+    let parsed = parse_llm_multi_thread_observer_response(
+        &payload,
+        "s-main",
+        &known_ids,
+        &known_ids_by_thread,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    )
+    .expect("parse")
+    .expect("response");
+    assert_eq!(parsed.response.observed_message_ids, vec!["m1".to_string()]);
 }
 
 #[test]
@@ -442,8 +772,19 @@ fn build_observer_batch_tasks_filters_empty_known_ids_and_preserves_batch_index(
     assert_eq!(tasks.len(), 2);
     assert_eq!(tasks[0].index, 0);
     assert_eq!(tasks[0].known_ids, vec!["m1".to_string()]);
+    assert_eq!(
+        tasks[0].known_ids_by_thread,
+        BTreeMap::from([("thread-a".to_string(), vec!["m1".to_string()])])
+    );
     assert_eq!(tasks[1].index, 2);
     assert_eq!(tasks[1].known_ids, vec!["m3".to_string(), "m4".to_string()]);
+    assert_eq!(
+        tasks[1].known_ids_by_thread,
+        BTreeMap::from([(
+            "thread-c".to_string(),
+            vec!["m3".to_string(), "m4".to_string()],
+        )])
+    );
 }
 
 #[test]
@@ -725,6 +1066,85 @@ fn deterministic_fallback_emits_current_task() {
 }
 
 #[test]
+fn deterministic_fallback_populates_thread_states_for_resource_scope() {
+    let selected = vec![
+        msg_with_thread(
+            "m1",
+            "user",
+            "Please fix queue replay for worker-a and verify AXIOMME_RERANKER stability.",
+            "thread-a",
+            "s-fallback-threads",
+        ),
+        msg_with_thread(
+            "m2",
+            "tool",
+            "error E401 at worker-a while applying AXIOMME_RERANKER patch",
+            "thread-a",
+            "s-fallback-threads",
+        ),
+        msg_with_thread(
+            "m3",
+            "user",
+            "Please investigate E409 in worker-b and patch serde_json::from_str handling.",
+            "thread-b",
+            "s-fallback-threads",
+        ),
+        msg_with_thread(
+            "m4",
+            "tool",
+            "error E409 at worker-b while running serde_json::from_str flow",
+            "thread-b",
+            "s-fallback-threads",
+        ),
+    ];
+    let mut record = new_session_om_record(
+        "s-fallback-threads",
+        "resource:r-fallback-threads",
+        Utc::now(),
+    );
+    record.scope = OmScope::Resource;
+    record.scope_key = "resource:r-fallback-threads".to_string();
+    record.session_id = Some("s-fallback-threads".to_string());
+    record.resource_id = Some("r-fallback-threads".to_string());
+    record.thread_id = None;
+
+    let config = observer_config(OmObserverMode::Llm, false);
+    let resolved = resolve_observer_response_with_config(
+        &record,
+        &record.scope_key,
+        &selected,
+        "s-fallback-threads",
+        4096,
+        false,
+        &config,
+    )
+    .expect("resolve observer response");
+
+    assert_eq!(resolved.thread_states.len(), 2);
+    assert!(
+        resolved
+            .thread_states
+            .iter()
+            .any(|state| state.thread_id == "thread-a"),
+        "thread-a deterministic state must be emitted"
+    );
+    assert!(
+        resolved
+            .thread_states
+            .iter()
+            .any(|state| state.thread_id == "thread-b"),
+        "thread-b deterministic state must be emitted"
+    );
+    assert!(
+        resolved
+            .thread_states
+            .iter()
+            .any(|state| state.current_task.is_some() || state.suggested_response.is_some()),
+        "at least one deterministic thread state must carry continuation hints"
+    );
+}
+
+#[test]
 fn deterministic_fallback_preserves_error_context_identifiers() {
     let selected = vec![
         msg(
@@ -783,6 +1203,82 @@ fn deterministic_fallback_suppresses_low_confidence_suggested_response() {
 
     assert_eq!(response.current_task, None);
     assert_eq!(response.suggested_response, None);
+}
+
+#[test]
+fn deterministic_fallback_handles_non_english_task_and_error_signal() {
+    let selected = vec![
+        msg(
+            "m1",
+            "user",
+            "请修复队列回放并更新src/session/om.rs，然后验证E409错误已消失。",
+        ),
+        msg(
+            "m2",
+            "tool",
+            "错误E409发生在src/session/om.rs:518，操作失败。",
+        ),
+    ];
+    let record = new_session_om_record(
+        "s-fallback-non-english",
+        "session:s-fallback-non-english",
+        Utc::now(),
+    );
+
+    let response = deterministic_observer_response(
+        &record,
+        &selected,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    );
+
+    assert!(
+        response
+            .current_task
+            .as_deref()
+            .is_some_and(|value| value.starts_with("Primary: 请修复队列回放")),
+        "non-English task sentence should be preserved: {:?}",
+        response.current_task
+    );
+    assert!(
+        response
+            .suggested_response
+            .as_deref()
+            .is_some_and(|value| value.contains("E409")),
+        "error signal identifier should be preserved from non-English blocking text: {:?}",
+        response.suggested_response
+    );
+}
+
+#[test]
+fn deterministic_fallback_extracts_identifiers_without_whitespace() {
+    let selected = vec![
+        msg(
+            "m1",
+            "user",
+            "Please fix queue replay handling in worker:queue and keep AXIOMME_RERANKER stable.",
+        ),
+        msg("m2", "tool", "错误E409发生在worker:queue，操作失败"),
+    ];
+    let record = new_session_om_record(
+        "s-fallback-no-whitespace",
+        "session:s-fallback-no-whitespace",
+        Utc::now(),
+    );
+
+    let response = deterministic_observer_response(
+        &record,
+        &selected,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    );
+
+    assert!(
+        response
+            .suggested_response
+            .as_deref()
+            .is_some_and(|value| value.contains("E409") && value.contains("worker:queue")),
+        "identifier extraction should work even when error text has no whitespace: {:?}",
+        response.suggested_response
+    );
 }
 
 #[test]

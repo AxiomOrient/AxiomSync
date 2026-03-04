@@ -3,11 +3,10 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use super::super::{
-    MultiThreadObserverRunContext, OmInferenceUsage, OmObserverConfig, OmObserverMessageCandidate,
-    OmObserverMode, OmObserverResponse, OmPendingMessage, OmRecord, OmScope,
-    ResolvedObserverOutput, Result, estimate_text_tokens, resolve_canonical_thread_id,
+    MultiThreadObserverRunContext, ObserverThreadStateUpdate, OmInferenceUsage, OmObserverConfig,
+    OmObserverMessageCandidate, OmObserverMode, OmObserverResponse, OmPendingMessage, OmRecord,
+    OmScope, ResolvedObserverOutput, Result, resolve_canonical_thread_id,
     select_observed_message_candidates, split_pending_and_other_conversation_candidates,
-    synthesize_observer_observations,
 };
 use super::llm::{
     build_observer_client, build_observer_endpoint, build_observer_llm_request,
@@ -18,15 +17,6 @@ use super::threading::{
     build_observer_thread_messages_for_scope, resolve_observer_thread_group_id,
     run_multi_thread_observer_response,
 };
-
-const DETERMINISTIC_CONTINUATION_MAX_CHARS: usize = 220;
-const DETERMINISTIC_SUGGESTED_RESPONSE_MIN_CONFIDENCE: f32 = 0.78;
-
-#[derive(Debug, Clone, Default)]
-struct DeterministicContinuationHints {
-    current_task: Option<String>,
-    suggested_response: Option<String>,
-}
 
 pub(in crate::session::om) fn merge_observe_after_cursor(
     record_last_observed_at: Option<DateTime<Utc>>,
@@ -78,14 +68,18 @@ pub(in crate::session::om) fn resolve_observer_response_with_config(
     if !config.model_enabled {
         return Ok(deterministic_observer_output(
             record,
+            scope_key,
             selected,
+            current_session_id,
             config.text_budget.observation_max_chars,
         ));
     }
     match config.mode {
         OmObserverMode::Deterministic => Ok(deterministic_observer_output(
             record,
+            scope_key,
             selected,
+            current_session_id,
             config.text_budget.observation_max_chars,
         )),
         OmObserverMode::Llm => llm_observer_response(
@@ -114,7 +108,9 @@ pub(in crate::session::om) fn resolve_observer_response_with_config(
                     } else {
                         Ok(deterministic_observer_output(
                             record,
+                            scope_key,
                             selected,
+                            current_session_id,
                             config.text_budget.observation_max_chars,
                         ))
                     }
@@ -126,13 +122,21 @@ pub(in crate::session::om) fn resolve_observer_response_with_config(
 
 pub(in crate::session::om) fn deterministic_observer_output(
     record: &OmRecord,
+    scope_key: &str,
     selected: &[OmObserverMessageCandidate],
+    current_session_id: &str,
     observation_max_chars: usize,
 ) -> ResolvedObserverOutput {
     ResolvedObserverOutput {
         selected_messages: selected.to_vec(),
         response: deterministic_observer_response(record, selected, observation_max_chars),
-        thread_states: Vec::new(),
+        thread_states: deterministic_thread_state_updates(
+            record,
+            scope_key,
+            selected,
+            current_session_id,
+            observation_max_chars,
+        ),
     }
 }
 
@@ -150,281 +154,96 @@ pub(in crate::session::om) fn deterministic_observer_response(
             created_at_rfc3339: Some(item.created_at.to_rfc3339()),
         })
         .collect::<Vec<_>>();
-    let observations = synthesize_observer_observations(
+    let inferred = crate::om::infer_deterministic_observer_response(
         &record.active_observations,
         &pending_messages,
         observation_max_chars,
     );
-    let continuation = infer_deterministic_continuation(&pending_messages);
     OmObserverResponse {
-        observation_token_count: estimate_text_tokens(&observations),
-        observations,
-        observed_message_ids: selected.iter().map(|item| item.id.clone()).collect(),
-        current_task: continuation.current_task,
-        suggested_response: continuation.suggested_response,
+        observation_token_count: inferred.observation_token_count,
+        observations: inferred.observations,
+        observed_message_ids: inferred.observed_message_ids,
+        current_task: normalize_deterministic_current_task(inferred.current_task),
+        suggested_response: inferred.suggested_response,
         usage: OmInferenceUsage::default(),
     }
 }
 
-fn infer_deterministic_continuation(
-    pending_messages: &[OmPendingMessage],
-) -> DeterministicContinuationHints {
-    let last_user = pending_messages
-        .iter()
-        .rev()
-        .find(|message| role_eq(&message.role, "user"));
-    let last_blocking = pending_messages.iter().rev().find(|message| {
-        (role_eq(&message.role, "assistant") || role_eq(&message.role, "tool"))
-            && contains_error_signal(&message.text)
-    });
-
-    let task_candidate = last_user.and_then(|message| infer_task_from_user_message(&message.text));
-    let current_task = task_candidate
-        .as_ref()
-        .map(|candidate| candidate.normalized.as_str())
-        .and_then(|value| bounded_hint(value, DETERMINISTIC_CONTINUATION_MAX_CHARS))
-        .map(|value| format!("Primary: {value}"));
-
-    let suggested_response = infer_suggested_response(
-        task_candidate.as_ref(),
-        last_user.map(|message| message.text.as_str()),
-        last_blocking.map(|message| message.text.as_str()),
-    );
-
-    DeterministicContinuationHints {
-        current_task,
-        suggested_response,
-    }
-}
-
-#[derive(Debug, Clone)]
-struct TaskCandidate {
-    normalized: String,
-    confidence: f32,
-    has_identifier: bool,
-}
-
-fn infer_task_from_user_message(text: &str) -> Option<TaskCandidate> {
-    let normalized = normalize_sentence_like(text)?;
-    let actionable = contains_action_verb(&normalized);
-    let has_identifier = !extract_identifier_tokens(&normalized, 1).is_empty();
-    let confidence = task_confidence(actionable, has_identifier, &normalized);
-    if confidence < 0.62 {
-        return None;
-    }
-    Some(TaskCandidate {
-        normalized,
-        confidence,
-        has_identifier,
+fn normalize_deterministic_current_task(current_task: Option<String>) -> Option<String> {
+    current_task.and_then(|task| {
+        let trimmed = task.trim();
+        if trimmed.is_empty() {
+            None
+        } else if trimmed.starts_with("Primary:") {
+            Some(trimmed.to_string())
+        } else {
+            Some(format!("Primary: {trimmed}"))
+        }
     })
 }
 
-fn infer_suggested_response(
-    task_candidate: Option<&TaskCandidate>,
-    last_user_text: Option<&str>,
-    last_blocking_text: Option<&str>,
+fn normalize_deterministic_suggested_response(
+    suggested_response: Option<String>,
 ) -> Option<String> {
-    let Some(task) = task_candidate else {
-        return None;
-    };
-    let blocking_identifiers = last_blocking_text
-        .map(|text| extract_identifier_tokens(text, 3))
-        .unwrap_or_default();
-    let user_identifiers = last_user_text
-        .map(|text| extract_identifier_tokens(text, 2))
-        .unwrap_or_default();
-    let has_blocking_signal = last_blocking_text.is_some();
-    let has_identifier = !blocking_identifiers.is_empty() || task.has_identifier;
-    let confidence =
-        suggested_response_confidence(task.confidence, has_blocking_signal, has_identifier);
-    if confidence < DETERMINISTIC_SUGGESTED_RESPONSE_MIN_CONFIDENCE {
-        return None;
-    }
-
-    let response = if has_blocking_signal {
-        let detail = if blocking_identifiers.is_empty() {
-            "the reported error".to_string()
+    suggested_response.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
         } else {
-            blocking_identifiers.join(", ")
-        };
-        format!(
-            "Resolve {detail} and continue: {}",
-            task.normalized.trim_end_matches('.')
-        )
-    } else if user_identifiers.is_empty() {
-        format!(
-            "Proceed with {} and report verification evidence.",
-            task.normalized.trim_end_matches('.')
-        )
-    } else {
-        format!(
-            "Proceed with {} while preserving {}.",
-            task.normalized.trim_end_matches('.'),
-            user_identifiers.join(", ")
-        )
-    };
-
-    bounded_hint(&response, DETERMINISTIC_CONTINUATION_MAX_CHARS)
+            Some(trimmed.to_string())
+        }
+    })
 }
 
-fn role_eq(role: &str, expected: &str) -> bool {
-    role.trim().eq_ignore_ascii_case(expected)
-}
-
-fn normalize_sentence_like(text: &str) -> Option<String> {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        return None;
+fn deterministic_thread_state_updates(
+    record: &OmRecord,
+    scope_key: &str,
+    selected: &[OmObserverMessageCandidate],
+    current_session_id: &str,
+    observation_max_chars: usize,
+) -> Vec<ObserverThreadStateUpdate> {
+    if record.scope == OmScope::Session {
+        return Vec::new();
     }
-    let candidate = normalized
-        .split(['\n', '!', '?', ';'])
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .find(|line| contains_action_verb(line) || !extract_identifier_tokens(line, 1).is_empty())
-        .unwrap_or_else(|| normalized.as_str());
-    bounded_hint(candidate, DETERMINISTIC_CONTINUATION_MAX_CHARS)
-}
-
-fn contains_action_verb(text: &str) -> bool {
-    const ACTION_VERBS: [&str; 30] = [
-        "fix",
-        "add",
-        "update",
-        "implement",
-        "investigate",
-        "debug",
-        "refactor",
-        "remove",
-        "create",
-        "write",
-        "test",
-        "verify",
-        "review",
-        "analyze",
-        "find",
-        "search",
-        "configure",
-        "setup",
-        "migrate",
-        "optimize",
-        "clean",
-        "수정",
-        "구현",
-        "검토",
-        "확인",
-        "분석",
-        "찾",
-        "조사",
-        "개선",
-        "테스트",
-    ];
-    let lowered = text.to_ascii_lowercase();
-    ACTION_VERBS.iter().any(|verb| lowered.contains(verb))
-}
-
-fn contains_error_signal(text: &str) -> bool {
-    const ERROR_SIGNALS: [&str; 18] = [
-        "error",
-        "failed",
-        "failure",
-        "exception",
-        "panic",
-        "traceback",
-        "timeout",
-        "denied",
-        "invalid",
-        "not found",
-        "429",
-        "500",
-        "503",
-        "오류",
-        "실패",
-        "예외",
-        "타임아웃",
-        "에러",
-    ];
-    let lowered = text.to_ascii_lowercase();
-    ERROR_SIGNALS.iter().any(|signal| lowered.contains(signal))
-}
-
-fn task_confidence(actionable: bool, has_identifier: bool, normalized: &str) -> f32 {
-    let mut confidence: f32 = 0.48;
-    if actionable {
-        confidence += 0.23;
+    let mut pending_by_thread = BTreeMap::<String, Vec<OmPendingMessage>>::new();
+    for item in selected {
+        let thread_id = resolve_observer_thread_group_id(
+            record.scope,
+            scope_key,
+            item.source_thread_id.as_deref(),
+            item.source_session_id.as_deref(),
+            current_session_id,
+        );
+        pending_by_thread
+            .entry(thread_id)
+            .or_default()
+            .push(OmPendingMessage {
+                id: item.id.clone(),
+                role: normalize_text(&item.role),
+                text: normalize_text(&item.text),
+                created_at_rfc3339: Some(item.created_at.to_rfc3339()),
+            });
     }
-    if has_identifier {
-        confidence += 0.14;
-    }
-    let word_count = normalized.split_whitespace().count();
-    if (3..=18).contains(&word_count) {
-        confidence += 0.08;
-    }
-    if !normalized.ends_with('?') {
-        confidence += 0.07;
-    }
-    confidence.min(0.95)
-}
-
-fn suggested_response_confidence(
-    task_confidence: f32,
-    has_blocking_signal: bool,
-    has_identifier: bool,
-) -> f32 {
-    let mut confidence: f32 = 0.42 + (task_confidence * 0.4);
-    if has_blocking_signal {
-        confidence += 0.18;
-    }
-    if has_identifier {
-        confidence += 0.09;
-    }
-    confidence.min(0.96)
-}
-
-fn extract_identifier_tokens(text: &str, max_items: usize) -> Vec<String> {
-    let mut out = Vec::<String>::new();
-    let mut seen = std::collections::BTreeSet::<String>::new();
-    for raw in text.split_whitespace() {
-        let candidate = raw.trim_matches(|ch: char| {
-            !ch.is_ascii_alphanumeric() && !matches!(ch, '_' | '-' | '.' | '/' | ':')
+    let mut out = Vec::<ObserverThreadStateUpdate>::new();
+    for (thread_id, pending_messages) in pending_by_thread {
+        let inferred = crate::om::infer_deterministic_observer_response(
+            &record.active_observations,
+            &pending_messages,
+            observation_max_chars,
+        );
+        let current_task = normalize_deterministic_current_task(inferred.current_task);
+        let suggested_response =
+            normalize_deterministic_suggested_response(inferred.suggested_response);
+        if current_task.is_none() && suggested_response.is_none() {
+            continue;
+        }
+        out.push(ObserverThreadStateUpdate {
+            thread_id,
+            current_task,
+            suggested_response,
         });
-        if candidate.len() < 3 || candidate.len() > 96 {
-            continue;
-        }
-        if !looks_like_identifier(candidate) {
-            continue;
-        }
-        let dedupe_key = candidate.to_ascii_lowercase();
-        if seen.insert(dedupe_key) {
-            out.push(candidate.to_string());
-        }
-        if out.len() >= max_items {
-            break;
-        }
     }
     out
-}
-
-fn looks_like_identifier(token: &str) -> bool {
-    if token.contains("::")
-        || token.contains('/')
-        || token.contains('.')
-        || token.contains('_')
-        || token.contains('-')
-        || token.chars().any(|ch| ch.is_ascii_digit())
-    {
-        return true;
-    }
-    let uppercase_count = token.chars().filter(|ch| ch.is_ascii_uppercase()).count();
-    let has_lowercase = token.chars().any(|ch| ch.is_ascii_lowercase());
-    uppercase_count >= 2 && !has_lowercase
-}
-
-fn bounded_hint(text: &str, max_chars: usize) -> Option<String> {
-    let normalized = text.trim();
-    if normalized.is_empty() {
-        return None;
-    }
-    Some(normalized.chars().take(max_chars).collect::<String>())
 }
 
 pub(in crate::session::om) fn llm_observer_response(
@@ -439,7 +258,9 @@ pub(in crate::session::om) fn llm_observer_response(
     if selected.is_empty() {
         return Ok(deterministic_observer_output(
             record,
+            scope_key,
             selected,
+            current_session_id,
             config.text_budget.observation_max_chars,
         ));
     }
@@ -455,7 +276,9 @@ pub(in crate::session::om) fn llm_observer_response(
     if bounded_selected.is_empty() {
         return Ok(deterministic_observer_output(
             record,
+            scope_key,
             selected,
+            current_session_id,
             config.text_budget.observation_max_chars,
         ));
     }
@@ -513,7 +336,9 @@ pub(in crate::session::om) fn llm_observer_response(
     if response.observations.trim().is_empty() {
         return Ok(deterministic_observer_output(
             record,
+            scope_key,
             selected,
+            current_session_id,
             config.text_budget.observation_max_chars,
         ));
     }

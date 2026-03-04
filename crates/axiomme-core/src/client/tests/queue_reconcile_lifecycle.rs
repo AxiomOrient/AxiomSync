@@ -947,7 +947,6 @@ fn initialize_reindexes_when_search_docs_missing_even_with_om_records() {
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -1072,7 +1071,6 @@ fn replay_handles_om_reflection_event_with_cas_and_stale_noop() {
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -1111,7 +1109,6 @@ fn replay_handles_om_reflection_event_with_cas_and_stale_noop() {
     assert!(record.buffered_reflection.is_none());
     assert!(record.buffered_reflection_tokens.is_none());
     assert!(record.buffered_reflection_input_tokens.is_none());
-    assert_eq!(record.reflected_observation_line_count, None);
     assert!(!record.is_reflecting);
     assert!(!record.is_buffering_reflection);
     assert!(
@@ -1174,7 +1171,6 @@ fn replay_handles_om_reflection_buffer_then_apply_with_stale_noop() {
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -1342,7 +1338,6 @@ fn replay_dead_lettered_om_reflect_requested_clears_reflection_flags_when_scope_
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -1458,7 +1453,6 @@ fn replay_dead_lettered_om_reflect_buffer_requested_clears_reflection_flags_when
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -1535,7 +1529,6 @@ fn replay_dead_lettered_om_reflect_requested_does_not_clear_flags_when_generatio
             buffered_reflection: None,
             buffered_reflection_tokens: None,
             buffered_reflection_input_tokens: None,
-            reflected_observation_line_count: None,
             created_at: now,
             updated_at: now,
         })

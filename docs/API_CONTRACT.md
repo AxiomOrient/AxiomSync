@@ -265,8 +265,8 @@ Release gate policy (`collect_release_gate_pack`) is evaluated as `G0..G8`:
   - ontology contract probe test must pass (`axiomme-core` ontology contract probe)
   - ontology default schema contract must parse/compile and match required version (`schema.v1`)
   - ontology invariant check over compiled schema must have zero failures (`invariant_check_failed == 0`)
-  - `crates/axiomme-core/Cargo.toml`의 `episodic` 의존은 semver `0.1.x` 계약을 유지해야 함
-  - `Cargo.lock`의 `episodic` 엔트리는 crates.io registry source여야 함 (`registry+https://github.com/rust-lang/crates.io-index`)
+  - `crates/axiomme-core/Cargo.toml`의 `episodic` 의존은 semver `0.2.x` + exact git rev 계약을 유지해야 함
+  - `Cargo.lock`의 `episodic` 엔트리는 git source prefix 계약을 만족해야 함 (`git+https://github.com/AxiomOrient/episodic.git`)
 - `G1` build quality: `cargo check --workspace`, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -D warnings`
   - host command policy:
     - `AXIOMME_HOST_TOOLS=on|off` overrides host process execution.
@@ -450,24 +450,32 @@ Notes:
     "data": {
       "policy": {
         "required_major": 0,
-        "required_minor": 1,
-        "required_lock_source_prefix": "registry+https://github.com/rust-lang/crates.io-index",
-        "allowed_manifest_operators": ["exact", "caret", "tilde"]
+        "required_minor": 2,
+        "required_lock_source_prefix": "git+https://github.com/AxiomOrient/episodic.git",
+        "allowed_manifest_operators": ["exact_rev"],
+        "required_git_url": "https://github.com/AxiomOrient/episodic.git",
+        "required_git_rev": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5"
       },
       "contract_probe": {"test_name":"...", "command_ok":true, "matched":true, "output_excerpt":"...", "passed":true},
       "episodic_api_probe": {"test_name":"...", "command_ok":true, "matched":true, "output_excerpt":"...", "passed":true},
       "episodic_semver_probe": {
         "passed": true,
         "error": null,
-        "manifest_req": "0.1.0",
+        "manifest_req": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
         "manifest_req_ok": true,
+        "manifest_git": "https://github.com/AxiomOrient/episodic.git",
+        "manifest_git_ok": true,
+        "manifest_rev": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+        "manifest_rev_ok": true,
         "manifest_uses_path": false,
-        "manifest_uses_git": false,
+        "manifest_uses_git": true,
         "manifest_source_ok": true,
-        "lock_version": "0.1.0",
+        "lock_version": "0.2.0",
         "lock_version_ok": true,
-        "lock_source": "registry+https://github.com/rust-lang/crates.io-index",
-        "lock_source_ok": true
+        "lock_source": "git+https://github.com/AxiomOrient/episodic.git?rev=53dfe97bc7df8e32dbee5f7b2be862a6da9171c5#53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+        "lock_source_ok": true,
+        "lock_revision": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+        "lock_revision_ok": true
       }
     }
   },

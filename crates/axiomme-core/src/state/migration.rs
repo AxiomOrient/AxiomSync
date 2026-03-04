@@ -8,7 +8,7 @@ use crate::om::{OM_PROTOCOL_VERSION, OmOriginType, OmRecord, resolve_canonical_t
 use super::SqliteStateStore;
 
 const OM_V2_MIGRATION_APPLIED_AT_KEY: &str = "om_v2_one_shot_migration_applied_at";
-const OM_V2_REQUIRED_EPISODIC_REV: &str = "9f4c075bf26b81c8a81fbb6539c46ec20ea8a181";
+const OM_V2_REQUIRED_EPISODIC_REV: &str = "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5";
 
 const MIGRATION_SCHEMA_SQL: &str = r"
     PRAGMA journal_mode = WAL;
@@ -295,6 +295,24 @@ impl SqliteStateStore {
             "om_records",
             "reflector_trigger_count_total",
             "unsupported om_records schema: reflector_trigger_count_total is missing; reset workspace state database",
+        )?;
+        ensure_required_column(
+            &conn,
+            "om_records",
+            "buffered_reflection_tokens",
+            "unsupported om_records schema: buffered_reflection_tokens is missing; reset workspace state database",
+        )?;
+        ensure_required_column(
+            &conn,
+            "om_records",
+            "buffered_reflection_input_tokens",
+            "unsupported om_records schema: buffered_reflection_input_tokens is missing; reset workspace state database",
+        )?;
+        ensure_required_column(
+            &conn,
+            "om_records",
+            "reflected_observation_line_count",
+            "unsupported om_records schema: reflected_observation_line_count is missing; reset workspace state database",
         )?;
         ensure_required_column(
             &conn,

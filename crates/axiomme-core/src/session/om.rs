@@ -13,19 +13,20 @@ use crate::om::{
     OmObserverMessageCandidate, OmObserverPromptInput, OmObserverRequest, OmObserverResponse,
     OmObserverThreadMessages, OmOriginType, OmPendingMessage, OmRecord, OmReflectionCommandType,
     OmScope, ReflectionEnqueueDecision, ResolvedOmConfig, aggregate_multi_thread_observer_sections,
-    build_multi_thread_observer_system_prompt, build_multi_thread_observer_user_prompt,
-    build_observer_prompt_contract_v2, build_observer_system_prompt, build_observer_user_prompt,
-    build_other_conversation_blocks, combine_observations_for_buffering,
-    filter_observer_candidates_by_last_observed_at, format_observer_messages_for_prompt,
-    om_observer_error, om_status_kind, parse_memory_section_xml_accuracy_first,
-    parse_multi_thread_observer_output_accuracy_first, resolve_canonical_thread_id,
-    resolve_observer_model_enabled, select_observed_message_candidates,
-    select_observer_message_candidates, split_pending_and_other_conversation_candidates,
-    synthesize_observer_observations,
+    build_multi_thread_observer_prompt_contract_v2, build_multi_thread_observer_system_prompt,
+    build_multi_thread_observer_user_prompt, build_observer_prompt_contract_v2,
+    build_observer_system_prompt, build_observer_user_prompt, build_other_conversation_blocks,
+    combine_observations_for_buffering, filter_observer_candidates_by_last_observed_at,
+    format_observer_messages_for_prompt, om_observer_error, om_status_kind,
+    parse_memory_section_xml_accuracy_first, parse_multi_thread_observer_output_accuracy_first,
+    resolve_canonical_thread_id, resolve_observer_model_enabled,
+    select_observed_message_candidates, select_observer_message_candidates,
+    split_pending_and_other_conversation_candidates,
 };
 use crate::om_bridge::{
     OmObserveBufferRequestedV1, OmReflectBufferRequestedV1, OmReflectRequestedV1,
 };
+use crate::state::OmContinuationHints;
 
 use super::Session;
 #[cfg(test)]
@@ -181,6 +182,7 @@ struct ObserverBatchTask {
     index: usize,
     threads: Vec<OmObserverThreadMessages>,
     known_ids: Vec<String>,
+    known_ids_by_thread: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -372,8 +374,11 @@ impl Session {
             }
         }
 
-        let unobserved_candidates =
+        let mut unobserved_candidates =
             filter_observer_candidates_by_last_observed_at(&candidates, last_observed_at);
+        if let Some(cursor) = last_observed_at {
+            unobserved_candidates.retain(|candidate| candidate.created_at > cursor);
+        }
         let candidate_pool = if strict_cursor_filtering {
             &unobserved_candidates
         } else if unobserved_candidates.is_empty() {
@@ -473,7 +478,11 @@ impl Session {
             &observer_output,
             options.skip_continuation_hints,
         )?;
-        self.upsert_observer_thread_states(context, &observer_output)?;
+        self.upsert_observer_thread_states(
+            context,
+            &observer_output,
+            options.skip_continuation_hints,
+        )?;
         self.append_observer_chunk(
             context,
             options,
@@ -517,8 +526,10 @@ impl Session {
             self.state.upsert_om_continuation_state(
                 context.scope_key,
                 &canonical_thread_id,
-                current_task.as_deref(),
-                suggested_response.as_deref(),
+                OmContinuationHints {
+                    current_task: current_task.as_deref(),
+                    suggested_response: suggested_response.as_deref(),
+                },
                 continuation_confidence(current_task.as_deref(), suggested_response.as_deref()),
                 source_kind,
                 Some(context.now),
@@ -578,8 +589,10 @@ impl Session {
             self.state.upsert_om_continuation_state(
                 context.scope_key,
                 &canonical_thread_id,
-                current_task.as_deref(),
-                suggested_response.as_deref(),
+                OmContinuationHints {
+                    current_task: current_task.as_deref(),
+                    suggested_response: suggested_response.as_deref(),
+                },
                 continuation_confidence(current_task.as_deref(), suggested_response.as_deref()),
                 source_kind,
                 Some(context.now),
@@ -592,10 +605,12 @@ impl Session {
         &self,
         context: ObserverRunContext<'_>,
         observer_output: &ResolvedObserverOutput,
+        skip_continuation_hints: bool,
     ) -> Result<()> {
         if context.scope == OmScope::Session {
             return Ok(());
         }
+        let allow_suggested_response = !skip_continuation_hints;
         let primary_thread_id = resolve_observer_thread_group_id(
             context.scope,
             context.scope_key,
@@ -630,11 +645,19 @@ impl Session {
             let (current_task, suggested_response) = match state {
                 Some(value) => (
                     value.current_task.as_deref(),
-                    value.suggested_response.as_deref(),
+                    if allow_suggested_response {
+                        value.suggested_response.as_deref()
+                    } else {
+                        None
+                    },
                 ),
                 None if thread_id == &primary_thread_id => (
                     observer_output.response.current_task.as_deref(),
-                    observer_output.response.suggested_response.as_deref(),
+                    if allow_suggested_response {
+                        observer_output.response.suggested_response.as_deref()
+                    } else {
+                        None
+                    },
                 ),
                 None => (None, None),
             };
@@ -652,7 +675,11 @@ impl Session {
                 &thread_id,
                 None,
                 state.current_task.as_deref(),
-                state.suggested_response.as_deref(),
+                if allow_suggested_response {
+                    state.suggested_response.as_deref()
+                } else {
+                    None
+                },
             )?;
         }
         Ok(())

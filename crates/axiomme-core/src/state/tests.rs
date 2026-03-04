@@ -119,6 +119,31 @@ fn index_state_remove_prefix_and_clear() {
 }
 
 #[test]
+fn index_state_remove_prefix_treats_like_wildcards_as_literals() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp.path().join("state.db");
+    let store = SqliteStateStore::open(db_path).expect("open failed");
+
+    store
+        .upsert_index_state("axiom://resources/demo_%v1", "h0", 1, "indexed")
+        .expect("upsert root");
+    store
+        .upsert_index_state("axiom://resources/demo_%v1/a.md", "h1", 1, "indexed")
+        .expect("upsert expected child");
+    store
+        .upsert_index_state("axiom://resources/demoXav1/keep.md", "h2", 1, "indexed")
+        .expect("upsert wildcard-like sibling");
+
+    let removed = store
+        .remove_index_state_with_prefix("axiom://resources/demo_%v1")
+        .expect("remove prefix");
+    assert_eq!(removed, 2);
+
+    let uris = store.list_index_state_uris().expect("list");
+    assert_eq!(uris, vec!["axiom://resources/demoXav1/keep.md".to_string()]);
+}
+
+#[test]
 fn index_state_roundtrip_returns_hash_and_mtime() {
     let temp = tempdir().expect("tempdir");
     let db_path = temp.path().join("state.db");
@@ -277,7 +302,6 @@ fn om_v2_migration_dry_run_reports_plan_without_writes() {
         buffered_reflection: None,
         buffered_reflection_tokens: None,
         buffered_reflection_input_tokens: None,
-        reflected_observation_line_count: None,
         created_at: now,
         updated_at: now,
     };
@@ -355,7 +379,6 @@ fn om_v2_migration_apply_is_idempotent() {
         buffered_reflection: None,
         buffered_reflection_tokens: None,
         buffered_reflection_input_tokens: None,
-        reflected_observation_line_count: None,
         created_at: now,
         updated_at: now,
     };
@@ -392,7 +415,7 @@ fn om_v2_migration_apply_is_idempotent() {
     assert_eq!(entries_count, 1);
     assert_eq!(continuation_count, 1);
     assert_eq!(protocol_version, OM_PROTOCOL_VERSION);
-    assert_eq!(episodic_rev, "9f4c075bf26b81c8a81fbb6539c46ec20ea8a181");
+    assert_eq!(episodic_rev, "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5");
     drop(conn);
 
     let marker = store
@@ -441,7 +464,6 @@ fn open_rejects_om_record_schema_without_required_columns() {
                     buffered_reflection TEXT,
                     buffered_reflection_tokens INTEGER,
                     buffered_reflection_input_tokens INTEGER,
-                    reflected_observation_line_count INTEGER,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -468,6 +490,76 @@ fn open_rejects_om_record_schema_without_required_columns() {
     assert!(
         err.to_string()
             .contains("unsupported om_records schema: last_activated_message_ids_json is missing"),
+        "unexpected error message: {err}"
+    );
+}
+
+#[test]
+fn open_rejects_om_record_schema_without_reflected_observation_line_count() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp
+        .path()
+        .join("om-missing-reflected-observation-line-count.db");
+    let now = Utc::now().to_rfc3339();
+
+    {
+        let conn = Connection::open(&db_path).expect("open db");
+        conn.execute_batch(
+            r"
+                CREATE TABLE IF NOT EXISTS om_records (
+                    id TEXT PRIMARY KEY,
+                    scope TEXT NOT NULL CHECK(scope IN ('session', 'thread', 'resource')),
+                    scope_key TEXT NOT NULL UNIQUE,
+                    session_id TEXT,
+                    thread_id TEXT,
+                    resource_id TEXT,
+                    generation_count INTEGER NOT NULL DEFAULT 0,
+                    last_applied_outbox_event_id INTEGER,
+                    origin_type TEXT NOT NULL CHECK(origin_type IN ('initial', 'reflection')),
+                    active_observations TEXT NOT NULL DEFAULT '',
+                    observation_token_count INTEGER NOT NULL DEFAULT 0,
+                    pending_message_tokens INTEGER NOT NULL DEFAULT 0,
+                    last_observed_at TEXT,
+                    current_task TEXT,
+                    suggested_response TEXT,
+                    last_activated_message_ids_json TEXT NOT NULL DEFAULT '[]',
+                    observer_trigger_count_total INTEGER NOT NULL DEFAULT 0,
+                    reflector_trigger_count_total INTEGER NOT NULL DEFAULT 0,
+                    is_observing INTEGER NOT NULL DEFAULT 0,
+                    is_reflecting INTEGER NOT NULL DEFAULT 0,
+                    is_buffering_observation INTEGER NOT NULL DEFAULT 0,
+                    is_buffering_reflection INTEGER NOT NULL DEFAULT 0,
+                    last_buffered_at_tokens INTEGER NOT NULL DEFAULT 0,
+                    last_buffered_at_time TEXT,
+                    buffered_reflection TEXT,
+                    buffered_reflection_tokens INTEGER,
+                    buffered_reflection_input_tokens INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                ",
+        )
+        .expect("create om table without reflected_observation_line_count");
+        conn.execute(
+            r"
+                INSERT INTO om_records(
+                    id, scope, scope_key, session_id, origin_type,
+                    active_observations, observation_token_count, pending_message_tokens,
+                    created_at, updated_at
+                )
+                VALUES(?1, 'session', 'session:s2', 's2', 'initial', 'observation', 10, 20, ?2, ?2)
+                ",
+            params!["record-missing-reflect-count", now],
+        )
+        .expect("insert om row");
+    }
+
+    let err = SqliteStateStore::open(&db_path)
+        .expect_err("must reject om_records schema without reflected_observation_line_count");
+    assert_eq!(err.code(), "VALIDATION_FAILED");
+    assert!(
+        err.to_string()
+            .contains("unsupported om_records schema: reflected_observation_line_count is missing"),
         "unexpected error message: {err}"
     );
 }
@@ -507,7 +599,6 @@ fn om_record_upsert_and_fetch_by_scope_key() {
         buffered_reflection: None,
         buffered_reflection_tokens: None,
         buffered_reflection_input_tokens: None,
-        reflected_observation_line_count: None,
         created_at: now,
         updated_at: now,
     };
@@ -713,8 +804,10 @@ fn om_continuation_states_upsert_and_resolve_preferred_thread() {
         .upsert_om_continuation_state(
             "resource:r-continuation",
             "t-main",
-            Some("Primary: debug auth"),
-            Some("Reply with token scope check"),
+            OmContinuationHints {
+                current_task: Some("Primary: debug auth"),
+                suggested_response: Some("Reply with token scope check"),
+            },
             0.92,
             "observer",
             Some(now),
@@ -724,8 +817,10 @@ fn om_continuation_states_upsert_and_resolve_preferred_thread() {
         .upsert_om_continuation_state(
             "resource:r-continuation",
             "t-alt",
-            Some("Primary: review migration"),
-            Some("Reply with migration status"),
+            OmContinuationHints {
+                current_task: Some("Primary: review migration"),
+                suggested_response: Some("Reply with migration status"),
+            },
             0.88,
             "observer",
             Some(now + Duration::seconds(1)),
@@ -735,8 +830,10 @@ fn om_continuation_states_upsert_and_resolve_preferred_thread() {
         .upsert_om_continuation_state(
             "resource:r-continuation",
             "t-main",
-            Some("Primary: debug auth v2"),
-            None,
+            OmContinuationHints {
+                current_task: Some("Primary: debug auth v2"),
+                suggested_response: None,
+            },
             0.82,
             "observer_interval",
             Some(now + Duration::seconds(2)),
@@ -772,7 +869,7 @@ fn om_continuation_states_upsert_and_resolve_preferred_thread() {
         .expect("continuation row")
     };
     assert_eq!(row.0.as_deref(), Some("Primary: debug auth v2"));
-    assert_eq!(row.1, "observer_interval");
+    assert_eq!(row.1, "observer_llm");
 }
 
 #[test]
@@ -814,7 +911,6 @@ fn om_reflection_apply_uses_generation_cas_and_event_idempotency() {
         buffered_reflection: None,
         buffered_reflection_tokens: None,
         buffered_reflection_input_tokens: None,
-        reflected_observation_line_count: None,
         created_at: now,
         updated_at: now,
     };
@@ -846,7 +942,6 @@ fn om_reflection_apply_uses_generation_cas_and_event_idempotency() {
     assert_eq!(fetched.buffered_reflection, None);
     assert_eq!(fetched.buffered_reflection_tokens, None);
     assert_eq!(fetched.buffered_reflection_input_tokens, None);
-    assert_eq!(fetched.reflected_observation_line_count, None);
     assert!(!fetched.is_reflecting);
     assert!(!fetched.is_buffering_reflection);
     let (covers_entry_ids_json, reflection_entry_id): (String, String) = {
@@ -983,7 +1078,6 @@ fn om_reflection_buffer_apply_uses_generation_cas() {
         buffered_reflection: None,
         buffered_reflection_tokens: None,
         buffered_reflection_input_tokens: None,
-        reflected_observation_line_count: None,
         created_at: now,
         updated_at: now,
     };
@@ -1010,7 +1104,6 @@ fn om_reflection_buffer_apply_uses_generation_cas() {
     assert_eq!(fetched.buffered_reflection.as_deref(), Some("buffered"));
     assert_eq!(fetched.buffered_reflection_tokens, Some(11));
     assert_eq!(fetched.buffered_reflection_input_tokens, Some(22));
-    assert_eq!(fetched.reflected_observation_line_count, None);
     assert_eq!(fetched.current_task, None);
     assert_eq!(fetched.suggested_response, None);
     assert!(!fetched.is_buffering_reflection);
@@ -1089,7 +1182,6 @@ fn om_observation_chunks_roundtrip_and_clear_by_seq() {
         buffered_reflection: None,
         buffered_reflection_tokens: None,
         buffered_reflection_input_tokens: None,
-        reflected_observation_line_count: None,
         created_at: now,
         updated_at: now,
     };
@@ -1165,10 +1257,10 @@ fn om_observation_chunks_roundtrip_and_clear_by_seq() {
         out
     };
     assert_eq!(entry_rows.len(), 2);
-    assert_eq!(entry_rows[0].0, "observation:chunk-1:1:0");
+    assert_eq!(entry_rows[0].0, "observation:chunk-1");
     assert_eq!(entry_rows[0].1, "s-chunk");
     assert_eq!(entry_rows[0].2, "obs-1");
-    assert_eq!(entry_rows[1].0, "observation:chunk-2:2:0");
+    assert_eq!(entry_rows[1].0, "observation:chunk-2");
     assert_eq!(entry_rows[1].1, "s-chunk");
     assert_eq!(entry_rows[1].2, "obs-2");
 
@@ -1219,7 +1311,6 @@ fn om_observation_chunk_event_cas_blocks_duplicate_replay() {
         buffered_reflection: None,
         buffered_reflection_tokens: None,
         buffered_reflection_input_tokens: None,
-        reflected_observation_line_count: None,
         created_at: now,
         updated_at: now,
     };
@@ -1267,6 +1358,78 @@ fn om_observation_chunk_event_cas_blocks_duplicate_replay() {
         .expect("count observation entries")
     };
     assert_eq!(observation_entries_count, 1);
+}
+
+#[test]
+fn om_observation_chunk_event_cas_rejects_mismatched_record_id() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp.path().join("state.db");
+    let store = SqliteStateStore::open(db_path).expect("open failed");
+    let now = Utc::now();
+
+    let record = OmRecord {
+        id: "record-obs-cas-mismatch".to_string(),
+        scope: OmScope::Session,
+        scope_key: "session:s-obs-cas-mismatch".to_string(),
+        session_id: Some("s-obs-cas-mismatch".to_string()),
+        thread_id: None,
+        resource_id: None,
+        generation_count: 5,
+        last_applied_outbox_event_id: None,
+        origin_type: OmOriginType::Initial,
+        active_observations: String::new(),
+        observation_token_count: 0,
+        pending_message_tokens: 0,
+        last_observed_at: None,
+        current_task: None,
+        suggested_response: None,
+        last_activated_message_ids: Vec::new(),
+        observer_trigger_count_total: 0,
+        reflector_trigger_count_total: 0,
+        is_observing: false,
+        is_reflecting: false,
+        is_buffering_observation: false,
+        is_buffering_reflection: false,
+        last_buffered_at_tokens: 0,
+        last_buffered_at_time: None,
+        buffered_reflection: None,
+        buffered_reflection_tokens: None,
+        buffered_reflection_input_tokens: None,
+        created_at: now,
+        updated_at: now,
+    };
+    store.upsert_om_record(&record).expect("upsert record");
+
+    let chunk = OmObservationChunk {
+        id: "chunk-cas-mismatch".to_string(),
+        record_id: "record-other".to_string(),
+        seq: 1,
+        cycle_id: "cycle-mismatch".to_string(),
+        observations: "obs-cas".to_string(),
+        token_count: 9,
+        message_tokens: 99,
+        message_ids: vec!["m-cas-1".to_string()],
+        last_observed_at: now,
+        created_at: now,
+    };
+
+    let err = store
+        .append_om_observation_chunk_with_event_cas(
+            "session:s-obs-cas-mismatch",
+            5,
+            778,
+            &chunk,
+        )
+        .expect_err("must reject mismatched record id");
+    assert!(matches!(err, AxiomError::Validation(_)));
+    assert!(
+        !store.om_observer_event_applied(778).expect("marker lookup"),
+        "event marker must not be persisted on validation error"
+    );
+    let chunks = store
+        .list_om_observation_chunks("record-obs-cas-mismatch")
+        .expect("list chunks");
+    assert!(chunks.is_empty(), "chunk insert must be rolled back");
 }
 
 #[test]
@@ -2013,7 +2176,6 @@ fn om_status_snapshot_aggregates_tokens_flags_and_trigger_counts() {
         buffered_reflection: None,
         buffered_reflection_tokens: None,
         buffered_reflection_input_tokens: None,
-        reflected_observation_line_count: None,
         created_at: now,
         updated_at: now,
     };
@@ -2049,7 +2211,6 @@ fn om_status_snapshot_aggregates_tokens_flags_and_trigger_counts() {
         buffered_reflection: None,
         buffered_reflection_tokens: None,
         buffered_reflection_input_tokens: None,
-        reflected_observation_line_count: None,
         created_at: now,
         updated_at: now,
     };

@@ -6,6 +6,7 @@ use super::env::{
 };
 
 const ENV_OM_ENABLED: &str = "AXIOMME_OM_ENABLED";
+const ENV_OM_HINT_READER: &str = "AXIOMME_OM_HINT_READER";
 const ENV_OM_SCOPE: &str = "AXIOMME_OM_SCOPE";
 const ENV_OM_SCOPE_THREAD_ID: &str = "AXIOMME_OM_SCOPE_THREAD_ID";
 const ENV_OM_SCOPE_RESOURCE_ID: &str = "AXIOMME_OM_SCOPE_RESOURCE_ID";
@@ -55,10 +56,34 @@ const DEFAULT_OM_RESOURCE_SCOPE_CROSS_SESSION_LIMIT: usize = 4;
 const DEFAULT_OM_OBSERVATION_MAX_CHARS: usize = 4_000;
 const DEFAULT_OM_OBSERVER_OTHER_CONVERSATION_MAX_PART_CHARS: usize = 500;
 const DEFAULT_OM_REFLECTOR_MAX_CHARS: usize = 1_200;
+const DEFAULT_OM_HINT_READER: &str = "snapshot_v2";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OmHintReaderMode {
+    None,
+    SnapshotV2,
+}
+
+impl OmHintReaderMode {
+    #[must_use]
+    fn from_env(raw: Option<&str>) -> Self {
+        match raw
+            .unwrap_or(DEFAULT_OM_HINT_READER)
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "none" | "off" | "false" | "0" | "disabled" => Self::None,
+            "snapshot_v2" | "v2" | "on" | "true" | "1" | "enabled" => Self::SnapshotV2,
+            _ => Self::SnapshotV2,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct OmConfig {
     pub(crate) enabled: bool,
+    pub(crate) hint_reader: OmHintReaderMode,
     pub(crate) scope: OmScopeConfig,
     pub(crate) limits: OmRuntimeLimitsConfig,
     pub(crate) runtime_env: OmRuntimeEnvConfig,
@@ -71,6 +96,9 @@ impl OmConfig {
     pub(super) fn from_env() -> Self {
         Self {
             enabled: parse_enabled_default_true(std::env::var(ENV_OM_ENABLED).ok().as_deref()),
+            hint_reader: OmHintReaderMode::from_env(
+                std::env::var(ENV_OM_HINT_READER).ok().as_deref(),
+            ),
             scope: OmScopeConfig::from_env(),
             limits: OmRuntimeLimitsConfig::from_env(),
             runtime_env: OmRuntimeEnvConfig::from_env(),
@@ -84,6 +112,7 @@ impl Default for OmConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            hint_reader: OmHintReaderMode::SnapshotV2,
             scope: OmScopeConfig::default(),
             limits: OmRuntimeLimitsConfig::default(),
             runtime_env: OmRuntimeEnvConfig::default(),
@@ -305,5 +334,42 @@ impl Default for OmReflectorConfigSnapshot {
             llm_buffer_activation: None,
             max_chars: DEFAULT_OM_REFLECTOR_MAX_CHARS,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OmHintReaderMode;
+
+    #[test]
+    fn om_hint_reader_mode_defaults_to_snapshot_v2() {
+        assert_eq!(
+            OmHintReaderMode::from_env(None),
+            OmHintReaderMode::SnapshotV2
+        );
+        assert_eq!(
+            OmHintReaderMode::from_env(Some("unknown")),
+            OmHintReaderMode::SnapshotV2
+        );
+    }
+
+    #[test]
+    fn om_hint_reader_mode_parses_none_and_snapshot_v2_tokens() {
+        assert_eq!(
+            OmHintReaderMode::from_env(Some("none")),
+            OmHintReaderMode::None
+        );
+        assert_eq!(
+            OmHintReaderMode::from_env(Some("off")),
+            OmHintReaderMode::None
+        );
+        assert_eq!(
+            OmHintReaderMode::from_env(Some("snapshot_v2")),
+            OmHintReaderMode::SnapshotV2
+        );
+        assert_eq!(
+            OmHintReaderMode::from_env(Some("v2")),
+            OmHintReaderMode::SnapshotV2
+        );
     }
 }
