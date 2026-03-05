@@ -680,63 +680,6 @@ fn validate_status_domain(
     )))
 }
 
-fn outbox_status_domain_values() -> [&'static str; 4] {
-    [
-        QueueEventStatus::New.as_str(),
-        QueueEventStatus::Processing.as_str(),
-        QueueEventStatus::Done.as_str(),
-        QueueEventStatus::DeadLetter.as_str(),
-    ]
-}
-
-fn reconcile_run_status_domain_values() -> [&'static str; 4] {
-    [
-        ReconcileRunStatus::Running.as_str(),
-        ReconcileRunStatus::DryRun.as_str(),
-        ReconcileRunStatus::Success.as_str(),
-        ReconcileRunStatus::Failed.as_str(),
-    ]
-}
-
-fn normalize_status_column(conn: &Connection, table: &str, column: &str) -> Result<()> {
-    conn.execute(
-        &format!(
-            "UPDATE {table} SET {column} = lower(trim({column})) WHERE {column} <> lower(trim({column}))"
-        ),
-        [],
-    )?;
-    Ok(())
-}
-
-fn validate_status_domain(
-    conn: &Connection,
-    table: &str,
-    column: &str,
-    allowed: &[&str],
-    error_prefix: &str,
-) -> Result<()> {
-    let mut stmt = conn.prepare(&format!("SELECT DISTINCT {column} FROM {table}"))?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-    let mut invalid = Vec::<String>::new();
-    for row in rows {
-        let value = row?.trim().to_ascii_lowercase();
-        if !allowed.contains(&value.as_str()) {
-            invalid.push(value);
-        }
-    }
-
-    if invalid.is_empty() {
-        return Ok(());
-    }
-
-    invalid.sort();
-    invalid.dedup();
-    Err(AxiomError::Validation(format!(
-        "{error_prefix}: invalid status value(s): {}",
-        invalid.join(", ")
-    )))
-}
-
 fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;

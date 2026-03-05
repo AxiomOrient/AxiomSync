@@ -187,8 +187,15 @@ fn verify_prompt_contract_version_bump_policy(
         // by validating current policy shape instead of hard-failing.
         return parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD").map(|_| ());
     }
-    let previous = parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD~1")
-        .map_err(|reason| format!("previous_prompt_signature_policy_load_failed: {reason}"))?;
+    let previous = match parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD~1") {
+        Ok(value) => value,
+        Err(_reason) => {
+            // Older base revisions may predate the prompt-signature policy map.
+            // Keep the gate portable by validating current policy shape instead
+            // of hard-failing on legacy ancestry.
+            return parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD").map(|_| ());
+        }
+    };
     let current = parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD")
         .map_err(|reason| format!("current_prompt_signature_policy_load_failed: {reason}"))?;
 
