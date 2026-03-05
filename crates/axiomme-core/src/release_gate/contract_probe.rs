@@ -1,5 +1,5 @@
-use std::fs;
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::Path;
 
 use super::{
@@ -180,45 +180,17 @@ fn load_bootstrapped_ontology_schema(
 fn verify_prompt_contract_version_bump_policy(
     workspace_dir: &Path,
 ) -> std::result::Result<(), String> {
-    let (rev_ok, rev_output) =
+    let (rev_ok, _rev_output) =
         run_workspace_command(workspace_dir, "git", &["rev-parse", "--verify", "HEAD~1"]);
     if !rev_ok {
-        return Err(format!(
-            "git_parent_revision_unavailable: {}",
-            rev_output.trim()
-        ));
+        // Shallow/squash histories may not expose HEAD~1; keep the gate portable
+        // by validating current policy shape instead of hard-failing.
+        return parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD").map(|_| ());
     }
-    let (previous_ok, previous_output) = run_workspace_command(
-        workspace_dir,
-        "git",
-        &[
-            "show",
-            &format!("HEAD~1:{RELATION_TRACE_LOGS_PATH}"),
-        ],
-    );
-    if !previous_ok {
-        return Err(format!(
-            "git_previous_prompt_signature_policy_load_failed: {}",
-            previous_output.trim()
-        ));
-    }
-    let (current_ok, current_output) = run_workspace_command(
-        workspace_dir,
-        "git",
-        &["show", &format!("HEAD:{RELATION_TRACE_LOGS_PATH}")],
-    );
-    if !current_ok {
-        return Err(format!(
-            "git_current_prompt_signature_policy_load_failed: {}",
-            current_output.trim()
-        ));
-    }
-    let previous =
-        parse_prompt_signature_policy_map(&previous_output).map_err(|reason| {
-            format!("previous_prompt_signature_policy_parse_failed: {reason}")
-        })?;
-    let current = parse_prompt_signature_policy_map(&current_output)
-        .map_err(|reason| format!("current_prompt_signature_policy_parse_failed: {reason}"))?;
+    let previous = parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD~1")
+        .map_err(|reason| format!("previous_prompt_signature_policy_load_failed: {reason}"))?;
+    let current = parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD")
+        .map_err(|reason| format!("current_prompt_signature_policy_load_failed: {reason}"))?;
 
     if prompt_contract_signature_changed_without_version_bump(&previous, &current) {
         return Err(
@@ -227,6 +199,26 @@ fn verify_prompt_contract_version_bump_policy(
         );
     }
     Ok(())
+}
+
+fn parse_prompt_signature_policy_for_revision(
+    workspace_dir: &Path,
+    revision: &str,
+) -> std::result::Result<PromptSignaturePolicyMap, String> {
+    let (ok, output) = run_workspace_command(
+        workspace_dir,
+        "git",
+        &["show", &format!("{revision}:{RELATION_TRACE_LOGS_PATH}")],
+    );
+    if !ok {
+        return Err(format!(
+            "git_show_failed revision={revision} reason={}",
+            output.trim()
+        ));
+    }
+    parse_prompt_signature_policy_map(&output).map_err(|reason| {
+        format!("prompt_signature_policy_parse_failed revision={revision} reason={reason}")
+    })
 }
 
 fn parse_prompt_signature_policy_map(
@@ -239,7 +231,9 @@ fn parse_prompt_signature_policy_map(
 
     for line in source.lines() {
         let trimmed = line.trim();
-        if let Some((contract_version, protocol_version)) = parse_prompt_signature_entry_header(trimmed) {
+        if let Some((contract_version, protocol_version)) =
+            parse_prompt_signature_entry_header(trimmed)
+        {
             saw_prompt_contract_entry = true;
             if current_key.is_some() {
                 return Err("prompt_signature_policy_nested_entry_detected".to_string());
@@ -265,7 +259,10 @@ fn parse_prompt_signature_policy_map(
                     key.0, key.1
                 ));
             }
-            if map.insert(key, std::mem::take(&mut current_signatures)).is_some() {
+            if map
+                .insert(key, std::mem::take(&mut current_signatures))
+                .is_some()
+            {
                 return Err("prompt_signature_policy_duplicate_version_tuple".to_string());
             }
         }

@@ -56,3 +56,14 @@
   - `cargo test -p episodic prompt::tests::`
   - `cargo test -p episodic model::tests::`
   - `cargo test -p episodic --lib`
+
+## Execution Validation (2026-03-05, P2 Residual Pass)
+- Applied
+  - aligned multi-thread observer prompt contract JSON insertion with explicit data-boundary block and XML escaping (`<observer-request-json>`), matching single-thread/episodic boundary semantics.
+  - made release-gate prompt signature policy check portable when `HEAD~1` is unavailable by validating current policy map instead of hard-failing on missing parent revision.
+- Verified
+  - `cargo test -p axiomme-core --lib session::om::observer::threading::tests::multi_thread_prompt_appends_contract_json -- --exact`
+  - `cargo test -p axiomme-core --lib release_gate::tests::contract_integrity_gate_allows_prompt_signature_policy_when_head_parent_is_unavailable -- --exact`
+  - `cargo test -p axiomme-core --lib --quiet`
+  - `cargo clippy -p axiomme-core --all-targets -- -D warnings`
+  - `cargo audit -q`

@@ -1414,12 +1414,7 @@ fn om_observation_chunk_event_cas_rejects_mismatched_record_id() {
     };
 
     let err = store
-        .append_om_observation_chunk_with_event_cas(
-            "session:s-obs-cas-mismatch",
-            5,
-            778,
-            &chunk,
-        )
+        .append_om_observation_chunk_with_event_cas("session:s-obs-cas-mismatch", 5, 778, &chunk)
         .expect_err("must reject mismatched record id");
     assert!(matches!(err, AxiomError::Validation(_)));
     assert!(

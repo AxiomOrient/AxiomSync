@@ -236,7 +236,7 @@ pub(super) fn episodic_lock_version_contract_matches(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_lockfile_episodic_dependency, EPISODIC_LOCK_SOURCE_PREFIX, EPISODIC_REQUIRED_GIT_REV,
+        EPISODIC_LOCK_SOURCE_PREFIX, EPISODIC_REQUIRED_GIT_REV, parse_lockfile_episodic_dependency,
     };
 
     #[test]
@@ -254,15 +254,11 @@ version = "0.2.0"
 source = "{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}"
 "#
         );
-        let parsed =
-            parse_lockfile_episodic_dependency(&lockfile).expect("parse lock dependency");
+        let parsed = parse_lockfile_episodic_dependency(&lockfile).expect("parse lock dependency");
         let expected_source = format!("{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}");
         assert_eq!(parsed.version, "0.2.0");
         assert_eq!(parsed.source.as_deref(), Some(expected_source.as_str()));
-        assert_eq!(
-            parsed.revision.as_deref(),
-            Some(EPISODIC_REQUIRED_GIT_REV)
-        );
+        assert_eq!(parsed.revision.as_deref(), Some(EPISODIC_REQUIRED_GIT_REV));
     }
 
     #[test]
@@ -280,8 +276,7 @@ version = "0.1.9"
 source = "{EPISODIC_LOCK_SOURCE_PREFIX}#oldrev"
 "#
         );
-        let err =
-            parse_lockfile_episodic_dependency(&lockfile).expect_err("must reject ambiguity");
+        let err = parse_lockfile_episodic_dependency(&lockfile).expect_err("must reject ambiguity");
         assert_eq!(
             err,
             "ambiguous_episodic_lock_entry_no_required_source_match"

@@ -494,7 +494,10 @@ fn contract_integrity_gate_passes_when_contract_probe_succeeds() {
             ),
             (
                 "git",
-                &["show", "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs"],
+                &[
+                    "show",
+                    "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
                 true,
                 PROMPT_SIGNATURE_POLICY_HEAD_OLD,
             ),
@@ -598,7 +601,10 @@ fn contract_integrity_gate_fails_when_contract_probe_output_does_not_match() {
             ),
             (
                 "git",
-                &["show", "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs"],
+                &[
+                    "show",
+                    "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
                 true,
                 PROMPT_SIGNATURE_POLICY_HEAD_OLD,
             ),
@@ -682,7 +688,10 @@ fn contract_integrity_gate_fails_when_episodic_dependency_uses_path() {
             ),
             (
                 "git",
-                &["show", "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs"],
+                &[
+                    "show",
+                    "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
                 true,
                 PROMPT_SIGNATURE_POLICY_HEAD_OLD,
             ),
@@ -766,7 +775,10 @@ fn contract_integrity_gate_fails_when_prompt_contract_signature_changes_without_
             ),
             (
                 "git",
-                &["show", "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs"],
+                &[
+                    "show",
+                    "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
                 true,
                 PROMPT_SIGNATURE_POLICY_HEAD_CHANGED_WITHOUT_BUMP,
             ),
@@ -853,9 +865,83 @@ fn contract_integrity_gate_allows_prompt_contract_signature_change_with_version_
             ),
             (
                 "git",
-                &["show", "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs"],
+                &[
+                    "show",
+                    "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
                 true,
                 PROMPT_SIGNATURE_POLICY_HEAD_CHANGED_WITH_BUMP,
+            ),
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    ONTOLOGY_CONTRACT_PROBE_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable ... ok\n",
+            ),
+        ],
+        || evaluate_contract_integrity_gate(temp.path()),
+    );
+    assert!(decision.passed, "{:?}", decision.details);
+}
+
+#[test]
+fn contract_integrity_gate_allows_prompt_signature_policy_when_head_parent_is_unavailable() {
+    let temp = tempdir().expect("tempdir");
+    let lock_source = format!("{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}");
+    let manifest_dep = format!(
+        "episodic = {{ version = \"0.2.0\", git = \"{EPISODIC_REQUIRED_GIT_URL}\", rev = \"{EPISODIC_REQUIRED_GIT_REV}\" }}"
+    );
+    write_contract_gate_workspace_fixture(temp.path(), &manifest_dep, Some(lock_source.as_str()));
+
+    let decision = with_workspace_command_mocks(
+        &[
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    CONTRACT_EXECUTION_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms ... ok\n",
+            ),
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    EPISODIC_API_PROBE_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok\n",
+            ),
+            (
+                "git",
+                &["rev-parse", "--verify", "HEAD~1"],
+                false,
+                "fatal: ambiguous argument 'HEAD~1'\n",
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_OLD,
             ),
             (
                 "cargo",
