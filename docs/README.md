@@ -8,14 +8,15 @@
 | `docs/ARCHITECTURE.md` | architecture/layer/data-flow summary | active | runtime boundary and flow sections |
 | `docs/API_CONTRACT.md` | runtime/API contract SSOT | active | client/OM/release/dependency contract sections |
 | `docs/ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md` | ontology evolution policy | active | version/cutover/gate rules |
+| `docs/USAGE_PLAYBOOK.md` | practical operations playbook | active | multi-project root strategy and session usage patterns |
 
 ## README Link Graph
 - Root README -> `crates/README.md`, `docs/README.md`
-- docs/README -> `ARCHITECTURE.md`, `API_CONTRACT.md`, `ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md`
+- docs/README -> `ARCHITECTURE.md`, `API_CONTRACT.md`, `ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md`, `USAGE_PLAYBOOK.md`
 - crates/README -> crate-level READMEs (`axiomme-core`, `axiomme-cli`, `axiomme-mobile-ffi`)
 
 ## Cleanup Actions
-- keep: `README.md`, `docs/README.md`, `docs/ARCHITECTURE.md`, `docs/API_CONTRACT.md`, `docs/ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md`
+- keep: `README.md`, `docs/README.md`, `docs/ARCHITECTURE.md`, `docs/API_CONTRACT.md`, `docs/ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md`, `docs/USAGE_PLAYBOOK.md`
 - delete-candidate: none (current docs set is minimal and non-duplicated)
 
 ## Rules
