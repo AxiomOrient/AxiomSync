@@ -28,5 +28,4 @@ axiomme session commit
 ## Documentation
 - [Architecture](./docs/ARCHITECTURE.md): 시스템 설계 및 데이터 흐름 명세
 - [API Contract](./docs/API_CONTRACT.md): 인터페이스 규약 및 데이터 모델
-- [Feature Spec](./docs/FEATURE_SPEC.md): 기능적 인바리언트 보장 항목
 - [Ontology Policy](./docs/ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md): 데이터 스키마 진화 정책
