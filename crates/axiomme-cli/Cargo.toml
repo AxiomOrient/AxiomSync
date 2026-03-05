@@ -1,6 +1,6 @@
 [package]
 name = "axiomme-cli"
-version = "0.1.6"
+version = "0.1.7"
 authors = { workspace = true }
 edition = { workspace = true }
 description = "Command-line interface for AxiomMe data runtime."
