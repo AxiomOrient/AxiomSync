@@ -33,9 +33,9 @@ pub use filesystem::{
     GlobResult, MarkdownDocument, MarkdownSaveResult, TreeNode, TreeResult,
 };
 pub use queue::{
-    OmQueueStatus, OmReflectionApplyMetrics, OutboxEvent, QueueCheckpoint, QueueCounts,
-    QueueDeadLetterRate, QueueDiagnostics, QueueEventStatus, QueueLaneStatus, QueueOverview,
-    QueueStatus, ReplayReport,
+    OmQueueStatus, OmReflectionApplyMetrics, OmV2MigrationReport, OutboxEvent, QueueCheckpoint,
+    QueueCounts, QueueDeadLetterRate, QueueDiagnostics, QueueEventStatus, QueueLaneStatus,
+    QueueOverview, QueueStatus, ReplayReport,
 };
 pub use reconcile::{ReconcileOptions, ReconcileReport, ReconcileRunStatus};
 pub use release::{
@@ -56,8 +56,8 @@ pub use release::{
 pub use search::{
     BackendStatus, ContextHit, EmbeddingBackendStatus, FindResult, HitBuckets, IndexRecord,
     MetadataFilter, QueryPlan, RelationLink, RelationSummary, RetrievalStep, RetrievalTrace,
-    RuntimeHint, RuntimeHintKind, SearchBudget, SearchFilter, SearchOptions, SearchRequest,
-    TracePoint, TraceStats, TypedQueryPlan, classify_hit_buckets,
+    RuntimeHint, RuntimeHintKind, ScoreComponents, SearchBudget, SearchFilter, SearchOptions,
+    SearchRequest, TracePoint, TraceStats, TypedQueryPlan, classify_hit_buckets,
 };
 pub use session::{
     CommitMode, CommitResult, CommitStats, ContextUsage, MemoryCandidate, MemoryCategory,

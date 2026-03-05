@@ -4,7 +4,8 @@ use std::time::Instant;
 use chrono::Utc;
 
 use crate::config::{
-    OmHintBounds, OmHintPolicy, RETRIEVAL_BACKEND_MEMORY, RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
+    OmHintBounds, OmHintPolicy, OmHintReaderMode, RETRIEVAL_BACKEND_MEMORY,
+    RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
 };
 use crate::context_ops::validate_filter;
 use crate::error::{AxiomError, Result};
@@ -13,9 +14,13 @@ use crate::models::{
     FindResult, Message, MetadataFilter, RequestLogEntry, RuntimeHint, SearchBudget, SearchOptions,
     SearchRequest,
 };
-use crate::om::{OmScope, build_bounded_observation_hint};
+use crate::om::{
+    OmHintPolicyV2, OmObservationEntryV2, OmScope, build_bounded_observation_hint,
+    materialize_search_visible_snapshot, resolve_canonical_thread_id,
+};
 use crate::om_bridge::OmHintReadStateV1;
 use crate::session::resolve_om_scope_binding_for_session_with_config;
+use crate::state::OmActiveEntry;
 use crate::uri::AxiomUri;
 
 use super::AxiomMe;
@@ -23,15 +28,30 @@ use super::AxiomMe;
 mod backend;
 mod reranker;
 mod result;
+mod snapshot;
+mod telemetry;
 
 use result::{
-    annotate_trace_relation_metrics, annotate_typed_edge_query_plan_visibility,
-    append_query_plan_note, budget_to_json, metadata_filter_to_search_filter, normalize_budget,
+    annotate_trace_relation_metrics, annotate_typed_edge_query_plan_visibility, budget_to_json,
+    metadata_filter_to_search_filter, normalize_budget,
+};
+use snapshot::{
+    build_snapshot_activated_entries, build_snapshot_buffered_entries,
+    build_snapshot_continuation_state, snapshot_visible_entry_selection,
+    snapshot_visible_observation_text,
+};
+#[cfg(test)]
+use snapshot::{infer_buffered_entry_priority, snapshot_visible_entry_source_key};
+use telemetry::{
+    SearchRequestLogEvent, SearchRequestLogInput, annotate_om_query_plan_visibility,
+    search_request_details,
 };
 
 const DEFAULT_OM_SCOPE_LOOKUP_FALLBACK_LIMIT: usize = 4;
+const OM_HINT_SNAPSHOT_BUFFERED_TAIL_LIMIT: usize = 2;
+const OM_HINT_COMPACTION_RESERVED_HIGH_LIMIT: usize = 1;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct OmSearchMetrics {
     context_tokens_before_om: u32,
     context_tokens_after_om: u32,
@@ -39,6 +59,15 @@ struct OmSearchMetrics {
     observer_trigger_count: u32,
     reflector_trigger_count: u32,
     om_hint_applied: bool,
+    om_hint_reader_snapshot_v2: bool,
+    om_snapshot_buffered_chunk_count: u32,
+    om_snapshot_buffered_chunk_ids: Vec<String>,
+    om_hint_compaction_priority_v2: bool,
+    om_hint_high_priority_selected_count: u32,
+    om_snapshot_visible_entry_ids: Vec<String>,
+    om_snapshot_visible_activated_entry_ids: Vec<String>,
+    om_snapshot_visible_buffered_entry_ids: Vec<String>,
+    om_hint_current_task_reserved: bool,
     session_recent_hint_count: u32,
     session_hint_count_final: u32,
     om_filtered_message_count: u32,
@@ -58,6 +87,51 @@ struct SessionHintSnapshot {
     metrics: OmSearchMetrics,
 }
 
+#[derive(Debug, Clone, Default)]
+struct OmHintSnapshotV2 {
+    scope_key: String,
+    snapshot_version: String,
+    materialized_at: String,
+    search_visible_observations: String,
+    rendered_hint: Option<String>,
+    current_task: Option<String>,
+    suggested_response: Option<String>,
+    activated_message_ids: Vec<String>,
+    buffered_chunk_ids: Vec<String>,
+    selected_entry_ids: Vec<String>,
+    activated_visible_entry_ids: Vec<String>,
+    buffered_visible_entry_ids: Vec<String>,
+    observation_tokens_active: u32,
+    observer_trigger_count_total: u32,
+    reflector_trigger_count_total: u32,
+    buffered_chunk_count: usize,
+    high_priority_selected_count: usize,
+}
+
+impl OmHintSnapshotV2 {
+    fn to_read_state(&self, bounds: OmHintBounds) -> OmHintReadStateV1 {
+        OmHintReadStateV1 {
+            scope_key: self.scope_key.clone(),
+            hint: self.rendered_hint.clone().or_else(|| {
+                bounded_om_hint_from_snapshot(
+                    &self.search_visible_observations,
+                    self.current_task.as_deref(),
+                    self.suggested_response.as_deref(),
+                    bounds,
+                )
+            }),
+            snapshot_version: Some(self.snapshot_version.clone()),
+            materialized_at: Some(self.materialized_at.clone()),
+            activated_message_ids: self.activated_message_ids.clone(),
+            buffered_chunk_ids: self.buffered_chunk_ids.clone(),
+            selected_entry_ids: self.selected_entry_ids.clone(),
+            observation_tokens_active: self.observation_tokens_active,
+            observer_trigger_count_total: self.observer_trigger_count_total,
+            reflector_trigger_count_total: self.reflector_trigger_count_total,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct SearchOptionsInput {
     query: String,
@@ -72,21 +146,21 @@ struct SearchOptionsInput {
     request_type: &'static str,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SearchRequestLogInput<'a> {
-    query: &'a str,
-    requested_limit: usize,
-    session: Option<&'a str>,
-    budget: Option<&'a SearchBudget>,
-    score_threshold: Option<f32>,
-    min_match_tokens: Option<usize>,
-    metrics: OmSearchMetrics,
-    hint_policy: OmHintPolicy,
-    typed_edge_enrichment: bool,
-    result_count: Option<usize>,
+#[derive(Debug)]
+struct SnapshotEntryInputs {
+    fallback_thread_id: String,
+    reserved_high_texts: Vec<String>,
+    high_priority_selected_count: usize,
+    buffered_entries: Vec<OmObservationEntryV2>,
+    buffered_chunk_ids: Vec<String>,
 }
 
 impl AxiomMe {
+    #[inline]
+    fn om_snapshot_hint_reader_enabled(&self) -> bool {
+        self.config.om.enabled && self.config.om.hint_reader == OmHintReaderMode::SnapshotV2
+    }
+
     #[must_use]
     pub fn search_requires_runtime_prepare(&self) -> bool {
         true
@@ -224,13 +298,45 @@ impl AxiomMe {
         hint_policy: OmHintPolicy,
         hint_bounds: OmHintBounds,
     ) -> Result<SessionHintSnapshot> {
-        let mut metrics = OmSearchMetrics::default();
+        let snapshot_reader_enabled = self.om_snapshot_hint_reader_enabled();
+        let mut metrics = OmSearchMetrics {
+            om_hint_reader_snapshot_v2: snapshot_reader_enabled,
+            ..OmSearchMetrics::default()
+        };
         let ctx = self.session(Some(session_id)).get_context_for_search(
             query,
             hint_policy.context_max_archives,
             hint_policy.context_max_messages,
         )?;
-        let om_state = self.fetch_session_om_state(session_id)?;
+        let om_snapshot =
+            self.fetch_session_om_hint_snapshot_with_enabled(session_id, snapshot_reader_enabled)?;
+        metrics.om_snapshot_buffered_chunk_count = om_snapshot.as_ref().map_or(0, |snapshot| {
+            saturating_usize_to_u32(snapshot.buffered_chunk_count)
+        });
+        metrics.om_snapshot_buffered_chunk_ids = om_snapshot
+            .as_ref()
+            .map_or_else(Vec::new, |snapshot| snapshot.buffered_chunk_ids.clone());
+        metrics.om_hint_compaction_priority_v2 = om_snapshot.is_some();
+        metrics.om_hint_high_priority_selected_count = om_snapshot.as_ref().map_or(0, |snapshot| {
+            saturating_usize_to_u32(snapshot.high_priority_selected_count)
+        });
+        metrics.om_snapshot_visible_entry_ids = om_snapshot
+            .as_ref()
+            .map_or_else(Vec::new, |snapshot| snapshot.selected_entry_ids.clone());
+        metrics.om_snapshot_visible_activated_entry_ids =
+            om_snapshot.as_ref().map_or_else(Vec::new, |snapshot| {
+                snapshot.activated_visible_entry_ids.clone()
+            });
+        metrics.om_snapshot_visible_buffered_entry_ids =
+            om_snapshot.as_ref().map_or_else(Vec::new, |snapshot| {
+                snapshot.buffered_visible_entry_ids.clone()
+            });
+        metrics.om_hint_current_task_reserved = om_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.current_task.is_some());
+        let om_state = om_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.to_read_state(hint_bounds));
         let pre_om_recent_hints =
             collect_recent_hints(&ctx.recent_messages, hint_policy.recent_hint_limit);
         let pre_om_hints = merge_recent_and_om_hints(&pre_om_recent_hints, None, hint_policy);
@@ -290,6 +396,60 @@ impl AxiomMe {
         })
     }
 
+    fn resolve_search_hints(
+        &self,
+        session_id: Option<&str>,
+        query: &str,
+        runtime_hints: &[RuntimeHint],
+        hint_policy: OmHintPolicy,
+        hint_bounds: OmHintBounds,
+    ) -> Result<(Vec<String>, OmSearchMetrics)> {
+        let normalized_runtime_hints = normalize_runtime_hints(
+            runtime_hints,
+            hint_policy.total_hint_limit,
+            hint_bounds.max_chars,
+        );
+        let mut hint_layers = SearchHintLayers {
+            runtime: normalized_runtime_hints,
+            ..SearchHintLayers::default()
+        };
+        let mut om_metrics = OmSearchMetrics::default();
+        if let Some(session_id) = session_id {
+            let snapshot =
+                self.build_search_session_hints(session_id, query, hint_policy, hint_bounds)?;
+            hint_layers.recent = snapshot.recent_hints;
+            hint_layers.om_hint = snapshot.om_hint;
+            om_metrics = snapshot.metrics;
+        }
+        let session_hints = merge_runtime_om_recent_hints(
+            &hint_layers.runtime,
+            hint_layers.om_hint.as_deref(),
+            &hint_layers.recent,
+            hint_policy,
+            hint_bounds.max_chars,
+        );
+        if session_id.is_some() {
+            om_metrics.session_hint_count_final = saturating_usize_to_u32(session_hints.len());
+            om_metrics.context_tokens_after_om = estimate_hint_tokens(&session_hints);
+        }
+        Ok((session_hints, om_metrics))
+    }
+
+    fn try_log_search_request(&self, event: SearchRequestLogEvent<'_>) {
+        self.try_log_request(&RequestLogEntry {
+            request_id: event.request_id.to_string(),
+            operation: "search".to_string(),
+            status: event.status.to_string(),
+            latency_ms: event.started.elapsed().as_millis(),
+            created_at: Utc::now().to_rfc3339(),
+            trace_id: event.trace_id.map(ToString::to_string),
+            target_uri: event.target_uri.map(ToString::to_string),
+            error_code: event.error.map(|err| err.code().to_string()),
+            error_message: event.error.map(ToString::to_string),
+            details: Some(event.details),
+        });
+    }
+
     pub fn search_with_request(&self, request: SearchRequest) -> Result<FindResult> {
         let SearchRequest {
             query,
@@ -317,37 +477,14 @@ impl AxiomMe {
             validate_filter(filter.as_ref())?;
             validate_search_cutoff_options(score_threshold, min_match_tokens)?;
             let target = parse_optional_target_uri(target_uri.as_deref())?;
-            let normalized_runtime_hints = normalize_runtime_hints(
+            let (session_hints, resolved_metrics) = self.resolve_search_hints(
+                session.as_deref(),
+                &query,
                 &runtime_hints,
-                hint_policy.total_hint_limit,
-                hint_bounds.max_chars,
-            );
-
-            let mut hint_layers = SearchHintLayers {
-                runtime: normalized_runtime_hints,
-                ..SearchHintLayers::default()
-            };
-
-            if let Some(session_id) = session.as_deref() {
-                let snapshot =
-                    self.build_search_session_hints(session_id, &query, hint_policy, hint_bounds)?;
-                hint_layers.recent = snapshot.recent_hints;
-                hint_layers.om_hint = snapshot.om_hint;
-                om_metrics = snapshot.metrics;
-            }
-
-            let session_hints = merge_runtime_om_recent_hints(
-                &hint_layers.runtime,
-                hint_layers.om_hint.as_deref(),
-                &hint_layers.recent,
                 hint_policy,
-                hint_bounds.max_chars,
-            );
-
-            if session.is_some() {
-                om_metrics.session_hint_count_final = saturating_usize_to_u32(session_hints.len());
-                om_metrics.context_tokens_after_om = estimate_hint_tokens(&session_hints);
-            }
+                hint_bounds,
+            )?;
+            om_metrics = resolved_metrics;
 
             let options = build_search_options(SearchOptionsInput {
                 query: query.clone(),
@@ -386,17 +523,14 @@ impl AxiomMe {
                     typed_edge_enrichment,
                     result_count: Some(result.query_results.len()),
                 });
-                self.try_log_request(&RequestLogEntry {
-                    request_id,
-                    operation: "search".to_string(),
-                    status: "ok".to_string(),
-                    latency_ms: started.elapsed().as_millis(),
-                    created_at: Utc::now().to_rfc3339(),
-                    trace_id,
-                    target_uri: target_raw,
-                    error_code: None,
-                    error_message: None,
-                    details: Some(details),
+                self.try_log_search_request(SearchRequestLogEvent {
+                    request_id: &request_id,
+                    started,
+                    target_uri: target_raw.as_deref(),
+                    trace_id: trace_id.as_deref(),
+                    status: "ok",
+                    error: None,
+                    details,
                 });
                 Ok(result)
             }
@@ -413,17 +547,14 @@ impl AxiomMe {
                     typed_edge_enrichment,
                     result_count: None,
                 });
-                self.try_log_request(&RequestLogEntry {
-                    request_id,
-                    operation: "search".to_string(),
-                    status: "error".to_string(),
-                    latency_ms: started.elapsed().as_millis(),
-                    created_at: Utc::now().to_rfc3339(),
+                self.try_log_search_request(SearchRequestLogEvent {
+                    request_id: &request_id,
+                    started,
+                    target_uri: target_raw.as_deref(),
                     trace_id: None,
-                    target_uri: target_raw,
-                    error_code: Some(err.code().to_string()),
-                    error_message: Some(err.to_string()),
-                    details: Some(details),
+                    status: "error",
+                    error: Some(&err),
+                    details,
                 });
                 Err(err)
             }
@@ -434,7 +565,7 @@ impl AxiomMe {
         &self,
         session_id: &str,
     ) -> Result<Option<OmHintReadStateV1>> {
-        self.fetch_session_om_state_with_enabled(session_id, self.config.om.enabled)
+        self.fetch_session_om_state_with_enabled(session_id, self.om_snapshot_hint_reader_enabled())
     }
 
     pub(crate) fn fetch_om_state_by_scope_key(
@@ -445,7 +576,7 @@ impl AxiomMe {
         self.fetch_om_state_by_scope_key_with_enabled(
             scope_key,
             preferred_thread_id,
-            self.config.om.enabled,
+            self.om_snapshot_hint_reader_enabled(),
         )
     }
 
@@ -455,6 +586,29 @@ impl AxiomMe {
         preferred_thread_id: Option<&str>,
         om_enabled: bool,
     ) -> Result<Option<OmHintReadStateV1>> {
+        let snapshot = self.fetch_om_hint_snapshot_by_scope_key_with_enabled(
+            scope_key,
+            preferred_thread_id,
+            om_enabled,
+        )?;
+        Ok(snapshot.map(|snapshot| snapshot.to_read_state(self.config.search.om_hint_bounds)))
+    }
+
+    pub(crate) fn fetch_session_om_state_with_enabled(
+        &self,
+        session_id: &str,
+        om_enabled: bool,
+    ) -> Result<Option<OmHintReadStateV1>> {
+        let snapshot = self.fetch_session_om_hint_snapshot_with_enabled(session_id, om_enabled)?;
+        Ok(snapshot.map(|snapshot| snapshot.to_read_state(self.config.search.om_hint_bounds)))
+    }
+
+    fn fetch_om_hint_snapshot_by_scope_key_with_enabled(
+        &self,
+        scope_key: &str,
+        preferred_thread_id: Option<&str>,
+        om_enabled: bool,
+    ) -> Result<Option<OmHintSnapshotV2>> {
         if !om_enabled {
             return Ok(None);
         }
@@ -478,17 +632,26 @@ impl AxiomMe {
             record
         };
 
-        Ok(Some(self.build_om_hint_state_from_record(
+        let preferred_thread_id = preferred_thread_id.map(|thread_id| {
+            resolve_canonical_thread_id(
+                record.scope,
+                &record.scope_key,
+                Some(thread_id),
+                record.session_id.as_deref(),
+                thread_id,
+            )
+        });
+        Ok(Some(self.build_om_hint_snapshot_from_record(
             &record,
-            preferred_thread_id,
+            preferred_thread_id.as_deref(),
         )?))
     }
 
-    pub(crate) fn fetch_session_om_state_with_enabled(
+    fn fetch_session_om_hint_snapshot_with_enabled(
         &self,
         session_id: &str,
         om_enabled: bool,
-    ) -> Result<Option<OmHintReadStateV1>> {
+    ) -> Result<Option<OmHintSnapshotV2>> {
         if !om_enabled {
             return Ok(None);
         }
@@ -526,62 +689,173 @@ impl AxiomMe {
 
         let preferred_thread_id = match record.scope {
             OmScope::Session => None,
-            OmScope::Thread => Some(
+            OmScope::Thread | OmScope::Resource => Some(resolve_canonical_thread_id(
+                record.scope,
+                &record.scope_key,
                 scope_binding
                     .thread_id
                     .as_deref()
-                    .or(record.thread_id.as_deref())
-                    .unwrap_or(session_id),
-            ),
-            OmScope::Resource => Some(scope_binding.thread_id.as_deref().unwrap_or(session_id)),
+                    .or(record.thread_id.as_deref()),
+                Some(session_id),
+                session_id,
+            )),
         };
-        Ok(Some(self.build_om_hint_state_from_record(
+        Ok(Some(self.build_om_hint_snapshot_from_record(
             &record,
-            preferred_thread_id,
+            preferred_thread_id.as_deref(),
         )?))
     }
 
-    fn build_om_hint_state_from_record(
+    fn build_om_hint_snapshot_from_record(
         &self,
         record: &crate::om::OmRecord,
         preferred_thread_id: Option<&str>,
-    ) -> Result<OmHintReadStateV1> {
+    ) -> Result<OmHintSnapshotV2> {
         let preferred_thread_id = preferred_thread_id
             .map(str::trim)
             .filter(|value| !value.is_empty());
-        let thread_state_suggested_response = if record.scope == OmScope::Session {
-            None
-        } else {
-            let thread_states = self.state.list_om_thread_states(&record.scope_key)?;
-            preferred_thread_id
-                .and_then(|thread_id| {
-                    thread_states
-                        .iter()
-                        .find(|state| state.thread_id == thread_id)
-                        .and_then(|state| state.suggested_response.as_deref())
-                })
-                .or_else(|| {
-                    thread_states
-                        .iter()
-                        .find_map(|state| state.suggested_response.as_deref())
-                })
-                .map(ToString::to_string)
-        };
+        let continuation_state = self
+            .state
+            .resolve_om_continuation_state(&record.scope_key, preferred_thread_id)?;
+        let continuation_current_task = continuation_state
+            .as_ref()
+            .and_then(|state| state.current_task.as_deref());
+        let continuation_suggested_response = continuation_state
+            .as_ref()
+            .and_then(|state| state.suggested_response.as_deref());
+        let (current_task, suggested_response) = self.resolve_snapshot_continuation_fields(
+            record,
+            preferred_thread_id,
+            continuation_current_task,
+            continuation_suggested_response,
+        )?;
+        let active_entries = self.state.list_om_active_entries(&record.scope_key)?;
+        let snapshot_entry_inputs =
+            self.collect_snapshot_entry_inputs(record, preferred_thread_id, &active_entries)?;
+        let materialized_at = record.updated_at.to_rfc3339();
+        let continuation_for_snapshot = build_snapshot_continuation_state(
+            record,
+            snapshot_entry_inputs.fallback_thread_id.as_str(),
+            &current_task,
+            &suggested_response,
+            &materialized_at,
+        );
+        let hint_policy_v2 = build_om_hint_policy_v2(self.config.search.om_hint_bounds);
+        let snapshot = materialize_search_visible_snapshot(
+            &record.scope_key,
+            &build_snapshot_activated_entries(&record.scope_key, &active_entries),
+            &snapshot_entry_inputs.buffered_entries,
+            continuation_for_snapshot.as_ref(),
+            &materialized_at,
+            hint_policy_v2,
+        );
+        let visible_entry_selection = snapshot_visible_entry_selection(&snapshot.visible_entries);
+        let search_visible_observations = compact_observation_text_for_hint(
+            &snapshot_visible_observation_text(&snapshot.visible_entries),
+            &snapshot_entry_inputs.reserved_high_texts,
+        );
 
-        Ok(OmHintReadStateV1 {
+        Ok(OmHintSnapshotV2 {
             scope_key: record.scope_key.clone(),
-            hint: bounded_om_hint_from_record(
-                &record.active_observations,
-                thread_state_suggested_response
-                    .as_deref()
-                    .or(record.suggested_response.as_deref()),
-                self.config.search.om_hint_bounds,
-            ),
+            snapshot_version: snapshot.snapshot_version.clone(),
+            materialized_at: snapshot.materialized_at_rfc3339.clone(),
+            search_visible_observations,
+            rendered_hint: snapshot.rendered_hint,
+            current_task,
+            suggested_response,
             activated_message_ids: record.last_activated_message_ids.clone(),
+            buffered_chunk_ids: snapshot_entry_inputs.buffered_chunk_ids,
+            selected_entry_ids: visible_entry_selection.selected_entry_ids,
+            activated_visible_entry_ids: visible_entry_selection.activated_visible_entry_ids,
+            buffered_visible_entry_ids: visible_entry_selection.buffered_visible_entry_ids,
             observation_tokens_active: record.observation_token_count,
             observer_trigger_count_total: record.observer_trigger_count_total,
             reflector_trigger_count_total: record.reflector_trigger_count_total,
+            buffered_chunk_count: snapshot_entry_inputs.buffered_entries.len(),
+            high_priority_selected_count: snapshot_entry_inputs.high_priority_selected_count,
         })
+    }
+
+    fn resolve_snapshot_continuation_fields(
+        &self,
+        record: &crate::om::OmRecord,
+        preferred_thread_id: Option<&str>,
+        continuation_current_task: Option<&str>,
+        continuation_suggested_response: Option<&str>,
+    ) -> Result<(Option<String>, Option<String>)> {
+        let continuation_current_task = continuation_current_task.and_then(non_empty_trimmed);
+        let continuation_suggested_response =
+            continuation_suggested_response.and_then(non_empty_trimmed);
+        let has_continuation =
+            continuation_current_task.is_some() || continuation_suggested_response.is_some();
+        if has_continuation {
+            return Ok((
+                continuation_current_task.map(ToString::to_string),
+                continuation_suggested_response.map(ToString::to_string),
+            ));
+        }
+        if record.scope == OmScope::Session {
+            return Ok((None, None));
+        }
+        let thread_states = self.state.list_om_thread_states(&record.scope_key)?;
+        let selected_state = preferred_thread_id
+            .and_then(|thread_id| {
+                thread_states
+                    .iter()
+                    .find(|state| state.thread_id == thread_id)
+            })
+            .or_else(|| thread_states.first());
+        let current_task = selected_state
+            .and_then(|state| state.current_task.as_deref())
+            .and_then(non_empty_trimmed)
+            .map(ToString::to_string);
+        let suggested_response = selected_state
+            .and_then(|state| state.suggested_response.as_deref())
+            .and_then(non_empty_trimmed)
+            .map(ToString::to_string);
+        Ok((current_task, suggested_response))
+    }
+
+    fn collect_snapshot_entry_inputs(
+        &self,
+        record: &crate::om::OmRecord,
+        preferred_thread_id: Option<&str>,
+        active_entries: &[OmActiveEntry],
+    ) -> Result<SnapshotEntryInputs> {
+        let (reserved_high_texts, reserved_high_ids) = select_reserved_high_priority_entries(
+            active_entries,
+            preferred_thread_id,
+            OM_HINT_COMPACTION_RESERVED_HIGH_LIMIT,
+        );
+        let buffered_chunks = self.state.list_om_observation_chunks(&record.id)?;
+        let fallback_thread_id = preferred_thread_id
+            .or(record.thread_id.as_deref())
+            .or(record.session_id.as_deref())
+            .unwrap_or(record.scope_key.as_str())
+            .to_string();
+        let (buffered_entries, buffered_chunk_ids) = build_snapshot_buffered_entries(
+            &record.scope_key,
+            fallback_thread_id.as_str(),
+            &buffered_chunks,
+        );
+        Ok(SnapshotEntryInputs {
+            fallback_thread_id,
+            reserved_high_texts,
+            high_priority_selected_count: reserved_high_ids.len(),
+            buffered_entries,
+            buffered_chunk_ids,
+        })
+    }
+}
+
+fn build_om_hint_policy_v2(bounds: OmHintBounds) -> OmHintPolicyV2 {
+    OmHintPolicyV2 {
+        max_lines: bounds.max_lines,
+        max_chars: bounds.max_chars,
+        reserve_current_task_line: true,
+        reserve_suggested_response_line: true,
+        high_priority_slots: OM_HINT_COMPACTION_RESERVED_HIGH_LIMIT,
+        include_buffered_entries: true,
     }
 }
 
@@ -601,6 +875,86 @@ fn filter_recent_messages_by_ids(
         .filter(|message| !ids.contains(message.id.as_str()))
         .cloned()
         .collect::<Vec<_>>()
+}
+
+fn select_reserved_high_priority_entries(
+    entries: &[OmActiveEntry],
+    preferred_thread_id: Option<&str>,
+    limit: usize,
+) -> (Vec<String>, Vec<String>) {
+    if limit == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let preferred_thread_id = preferred_thread_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let mut high_entries = entries
+        .iter()
+        .filter(|entry| is_high_priority(entry.priority.as_str()))
+        .map(|entry| {
+            let preferred = preferred_thread_id
+                .is_some_and(|thread_id| thread_id == entry.canonical_thread_id.as_str());
+            (
+                preferred,
+                entry.created_at,
+                entry.entry_id.as_str(),
+                entry.text.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    high_entries.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.2.cmp(b.2))
+    });
+
+    let selected = high_entries.into_iter().take(limit).collect::<Vec<_>>();
+    let mut texts = Vec::<String>::with_capacity(selected.len());
+    let mut ids = Vec::<String>::with_capacity(selected.len());
+    for (_, _, entry_id, text) in selected {
+        if let Some(normalized) = non_empty_trimmed(text) {
+            texts.push(normalized.to_string());
+            ids.push(entry_id.to_string());
+        }
+    }
+    (texts, ids)
+}
+
+fn compact_observation_text_for_hint(base: &str, reserved_high_texts: &[String]) -> String {
+    let mut sections = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+
+    for text in reserved_high_texts {
+        if let Some(normalized) = non_empty_trimmed(text) {
+            let value = normalized.to_string();
+            if seen.insert(value.clone()) {
+                sections.push(value);
+            }
+        }
+    }
+
+    if let Some(base_normalized) = non_empty_trimmed(base) {
+        let base_value = base_normalized.to_string();
+        if seen.insert(base_value.clone()) {
+            sections.push(base_value);
+        }
+    }
+
+    sections.join("\n\n")
+}
+
+fn is_high_priority(priority: &str) -> bool {
+    priority.eq_ignore_ascii_case("high")
+}
+
+fn non_empty_trimmed(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 fn parse_optional_target_uri(target_uri: Option<&str>) -> Result<Option<AxiomUri>> {
@@ -801,101 +1155,6 @@ fn collapse_and_clip_whitespace(value: &str, max_chars: usize) -> Option<String>
     if out.is_empty() { None } else { Some(out) }
 }
 
-fn annotate_om_query_plan_visibility(
-    result: &mut FindResult,
-    metrics: &OmSearchMetrics,
-    policy: OmHintPolicy,
-) {
-    if metrics.observer_trigger_count == 0
-        && metrics.reflector_trigger_count == 0
-        && metrics.session_recent_hint_count == 0
-        && metrics.session_hint_count_final == 0
-        && metrics.om_filtered_message_count == 0
-    {
-        return;
-    }
-    append_query_plan_note(
-        result,
-        &format!("om_hint_applied:{}", u8::from(metrics.om_hint_applied)),
-    );
-    append_query_plan_note(
-        result,
-        &format!("session_hints_final:{}", metrics.session_hint_count_final),
-    );
-    append_query_plan_note(
-        result,
-        &format!("observer_triggers:{}", metrics.observer_trigger_count),
-    );
-    append_query_plan_note(
-        result,
-        &format!("reflector_triggers:{}", metrics.reflector_trigger_count),
-    );
-    append_query_plan_note(
-        result,
-        &format!("om_filtered_messages:{}", metrics.om_filtered_message_count),
-    );
-    append_query_plan_note(
-        result,
-        &format!(
-            "om_hint_policy:{}/{}/{}/{}",
-            policy.recent_hint_limit,
-            policy.total_hint_limit,
-            policy.keep_recent_with_om,
-            policy.context_max_messages
-        ),
-    );
-}
-
-fn hint_policy_to_json(policy: OmHintPolicy) -> serde_json::Value {
-    serde_json::json!({
-        "context_max_archives": policy.context_max_archives,
-        "context_max_messages": policy.context_max_messages,
-        "recent_hint_limit": policy.recent_hint_limit,
-        "total_hint_limit": policy.total_hint_limit,
-        "keep_recent_with_om": policy.keep_recent_with_om,
-    })
-}
-
-fn search_request_details(input: SearchRequestLogInput<'_>) -> serde_json::Value {
-    let SearchRequestLogInput {
-        query,
-        requested_limit,
-        session,
-        budget,
-        score_threshold,
-        min_match_tokens,
-        metrics,
-        hint_policy,
-        typed_edge_enrichment,
-        result_count,
-    } = input;
-    let mut details = serde_json::json!({
-        "query": query,
-        "limit": requested_limit,
-        "session": session,
-        "budget": budget_to_json(budget),
-        "score_threshold": score_threshold,
-        "min_match_tokens": min_match_tokens,
-        "retrieval_backend": RETRIEVAL_BACKEND_MEMORY,
-        "retrieval_backend_policy": RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
-        "context_tokens_before_om": metrics.context_tokens_before_om,
-        "context_tokens_after_om": metrics.context_tokens_after_om,
-        "observation_tokens_active": metrics.observation_tokens_active,
-        "observer_trigger_count": metrics.observer_trigger_count,
-        "reflector_trigger_count": metrics.reflector_trigger_count,
-        "om_hint_applied": metrics.om_hint_applied,
-        "session_recent_hint_count": metrics.session_recent_hint_count,
-        "session_hint_count_final": metrics.session_hint_count_final,
-        "om_filtered_message_count": metrics.om_filtered_message_count,
-        "om_hint_policy": hint_policy_to_json(hint_policy),
-        "typed_edge_enrichment": typed_edge_enrichment,
-    });
-    if let Some(result_count) = result_count {
-        details["result_count"] = serde_json::json!(result_count);
-    }
-    details
-}
-
 fn estimate_hint_tokens(hints: &[String]) -> u32 {
     hints.iter().fold(0u32, |sum, hint| {
         sum.saturating_add(estimate_text_tokens(hint))
@@ -923,34 +1182,76 @@ fn validate_search_cutoff_options(
     Ok(())
 }
 
-fn bounded_om_hint_from_record(
-    active_observations: &str,
+fn bounded_om_hint_from_snapshot(
+    search_visible_observations: &str,
+    current_task: Option<&str>,
     suggested_response: Option<&str>,
     bounds: OmHintBounds,
 ) -> Option<String> {
+    let continuation_hint =
+        compose_continuation_hint(current_task, suggested_response, bounds.max_suggested_chars);
     merge_observation_hint_with_suggested_response(
-        build_bounded_observation_hint(active_observations, bounds.max_lines, bounds.max_chars),
-        suggested_response,
+        build_bounded_observation_hint(
+            search_visible_observations,
+            bounds.max_lines,
+            bounds.max_chars,
+        ),
+        continuation_hint.as_deref(),
         bounds.max_suggested_chars,
     )
 }
 
+fn compose_continuation_hint(
+    current_task: Option<&str>,
+    suggested_response: Option<&str>,
+    max_chars: usize,
+) -> Option<String> {
+    if max_chars == 0 {
+        return None;
+    }
+    let current_task =
+        current_task.and_then(|value| normalize_hint_text(value, max_chars.saturating_sub(6)));
+    let suggested_response =
+        suggested_response.and_then(|value| normalize_hint_text(value, max_chars));
+
+    match (current_task, suggested_response) {
+        (Some(task), Some(next)) => Some(format!("task: {task} | next: {next}")),
+        (Some(task), None) => Some(format!("task: {task}")),
+        (None, Some(next)) => Some(format!("next: {next}")),
+        (None, None) => None,
+    }
+}
+
 fn merge_observation_hint_with_suggested_response(
     observation_hint: Option<String>,
-    suggested_response: Option<&str>,
+    continuation_hint: Option<&str>,
     max_suggested_chars: usize,
 ) -> Option<String> {
     if max_suggested_chars == 0 {
         return observation_hint;
     }
-    let suggested =
-        suggested_response.and_then(|value| normalize_hint_text(value, max_suggested_chars));
+    let continuation = continuation_hint
+        .and_then(|value| normalize_hint_text(value, max_suggested_chars))
+        .map(|value| normalize_continuation_hint_prefix(value.as_str()));
 
-    match (observation_hint, suggested) {
-        (Some(base), Some(next)) => Some(format!("{base} | next: {next}")),
-        (None, Some(next)) => Some(format!("om: next: {next}")),
+    match (observation_hint, continuation) {
+        (Some(base), Some(continuation)) => Some(format!("{base} | {continuation}")),
+        (None, Some(continuation)) => Some(format!("om: {continuation}")),
         (Some(base), None) => Some(base),
         (None, None) => None,
+    }
+}
+
+fn normalize_continuation_hint_prefix(value: &str) -> String {
+    let normalized = value.trim();
+    if normalized
+        .strip_prefix("task:")
+        .or_else(|| normalized.strip_prefix("next:"))
+        .is_some()
+    {
+        normalized.to_string()
+    } else {
+        format!("next: {normalized}")
     }
 }
 
@@ -959,11 +1260,13 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        SearchOptionsInput, build_search_options, normalize_hint_text, parse_optional_target_uri,
-        validate_search_cutoff_options,
+        SearchOptionsInput, build_search_options, infer_buffered_entry_priority,
+        normalize_hint_text, parse_optional_target_uri, snapshot_visible_entry_selection,
+        snapshot_visible_entry_source_key, validate_search_cutoff_options,
     };
     use crate::error::AxiomError;
     use crate::models::{MetadataFilter, SearchBudget};
+    use crate::om::{OmObservationEntryV2, OmObservationOriginKind, OmObservationPriority};
     use crate::uri::AxiomUri;
 
     #[test]
@@ -1057,6 +1360,198 @@ mod tests {
             vec!["auth".to_string(), "oauth".to_string()]
         );
         assert_eq!(resolved_filter.mime.as_deref(), Some("text/markdown"));
+    }
+
+    #[test]
+    fn infer_buffered_entry_priority_preserves_high_signals() {
+        assert_eq!(
+            infer_buffered_entry_priority("priority:high patch queue replay"),
+            crate::om::OmObservationPriority::High
+        );
+        assert_eq!(
+            infer_buffered_entry_priority("[high] rollback risk"),
+            crate::om::OmObservationPriority::High
+        );
+        assert_eq!(
+            infer_buffered_entry_priority("high: fix stale hint"),
+            crate::om::OmObservationPriority::High
+        );
+        assert_eq!(
+            infer_buffered_entry_priority("normal buffered note"),
+            crate::om::OmObservationPriority::Medium
+        );
+    }
+
+    #[test]
+    fn snapshot_visible_entry_source_key_maps_observation_and_buffered_to_same_chunk() {
+        assert_eq!(
+            snapshot_visible_entry_source_key("observation:chunk-7"),
+            "chunk:chunk-7"
+        );
+        assert_eq!(
+            snapshot_visible_entry_source_key("buffered:session:s1:chunk-7"),
+            "chunk:chunk-7"
+        );
+        assert_eq!(
+            snapshot_visible_entry_source_key("reflection:session:s1:42"),
+            "entry:reflection:session:s1:42"
+        );
+    }
+
+    #[test]
+    fn snapshot_visible_entry_ids_dedupes_same_chunk_source_keeping_first_entry() {
+        let entries = vec![
+            OmObservationEntryV2 {
+                entry_id: "observation:chunk-1".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "a".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Observation,
+                created_at_rfc3339: "2026-03-04T00:00:00Z".to_string(),
+                superseded_by: None,
+            },
+            OmObservationEntryV2 {
+                entry_id: "buffered:session:s1:chunk-1".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "a-tail".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Chunk,
+                created_at_rfc3339: "2026-03-04T00:00:01Z".to_string(),
+                superseded_by: None,
+            },
+            OmObservationEntryV2 {
+                entry_id: "reflection:session:s1:99".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "r".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Reflection,
+                created_at_rfc3339: "2026-03-04T00:00:02Z".to_string(),
+                superseded_by: None,
+            },
+        ];
+
+        let selection = snapshot_visible_entry_selection(&entries);
+        assert_eq!(
+            selection.selected_entry_ids,
+            vec![
+                "observation:chunk-1".to_string(),
+                "reflection:session:s1:99".to_string(),
+            ]
+        );
+        assert_eq!(
+            selection.activated_visible_entry_ids,
+            vec![
+                "observation:chunk-1".to_string(),
+                "reflection:session:s1:99".to_string(),
+            ]
+        );
+        assert!(selection.buffered_visible_entry_ids.is_empty());
+    }
+
+    #[test]
+    fn snapshot_visible_entry_selection_prefers_activated_over_buffered_for_same_source() {
+        let entries = vec![
+            OmObservationEntryV2 {
+                entry_id: "buffered:session:s1:chunk-7".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "buffered".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Chunk,
+                created_at_rfc3339: "2026-03-04T00:00:00Z".to_string(),
+                superseded_by: None,
+            },
+            OmObservationEntryV2 {
+                entry_id: "observation:chunk-7".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "active".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Observation,
+                created_at_rfc3339: "2026-03-04T00:00:01Z".to_string(),
+                superseded_by: None,
+            },
+            OmObservationEntryV2 {
+                entry_id: "reflection:session:s1:12".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::High,
+                text: "reflection".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Reflection,
+                created_at_rfc3339: "2026-03-04T00:00:02Z".to_string(),
+                superseded_by: None,
+            },
+        ];
+        let selection = snapshot_visible_entry_selection(&entries);
+        assert_eq!(
+            selection.selected_entry_ids,
+            vec![
+                "observation:chunk-7".to_string(),
+                "reflection:session:s1:12".to_string(),
+            ]
+        );
+        assert!(selection.buffered_visible_entry_ids.is_empty());
+        assert_eq!(
+            selection.activated_visible_entry_ids,
+            vec![
+                "observation:chunk-7".to_string(),
+                "reflection:session:s1:12".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn snapshot_visible_entry_selection_keeps_buffered_when_no_activated_pair_exists() {
+        let entries = vec![
+            OmObservationEntryV2 {
+                entry_id: "buffered:session:s1:chunk-11".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "buffered only".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Chunk,
+                created_at_rfc3339: "2026-03-04T00:00:00Z".to_string(),
+                superseded_by: None,
+            },
+            OmObservationEntryV2 {
+                entry_id: "reflection:session:s1:13".to_string(),
+                scope_key: "session:s1".to_string(),
+                thread_id: "s1".to_string(),
+                priority: OmObservationPriority::Medium,
+                text: "reflection".to_string(),
+                source_message_ids: Vec::new(),
+                origin_kind: OmObservationOriginKind::Reflection,
+                created_at_rfc3339: "2026-03-04T00:00:01Z".to_string(),
+                superseded_by: None,
+            },
+        ];
+
+        let selection = snapshot_visible_entry_selection(&entries);
+        assert_eq!(
+            selection.selected_entry_ids,
+            vec![
+                "buffered:session:s1:chunk-11".to_string(),
+                "reflection:session:s1:13".to_string(),
+            ]
+        );
+        assert_eq!(
+            selection.buffered_visible_entry_ids,
+            vec!["buffered:session:s1:chunk-11".to_string()]
+        );
+        assert_eq!(
+            selection.activated_visible_entry_ids,
+            vec!["reflection:session:s1:13".to_string()]
+        );
     }
 }
 

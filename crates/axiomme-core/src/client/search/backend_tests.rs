@@ -7,7 +7,8 @@ use crate::models::{
     ContextHit, FindResult, IndexRecord, QueryPlan, QueueEventStatus, RuntimeHint, RuntimeHintKind,
     SearchBudget, SearchOptions, SearchRequest, classify_hit_buckets,
 };
-use crate::om::{OmOriginType, OmRecord, OmScope, build_scope_key};
+use crate::om::{OmObservationChunk, OmOriginType, OmRecord, OmScope, build_scope_key};
+use crate::state::{OmContinuationHints, OmReflectionApplyContext, OmReflectionApplyOutcome};
 
 use super::reranker::{RerankerMode, resolve_reranker_mode};
 use super::{
@@ -260,6 +261,66 @@ fn doc_aware_reranker_prioritizes_config_documents() {
 }
 
 #[test]
+fn doc_aware_reranker_prefers_doc_class_tag_before_uri_heuristics() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    app.initialize().expect("init");
+
+    let tagged_config = IndexRecord {
+        id: "cfg-meta-1".to_string(),
+        uri: "axiom://resources/spec/guide.md".to_string(),
+        parent_uri: Some("axiom://resources/spec".to_string()),
+        is_leaf: true,
+        context_type: "resource".to_string(),
+        name: "guide.md".to_string(),
+        abstract_text: "service settings".to_string(),
+        content: "queue.dead_letter_rate and retry policy".to_string(),
+        tags: vec![
+            "doc_class:config".to_string(),
+            "parser:yaml".to_string(),
+            "mime:application/yaml".to_string(),
+        ],
+        updated_at: Utc::now(),
+        depth: 3,
+    };
+    let schema = IndexRecord {
+        id: "spec-meta-1".to_string(),
+        uri: "axiom://resources/spec/schema.md".to_string(),
+        parent_uri: Some("axiom://resources/spec".to_string()),
+        is_leaf: true,
+        context_type: "resource".to_string(),
+        name: "schema.md".to_string(),
+        abstract_text: "contract schema".to_string(),
+        content: "openapi contract details".to_string(),
+        tags: vec!["markdown".to_string()],
+        updated_at: Utc::now(),
+        depth: 3,
+    };
+    {
+        let mut index = app.index.write().expect("index write");
+        index.upsert(tagged_config);
+        index.upsert(schema);
+    }
+
+    let mut result = sample_find_result(vec![
+        hit("axiom://resources/spec/schema.md", 0.93),
+        hit("axiom://resources/spec/guide.md", 0.86),
+    ]);
+    app.apply_reranker_with_mode(
+        "config queue dead_letter_rate",
+        &mut result,
+        2,
+        RerankerMode::DocAwareV1,
+    )
+    .expect("rerank");
+
+    assert_eq!(
+        result.query_results[0].uri,
+        "axiom://resources/spec/guide.md"
+    );
+}
+
+#[test]
 fn search_injects_om_hint_and_records_om_metrics_in_request_log() {
     let (_temp, app) = setup_test_app();
     upsert_records(
@@ -295,6 +356,25 @@ fn search_injects_om_hint_and_records_om_metrics_in_request_log() {
     app.state
         .upsert_om_record(&om_record)
         .expect("upsert om record");
+    let persisted_om_record = app
+        .state
+        .get_om_record_by_scope_key(&scope_key)
+        .expect("load om record")
+        .expect("om record missing");
+    app.state
+        .append_om_observation_chunk(&OmObservationChunk {
+            id: "obs-chunk-search-om".to_string(),
+            record_id: persisted_om_record.id.clone(),
+            seq: 1,
+            cycle_id: "cycle-search-om".to_string(),
+            observations: "alpha observation\nbeta observation\nlatest observation".to_string(),
+            token_count: 120,
+            message_tokens: 120,
+            message_ids: vec!["m-om-search-1".to_string()],
+            last_observed_at: now,
+            created_at: now,
+        })
+        .expect("append om observation chunk");
 
     let result = app
         .search(
@@ -316,6 +396,16 @@ fn search_injects_om_hint_and_records_om_metrics_in_request_log() {
         notes
             .iter()
             .any(|value| value.starts_with("om_hint_policy:"))
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|value| value == "om_hint_reader:snapshot_v2")
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|value| value == "om_hint_compaction:priority_v2")
     );
 
     let logs = app
@@ -349,6 +439,18 @@ fn search_injects_om_hint_and_records_om_metrics_in_request_log() {
             .get("om_hint_applied")
             .and_then(serde_json::Value::as_bool),
         Some(true)
+    );
+    assert_eq!(
+        details
+            .get("om_hint_reader")
+            .and_then(serde_json::Value::as_str),
+        Some("snapshot_v2")
+    );
+    assert_eq!(
+        details
+            .get("om_hint_compaction")
+            .and_then(serde_json::Value::as_str),
+        Some("priority_v2")
     );
     assert!(details.get("om_hint_policy").is_some());
 }
@@ -524,6 +626,25 @@ fn fetch_session_om_state_falls_back_to_recent_non_session_scope_record() {
     app.state
         .upsert_om_record(&thread_record)
         .expect("upsert thread record");
+    let persisted_thread_record = app
+        .state
+        .get_om_record_by_scope_key("thread:t-fallback")
+        .expect("load thread record")
+        .expect("thread record missing");
+    app.state
+        .append_om_observation_chunk(&OmObservationChunk {
+            id: "obs-chunk-thread-fallback".to_string(),
+            record_id: persisted_thread_record.id.clone(),
+            seq: 1,
+            cycle_id: "cycle-thread-fallback".to_string(),
+            observations: "thread scoped observation".to_string(),
+            token_count: 45,
+            message_tokens: 45,
+            message_ids: vec!["m-thread-fallback-1".to_string()],
+            last_observed_at: now,
+            created_at: now,
+        })
+        .expect("append thread fallback observation chunk");
 
     app.state
         .upsert_om_scope_session("resource:r-fallback", "s-fallback")
@@ -554,6 +675,460 @@ fn fetch_session_om_state_falls_back_to_recent_non_session_scope_record() {
             .hint
             .as_deref()
             .is_some_and(|value| value.contains("thread scoped observation"))
+    );
+}
+
+#[test]
+fn fetch_session_om_state_thread_scope_uses_scope_canonical_thread_id() {
+    let (_temp, app) = setup_test_app();
+    let now = Utc::now();
+
+    let mut thread_record = base_om_record(
+        "om-canonical-thread-record",
+        OmScope::Thread,
+        "thread:t-canonical",
+        now,
+    );
+    thread_record.thread_id = None;
+    thread_record.active_observations = "canonical thread observation".to_string();
+    thread_record.observation_token_count = 55;
+    app.state
+        .upsert_om_record(&thread_record)
+        .expect("upsert thread record");
+
+    app.state
+        .upsert_om_scope_session("thread:t-canonical", "s-canonical")
+        .expect("map thread scope");
+    app.state
+        .upsert_om_thread_state(
+            "thread:t-canonical",
+            "t-canonical",
+            Some(now),
+            Some("Primary: apply canonical id"),
+            Some("reply from canonical thread"),
+        )
+        .expect("upsert canonical thread state");
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    app.state
+        .upsert_om_thread_state(
+            "thread:t-canonical",
+            "s-canonical",
+            Some(now),
+            Some("Primary: alias thread"),
+            Some("reply from session alias"),
+        )
+        .expect("upsert alias thread state");
+
+    let state = app
+        .fetch_session_om_state_with_enabled("s-canonical", true)
+        .expect("state")
+        .expect("state missing");
+    let hint = state.hint.expect("hint missing");
+    assert!(
+        hint.contains("reply from canonical thread"),
+        "expected canonical thread suggested response in hint: {hint}"
+    );
+    assert!(
+        !hint.contains("reply from session alias"),
+        "must not select session-id alias thread over canonical scope thread: {hint}"
+    );
+}
+
+#[test]
+fn fetch_session_om_state_thread_scope_does_not_mix_fields_across_thread_states() {
+    let (_temp, app) = setup_test_app();
+    let now = Utc::now();
+
+    let mut thread_record = base_om_record(
+        "om-thread-state-atomic-record",
+        OmScope::Thread,
+        "thread:t-atomic",
+        now,
+    );
+    thread_record.thread_id = Some("t-atomic".to_string());
+    thread_record.active_observations = "atomic thread observation".to_string();
+    app.state
+        .upsert_om_record(&thread_record)
+        .expect("upsert thread record");
+
+    app.state
+        .upsert_om_scope_session("thread:t-atomic", "s-atomic")
+        .expect("map thread scope");
+    app.state
+        .upsert_om_thread_state(
+            "thread:t-atomic",
+            "t-atomic",
+            Some(now),
+            Some("Primary: preferred task"),
+            None,
+        )
+        .expect("upsert preferred thread state");
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    app.state
+        .upsert_om_thread_state(
+            "thread:t-atomic",
+            "s-atomic",
+            Some(now),
+            Some("Primary: fallback task"),
+            Some("fallback response"),
+        )
+        .expect("upsert fallback thread state");
+
+    let state = app
+        .fetch_session_om_state_with_enabled("s-atomic", true)
+        .expect("state")
+        .expect("state missing");
+    let hint = state.hint.expect("hint missing");
+    assert!(
+        hint.contains("task: Primary: preferred task"),
+        "preferred thread task must be preserved: {hint}"
+    );
+    assert!(
+        !hint.contains("fallback response"),
+        "preferred thread missing suggested_response must not pull fallback thread field: {hint}"
+    );
+}
+
+#[test]
+fn fetch_session_om_state_prefers_continuation_state_suggested_response() {
+    let (_temp, app) = setup_test_app();
+    let now = Utc::now();
+
+    let mut thread_record = base_om_record(
+        "om-continuation-priority-record",
+        OmScope::Thread,
+        "thread:t-continuation",
+        now,
+    );
+    thread_record.thread_id = Some("t-continuation".to_string());
+    thread_record.active_observations = "continuation thread observation".to_string();
+    thread_record.suggested_response = Some("reply from record fallback".to_string());
+    app.state
+        .upsert_om_record(&thread_record)
+        .expect("upsert thread record");
+
+    app.state
+        .upsert_om_scope_session("thread:t-continuation", "s-continuation")
+        .expect("map thread scope");
+    app.state
+        .upsert_om_thread_state(
+            "thread:t-continuation",
+            "t-continuation",
+            Some(now),
+            Some("Primary: thread state"),
+            Some("reply from thread state"),
+        )
+        .expect("upsert thread state");
+    app.state
+        .upsert_om_continuation_state(
+            "thread:t-continuation",
+            "t-continuation",
+            OmContinuationHints {
+                current_task: Some("Primary: continuation"),
+                suggested_response: Some("reply from continuation state"),
+            },
+            0.92,
+            "observer",
+            Some(now + chrono::Duration::seconds(1)),
+        )
+        .expect("upsert continuation state");
+
+    let state = app
+        .fetch_session_om_state_with_enabled("s-continuation", true)
+        .expect("state")
+        .expect("state missing");
+    let hint = state.hint.expect("hint missing");
+    assert!(
+        hint.contains("reply from continuation state"),
+        "continuation state suggested response must be used: {hint}"
+    );
+    assert!(
+        hint.contains("task: Primary: continuation"),
+        "continuation current_task must be reserved in hint: {hint}"
+    );
+    assert!(
+        !hint.contains("reply from thread state"),
+        "thread state fallback must not override continuation state: {hint}"
+    );
+    assert!(
+        !hint.contains("reply from record fallback"),
+        "record fallback must not override continuation state: {hint}"
+    );
+}
+
+#[test]
+fn fetch_session_om_state_does_not_mix_partial_continuation_with_thread_state() {
+    let (_temp, app) = setup_test_app();
+    let now = Utc::now();
+
+    let mut thread_record = base_om_record(
+        "om-continuation-partial-record",
+        OmScope::Thread,
+        "thread:t-continuation-partial",
+        now,
+    );
+    thread_record.thread_id = Some("t-continuation-partial".to_string());
+    thread_record.active_observations = "partial continuation observation".to_string();
+    app.state
+        .upsert_om_record(&thread_record)
+        .expect("upsert thread record");
+
+    app.state
+        .upsert_om_scope_session("thread:t-continuation-partial", "s-continuation-partial")
+        .expect("map thread scope");
+    app.state
+        .upsert_om_thread_state(
+            "thread:t-continuation-partial",
+            "t-continuation-partial",
+            Some(now),
+            Some("Primary: stale thread task"),
+            Some("stale thread response"),
+        )
+        .expect("upsert thread state");
+    app.state
+        .upsert_om_continuation_state(
+            "thread:t-continuation-partial",
+            "t-continuation-partial",
+            OmContinuationHints {
+                current_task: Some("Primary: continuation task only"),
+                suggested_response: None,
+            },
+            0.82,
+            "observer_interval",
+            Some(now + chrono::Duration::seconds(1)),
+        )
+        .expect("upsert continuation state");
+
+    let state = app
+        .fetch_session_om_state_with_enabled("s-continuation-partial", true)
+        .expect("state")
+        .expect("state missing");
+    let hint = state.hint.expect("hint missing");
+    assert!(
+        hint.contains("task: Primary: continuation task only"),
+        "continuation task must be included: {hint}"
+    );
+    assert!(
+        !hint.contains("stale thread response"),
+        "partial continuation must not mix stale thread suggested response: {hint}"
+    );
+}
+
+#[test]
+fn fetch_session_om_state_compaction_reserves_high_priority_entry() {
+    let (_temp, app) = setup_test_app();
+    let now = Utc::now();
+
+    let scope_key =
+        build_scope_key(OmScope::Session, Some("s-high-priority"), None, None).expect("scope");
+    let mut record = base_om_record("om-high-priority-record", OmScope::Session, &scope_key, now);
+    record.session_id = Some("s-high-priority".to_string());
+    record.active_observations = "noise one\nnoise two\nnoise three".to_string();
+    app.state
+        .upsert_om_record(&record)
+        .expect("upsert om record");
+
+    let outcome = app
+        .state
+        .apply_om_reflection_with_cas(
+            &scope_key,
+            0,
+            9911,
+            "critical high-priority reflection",
+            &[],
+            OmReflectionApplyContext::default(),
+        )
+        .expect("apply reflection");
+    assert_eq!(outcome, OmReflectionApplyOutcome::Applied);
+
+    let mut refreshed = app
+        .state
+        .get_om_record_by_scope_key(&scope_key)
+        .expect("fetch record")
+        .expect("record missing");
+    refreshed.active_observations =
+        "tail noise alpha\ntail noise beta\ntail noise gamma".to_string();
+    app.state
+        .upsert_om_record(&refreshed)
+        .expect("overwrite active observations");
+
+    let state = app
+        .fetch_session_om_state_with_enabled("s-high-priority", true)
+        .expect("state")
+        .expect("state missing");
+    let hint = state.hint.expect("hint missing");
+    assert!(
+        hint.contains("critical high-priority reflection"),
+        "high priority reflection entry must survive compaction: {hint}"
+    );
+}
+
+#[test]
+fn fetch_session_om_state_snapshot_includes_buffered_observation_tail() {
+    let (_temp, app) = setup_test_app();
+    let now = Utc::now();
+
+    let scope_key =
+        build_scope_key(OmScope::Session, Some("s-buffered-tail"), None, None).expect("scope");
+    let mut record = base_om_record("om-buffered-tail-record", OmScope::Session, &scope_key, now);
+    record.session_id = Some("s-buffered-tail".to_string());
+    record.active_observations = "active observation summary".to_string();
+    app.state
+        .upsert_om_record(&record)
+        .expect("upsert om record");
+
+    for (seq, text) in [
+        (1u32, "buffered-oldest-observation"),
+        (2u32, "buffered-middle-observation"),
+        (3u32, "buffered-latest-observation"),
+    ] {
+        let chunk = OmObservationChunk {
+            id: format!("obs-chunk-{seq}"),
+            record_id: record.id.clone(),
+            seq,
+            cycle_id: "cycle-buffered".to_string(),
+            observations: text.to_string(),
+            token_count: 8,
+            message_tokens: 8,
+            message_ids: vec![format!("m-{seq}")],
+            last_observed_at: now + chrono::Duration::seconds(i64::from(seq)),
+            created_at: now + chrono::Duration::seconds(i64::from(seq)),
+        };
+        app.state
+            .append_om_observation_chunk(&chunk)
+            .expect("append chunk");
+    }
+
+    let state = app
+        .fetch_session_om_state_with_enabled("s-buffered-tail", true)
+        .expect("state")
+        .expect("state missing");
+    assert_eq!(
+        state.snapshot_version.as_deref(),
+        Some(crate::om::OM_SEARCH_VISIBLE_SNAPSHOT_V2_VERSION),
+        "snapshot version must be explicit for read-state consumers",
+    );
+    assert!(
+        state.materialized_at.is_some(),
+        "snapshot read state must include materialized timestamp",
+    );
+    assert_eq!(
+        state.buffered_chunk_ids,
+        vec!["obs-chunk-3".to_string(), "obs-chunk-2".to_string()],
+        "buffered chunk ids must match the visible buffered tail order",
+    );
+    assert_eq!(
+        state.selected_entry_ids,
+        vec![
+            "observation:obs-chunk-1".to_string(),
+            "observation:obs-chunk-2".to_string(),
+            "observation:obs-chunk-3".to_string(),
+        ],
+        "selected entry ids must keep one canonical entry per chunk source",
+    );
+    let hint = state.hint.expect("hint missing");
+    assert!(
+        hint.contains("buffered-middle-observation"),
+        "snapshot hint must include buffered tail chunk: {hint}"
+    );
+    assert!(
+        hint.contains("buffered-latest-observation"),
+        "snapshot hint must include latest buffered chunk: {hint}"
+    );
+}
+
+#[test]
+fn search_query_plan_notes_include_snapshot_reader_and_buffered_chunk_count() {
+    let (_temp, app) = setup_test_app();
+    upsert_records(
+        &app,
+        &[
+            resources_root_record("root-snapshot-note"),
+            resources_leaf_record(
+                "leaf-snapshot-note",
+                "snapshot-note.md",
+                "snapshot note",
+                "snapshot query plan note",
+                &["om"],
+            ),
+        ],
+    );
+
+    let scope_key =
+        build_scope_key(OmScope::Session, Some("s-snapshot-note"), None, None).expect("scope");
+    let now = Utc::now();
+    let mut record = base_om_record("om-snapshot-note-record", OmScope::Session, &scope_key, now);
+    record.session_id = Some("s-snapshot-note".to_string());
+    record.active_observations = "active snapshot hint".to_string();
+    app.state
+        .upsert_om_record(&record)
+        .expect("upsert om record");
+    app.state
+        .append_om_observation_chunk(&OmObservationChunk {
+            id: "obs-chunk-snapshot-note".to_string(),
+            record_id: record.id.clone(),
+            seq: 1,
+            cycle_id: "cycle-snapshot-note".to_string(),
+            observations: "buffered snapshot tail".to_string(),
+            token_count: 8,
+            message_tokens: 8,
+            message_ids: vec!["m-snapshot-note".to_string()],
+            last_observed_at: now,
+            created_at: now,
+        })
+        .expect("append chunk");
+
+    let result = app
+        .search(
+            "snapshot",
+            Some("axiom://resources"),
+            Some("s-snapshot-note"),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("search");
+    let notes = &result.query_plan.notes;
+    assert!(
+        notes
+            .iter()
+            .any(|value| value == "om_hint_reader:snapshot_v2")
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|value| value == "om_hint_compaction:priority_v2")
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|value| value == "om_snapshot_buffered_chunks:1")
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|value| value == "om_snapshot_buffered_chunk_ids:obs-chunk-snapshot-note")
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|value| value == "om_hint_high_priority_selected:0")
+    );
+    assert!(
+        notes.iter().any(|value| {
+            value.starts_with("om_snapshot_visible_entries:")
+                && value.match_indices("obs-chunk-snapshot-note").count() == 1
+                && (value.contains("observation:obs-chunk-snapshot-note")
+                    || value.contains("buffered:session:s-snapshot-note:obs-chunk-snapshot-note"))
+        }),
+        "selected entries note must dedupe same chunk source ids"
+    );
+    assert!(
+        notes.iter().any(|value| {
+            value.starts_with("om_snapshot_visible_activated_entries:")
+                && value.contains("observation:obs-chunk-snapshot-note")
+        }),
+        "activated entries should be canonical when activated/buffered share one source chunk"
     );
 }
 
@@ -976,7 +1551,6 @@ fn base_om_record(id: &str, scope: OmScope, scope_key: &str, now: DateTime<Utc>)
         buffered_reflection: None,
         buffered_reflection_tokens: None,
         buffered_reflection_input_tokens: None,
-        reflected_observation_line_count: None,
         created_at: now,
         updated_at: now,
     }
@@ -989,6 +1563,9 @@ fn hit(uri: &str, score: f32) -> ContextHit {
         abstract_text: String::new(),
         context_type: "resource".to_string(),
         relations: Vec::new(),
+        snippet: None,
+        matched_heading: None,
+        score_components: crate::models::ScoreComponents::default(),
     }
 }
 

@@ -29,6 +29,7 @@ struct QueryInitialization {
     trace_start: Vec<TracePoint>,
     frontier: BinaryHeap<Node>,
     score_map: HashMap<Arc<str>, f32>,
+    score_details: HashMap<Arc<str>, ScoredRecord>,
     global_rank: Vec<ScoredRecord>,
     filter_projection: Option<HashSet<Arc<str>>>,
 }
@@ -113,6 +114,7 @@ struct ExpansionLoopInput<'a> {
     query_cutoffs: &'a QueryCutoffs,
     limit: usize,
     score_map: &'a HashMap<Arc<str>, f32>,
+    score_details: &'a HashMap<Arc<str>, ScoredRecord>,
     frontier: BinaryHeap<Node>,
     run_start: Instant,
 }
@@ -173,6 +175,7 @@ pub(super) fn run_single_query(
         trace_start,
         frontier,
         score_map,
+        score_details,
         global_rank,
         filter_projection,
     } = initialize_query_frontier(QueryFrontierInput {
@@ -197,6 +200,7 @@ pub(super) fn run_single_query(
         query_cutoffs: &query_cutoffs,
         limit,
         score_map: &score_map,
+        score_details: &score_details,
         frontier,
         run_start,
     });
@@ -277,7 +281,7 @@ fn run_identifier_query_fast_path(input: IdentifierFastPathInput<'_>) -> Option<
     let mut hits = ranked
         .iter()
         .take(limit)
-        .filter_map(|item| make_hit_from_scored(index, item))
+        .filter_map(|item| make_hit_from_scored(index, item, query))
         .collect::<Vec<_>>();
     sort_hits_by_score_desc_uri_asc(&mut hits);
     let final_topk = hits
@@ -328,6 +332,7 @@ fn execute_expansion_loop(input: ExpansionLoopInput<'_>) -> ExpansionLoopState {
         query_cutoffs,
         limit,
         score_map,
+        score_details,
         mut frontier,
         run_start,
     } = input;
@@ -384,7 +389,12 @@ fn execute_expansion_loop(input: ExpansionLoopInput<'_>) -> ExpansionLoopState {
                 if query_cutoffs.allows_uri(index, child.uri.as_ref(), propagated)
                     && let Some(record) = index.get(child.uri.as_ref())
                 {
-                    let hit = make_hit(record, propagated);
+                    let hit = make_hit(
+                        record,
+                        propagated,
+                        &planned.query,
+                        score_details.get(child.uri.as_ref()),
+                    );
                     upsert_hit_if_higher(&mut selected, hit);
                     children_selected = children_selected.saturating_add(1);
                 }
@@ -562,6 +572,10 @@ fn initialize_query_frontier(input: QueryFrontierInput<'_>) -> QueryInitializati
         .iter()
         .map(|scored| (scored.uri.clone(), scored.score))
         .collect::<HashMap<_, _>>();
+    let score_details = global_rank
+        .iter()
+        .map(|scored| (scored.uri.clone(), scored.clone()))
+        .collect::<HashMap<_, _>>();
     let mut trace_start = Vec::new();
     let mut frontier = BinaryHeap::new();
     let mut seen_start = HashSet::new();
@@ -598,6 +612,7 @@ fn initialize_query_frontier(input: QueryFrontierInput<'_>) -> QueryInitializati
         trace_start,
         frontier,
         score_map,
+        score_details,
         global_rank,
         filter_projection,
     }
@@ -655,7 +670,7 @@ fn finalize_single_query_run(
         .filter(|scored| scored.is_leaf)
         .take(limit.max(8))
     {
-        let Some(hit) = make_hit_from_scored(index, scored) else {
+        let Some(hit) = make_hit_from_scored(index, scored, &query) else {
             continue;
         };
         upsert_hit_if_higher(&mut selected, hit);
@@ -698,9 +713,13 @@ struct Node {
     depth: usize,
 }
 
-fn make_hit_from_scored(index: &InMemoryIndex, scored: &ScoredRecord) -> Option<ContextHit> {
+fn make_hit_from_scored(
+    index: &InMemoryIndex,
+    scored: &ScoredRecord,
+    query: &str,
+) -> Option<ContextHit> {
     let record = index.get(&scored.uri)?;
-    Some(make_hit(record, scored.score))
+    Some(make_hit(record, scored.score, query, Some(scored)))
 }
 
 impl Eq for Node {}
@@ -742,6 +761,9 @@ mod tests {
             abstract_text: String::new(),
             context_type: "resource".to_string(),
             relations: Vec::new(),
+            snippet: None,
+            matched_heading: None,
+            score_components: crate::models::ScoreComponents::default(),
         }
     }
 

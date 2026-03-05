@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use axiomme_core::AxiomMe;
 use axiomme_core::markdown_preview::render_markdown_html as render_preview_html;
 use axiomme_core::models::{
-    AddResourceRequest, AddResourceWaitMode, MetadataFilter, ReconcileOptions, SearchRequest,
+    AddResourceRequest, AddResourceWaitMode, ReconcileOptions, SearchRequest,
 };
 
 use crate::cli::{AddWaitModeArg, Commands, DocumentMode, QueueCommand};
@@ -23,8 +23,9 @@ use self::handlers::{
 use self::ontology::handle_ontology_command;
 use self::queue::{run_queue_daemon, run_queue_worker};
 use self::support::{
-    build_add_ingest_options, parse_scope_args, parse_search_budget, print_json,
-    read_document_content, read_preview_content,
+    build_add_ingest_options, build_metadata_filter, parse_runtime_hints, parse_scope_args,
+    parse_search_budget, parse_search_request_file, print_json, read_document_content,
+    read_preview_content,
 };
 use self::validation::{apply_bootstrap_mode, resolve_bootstrap_mode, validate_command_preflight};
 use self::web::{WebServeOptions, serve};
@@ -147,29 +148,72 @@ fn run_validated(app: &AxiomMe, root: &Path, command: Commands) -> Result<()> {
         },
         Commands::Find(args) => {
             let budget = parse_search_budget(args.budget_ms, args.budget_nodes, args.budget_depth);
+            let filter = build_metadata_filter(&args.tags, args.mime.as_deref())?;
             let result = app.find_with_budget(
                 &args.query,
                 args.target.as_deref(),
                 Some(args.limit),
                 None,
-                None::<MetadataFilter>,
+                filter,
                 budget,
             )?;
             print_json(&result)?;
         }
         Commands::Search(args) => {
             let budget = parse_search_budget(args.budget_ms, args.budget_nodes, args.budget_depth);
-            let result = app.search_with_request(SearchRequest {
-                query: args.query,
-                target_uri: args.target,
-                session: args.session,
-                limit: Some(args.limit),
-                score_threshold: args.score_threshold,
-                min_match_tokens: args.min_match_tokens,
-                filter: None::<MetadataFilter>,
-                budget,
-                runtime_hints: Vec::new(),
-            })?;
+            let cli_filter = build_metadata_filter(&args.tags, args.mime.as_deref())?;
+            let cli_hints = parse_runtime_hints(&args.hints, args.hint_file.as_deref())?;
+
+            let mut request = if let Some(path) = args.request_json.as_deref() {
+                parse_search_request_file(path)?
+            } else {
+                SearchRequest {
+                    query: String::new(),
+                    target_uri: None,
+                    session: None,
+                    limit: None,
+                    score_threshold: None,
+                    min_match_tokens: None,
+                    filter: None,
+                    budget: None,
+                    runtime_hints: Vec::new(),
+                }
+            };
+
+            if let Some(query) = args.query {
+                request.query = query;
+            }
+            if request.query.trim().is_empty() {
+                anyhow::bail!("search query is required unless --request-json provides query");
+            }
+            if let Some(target) = args.target {
+                request.target_uri = Some(target);
+            }
+            if let Some(session) = args.session {
+                request.session = Some(session);
+            }
+            if let Some(limit) = args.limit {
+                request.limit = Some(limit);
+            } else if request.limit.is_none() {
+                request.limit = Some(10);
+            }
+            if args.score_threshold.is_some() {
+                request.score_threshold = args.score_threshold;
+            }
+            if args.min_match_tokens.is_some() {
+                request.min_match_tokens = args.min_match_tokens;
+            }
+            if budget.is_some() {
+                request.budget = budget;
+            }
+            if cli_filter.is_some() {
+                request.filter = cli_filter;
+            }
+            if !cli_hints.is_empty() {
+                request.runtime_hints.extend(cli_hints);
+            }
+
+            let result = app.search_with_request(request)?;
             print_json(&result)?;
         }
         Commands::Backend => {

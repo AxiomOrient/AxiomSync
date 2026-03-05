@@ -9,6 +9,7 @@ use crate::config::{InternalTierPolicy, TierSynthesisMode, should_persist_scope_
 use crate::config::{resolve_internal_tier_policy, resolve_tier_synthesis_mode};
 use crate::context_ops::{RecordInput, build_record, classify_context, infer_tags};
 use crate::error::{AxiomError, Result};
+use crate::mime::infer_mime_from_name;
 use crate::models::IndexRecord;
 use crate::models::QueueEventStatus;
 use crate::tier_documents::{
@@ -22,10 +23,11 @@ mod helpers;
 mod tests;
 
 use helpers::{
-    MAX_INDEX_READ_BYTES, MAX_TRUNCATED_MARKDOWN_TAIL_HEADING_KEYS,
-    collect_markdown_tail_heading_keys, directory_record_name, index_state_changed,
-    is_markdown_file, metadata_mtime_nanos, path_mtime_nanos, read_index_source_bytes,
-    should_skip_indexing_file, synthesize_directory_tiers,
+    MAX_INDEX_READ_BYTES, MAX_TRUNCATED_MARKDOWN_TAIL_HEADING_KEYS, TruncatedTextWindows,
+    collect_markdown_tail_heading_keys, collect_truncated_text_windows, directory_record_name,
+    index_state_changed, is_markdown_file, metadata_mtime_nanos, metadata_mtime_utc,
+    path_mtime_nanos, path_mtime_utc, read_index_source_bytes, should_skip_indexing_file,
+    synthesize_directory_tiers,
 };
 
 fn append_truncated_markdown_heading_index(text: &mut String, headings: &[String]) {
@@ -38,6 +40,202 @@ fn append_truncated_markdown_heading_index(text: &mut String, headings: &[String
         text.push_str(heading);
         text.push('\n');
     }
+}
+
+fn append_truncated_section(text: &mut String, title: &str, lines: &[String]) {
+    if lines.is_empty() {
+        return;
+    }
+    let mut seen = std::collections::HashSet::<String>::new();
+    let deduped = lines
+        .iter()
+        .filter(|line| seen.insert(line.to_ascii_lowercase()))
+        .collect::<Vec<_>>();
+    if deduped.is_empty() {
+        return;
+    }
+    text.push_str("\n\n[");
+    text.push_str(title);
+    text.push_str("]\n");
+    for line in deduped {
+        text.push_str("- ");
+        text.push_str(line);
+        text.push('\n');
+    }
+}
+
+fn is_config_extension(ext: &str) -> bool {
+    matches!(
+        ext,
+        "ini"
+            | "cfg"
+            | "conf"
+            | "env"
+            | "properties"
+            | "yaml"
+            | "yml"
+            | "json"
+            | "jsonl"
+            | "toml"
+            | "xml"
+    )
+}
+
+fn is_log_extension(ext: &str) -> bool {
+    matches!(ext, "log" | "out")
+}
+
+fn is_log_like_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("log") || lower.contains("trace") || lower.contains("event")
+}
+
+fn extract_code_tail_signatures(lines: &[String], limit: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in lines {
+        let lower = line.to_ascii_lowercase();
+        let looks_like_signature = lower.starts_with("fn ")
+            || lower.starts_with("pub fn")
+            || lower.starts_with("async fn")
+            || lower.starts_with("def ")
+            || lower.starts_with("class ")
+            || lower.starts_with("function ")
+            || lower.starts_with("impl ")
+            || (line.contains('(')
+                && line.contains(')')
+                && (line.contains('{') || line.contains("->") || line.ends_with(':')));
+        if looks_like_signature {
+            out.push(line.clone());
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn extract_config_tail_keys(lines: &[String], limit: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in lines {
+        let lower = line.to_ascii_lowercase();
+        let looks_like_key = (line.contains(':') || line.contains('='))
+            && lower.chars().any(|ch| ch.is_ascii_alphabetic())
+            && !lower.starts_with("http://")
+            && !lower.starts_with("https://");
+        if looks_like_key {
+            out.push(line.clone());
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn extract_log_tail_signals(lines: &[String], limit: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in lines {
+        let lower = line.to_ascii_lowercase();
+        let is_signal = [
+            "error",
+            "warn",
+            "panic",
+            "exception",
+            "timeout",
+            "dead_letter",
+            "failed",
+            "failure",
+            "traceback",
+        ]
+        .iter()
+        .any(|token| lower.contains(token));
+        if is_signal {
+            out.push(line.clone());
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn append_truncated_windows(
+    text: &mut String,
+    windows: &TruncatedTextWindows,
+    parser: &str,
+    name: &str,
+) {
+    append_truncated_section(text, "index middle window sample", &windows.middle_lines);
+    append_truncated_section(text, "index tail window sample", &windows.tail_lines);
+
+    let ext = file_extension_lower(name);
+    let is_code = ext.as_deref().is_some_and(is_code_extension);
+    let is_config = parser == "json"
+        || parser == "yaml"
+        || parser == "toml"
+        || parser == "jsonl"
+        || parser == "xml"
+        || ext.as_deref().is_some_and(is_config_extension);
+    let is_log = ext.as_deref().is_some_and(is_log_extension) || is_log_like_name(name);
+
+    if is_code {
+        let code_signatures = extract_code_tail_signatures(&windows.tail_lines, 12);
+        append_truncated_section(text, "index code tail signatures", &code_signatures);
+    }
+    if is_config {
+        let config_keys = extract_config_tail_keys(&windows.tail_lines, 16);
+        append_truncated_section(text, "index config tail keys", &config_keys);
+    }
+    if is_log {
+        let log_signals = extract_log_tail_signals(&windows.tail_lines, 16);
+        append_truncated_section(text, "index log tail signals", &log_signals);
+    }
+}
+
+fn file_extension_lower(name: &str) -> Option<String> {
+    Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+}
+
+fn is_code_extension(ext: &str) -> bool {
+    matches!(
+        ext,
+        "rs" | "py" | "ts" | "tsx" | "js" | "jsx" | "java" | "go" | "c" | "cpp" | "h" | "hpp"
+    )
+}
+
+fn infer_doc_class_tag(context_type: &str, name: &str, parser: &str) -> &'static str {
+    if context_type == "memory" {
+        return "memory";
+    }
+    if context_type == "skill" {
+        return "skill";
+    }
+    if context_type == "session" {
+        return "session";
+    }
+
+    if parser == "json" || parser == "yaml" || parser == "toml" {
+        return "config";
+    }
+    if parser == "jsonl" || parser == "xml" {
+        return "data";
+    }
+    if parser == "markdown" {
+        let lower = name.to_ascii_lowercase();
+        if lower.contains("schema") || lower.contains("contract") || lower.contains("openapi") {
+            return "spec";
+        }
+        return "narrative";
+    }
+
+    if file_extension_lower(name).is_some_and(|ext| is_code_extension(&ext)) {
+        return "code";
+    }
+
+    "general"
 }
 
 impl AxiomMe {
@@ -205,15 +403,20 @@ impl AxiomMe {
     ) -> Result<()> {
         let (abstract_text, overview_text) =
             self.load_directory_tiers_for_index(uri, path, internal_policy, tier_mode)?;
+        let context_type = classify_context(uri);
         let record = build_record(RecordInput {
             uri,
             parent_uri: uri.parent().as_ref(),
             is_leaf: false,
-            context_type: classify_context(uri),
+            context_type,
             name: directory_record_name(uri),
             abstract_text,
             content: overview_text,
-            tags: vec![],
+            tags: vec![
+                "parser:directory".to_string(),
+                "doc_class:collection".to_string(),
+            ],
+            updated_at: path_mtime_utc(path),
         });
         let hash = blake3::hash(record.content.as_bytes()).to_hex().to_string();
         let mtime = path_mtime_nanos(path);
@@ -235,6 +438,7 @@ impl AxiomMe {
         let (content, truncated) = read_index_source_bytes(path, MAX_INDEX_READ_BYTES)?;
         let parsed = self.parser_registry.parse_file(path, &content);
         let crate::parse::ParsedDocument {
+            parser,
             is_text,
             title,
             text_preview,
@@ -253,18 +457,17 @@ impl AxiomMe {
                 text,
                 "\n\n[indexing truncated at {MAX_INDEX_READ_BYTES} bytes]"
             );
+            if is_text {
+                let windows = collect_truncated_text_windows(path, MAX_INDEX_READ_BYTES)?;
+                append_truncated_windows(&mut text, &windows, &parser, &name);
+            }
             if is_markdown_file(&name) {
                 let tail_headings = collect_markdown_tail_heading_keys(
                     path,
                     MAX_TRUNCATED_MARKDOWN_TAIL_HEADING_KEYS,
                 )?;
                 if !tail_headings.is_empty() {
-                    let text_lower = text.to_lowercase();
-                    let missing_tail_headings = tail_headings
-                        .into_iter()
-                        .filter(|heading| !text_lower.contains(&heading.to_lowercase()))
-                        .collect::<Vec<_>>();
-                    append_truncated_markdown_heading_index(&mut text, &missing_tail_headings);
+                    append_truncated_markdown_heading_index(&mut text, &tail_headings);
                 }
             }
         }
@@ -272,19 +475,29 @@ impl AxiomMe {
         let abstract_text = title
             .or_else(|| text.lines().next().map(ToString::to_string))
             .unwrap_or_else(|| "content truncated for indexing".to_string());
+        let context_type = classify_context(uri);
         let mut tags = infer_tags(&name, &text);
         tags.extend(parsed_tags);
+        tags.push(format!("parser:{parser}"));
+        if let Some(mime) = infer_mime_from_name(&name) {
+            tags.push(format!("mime:{mime}"));
+        }
+        tags.push(format!(
+            "doc_class:{}",
+            infer_doc_class_tag(&context_type, &name, &parser)
+        ));
         tags.sort();
         tags.dedup();
         let record = build_record(RecordInput {
             uri,
             parent_uri: uri.parent().as_ref(),
             is_leaf: true,
-            context_type: classify_context(uri),
+            context_type,
             name,
             abstract_text,
             content: text,
             tags,
+            updated_at: metadata_mtime_utc(&metadata),
         });
 
         let hash = if truncated {

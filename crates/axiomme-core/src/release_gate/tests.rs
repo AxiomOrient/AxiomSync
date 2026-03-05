@@ -8,6 +8,51 @@ use super::test_support::{
 use super::*;
 use crate::models::{DependencyAuditSummary, DependencyInventorySummary, EvalBucket};
 
+const PROMPT_SIGNATURE_POLICY_HEAD_OLD: &str = r#"
+fn expected_prompt_contract_signatures(
+    contract_version: &str,
+    protocol_version: &str,
+) -> Option<PromptContractSignatures> {
+    match (contract_version.trim(), protocol_version.trim()) {
+        ("2.0.0", "om-v2") => Some(PromptContractSignatures {
+            observer_single_blake3: "oldhash",
+            reflector_blake3: "oldreflect",
+        }),
+        _ => None,
+    }
+}
+"#;
+
+const PROMPT_SIGNATURE_POLICY_HEAD_CHANGED_WITHOUT_BUMP: &str = r#"
+fn expected_prompt_contract_signatures(
+    contract_version: &str,
+    protocol_version: &str,
+) -> Option<PromptContractSignatures> {
+    match (contract_version.trim(), protocol_version.trim()) {
+        ("2.0.0", "om-v2") => Some(PromptContractSignatures {
+            observer_single_blake3: "newhash",
+            reflector_blake3: "oldreflect",
+        }),
+        _ => None,
+    }
+}
+"#;
+
+const PROMPT_SIGNATURE_POLICY_HEAD_CHANGED_WITH_BUMP: &str = r#"
+fn expected_prompt_contract_signatures(
+    contract_version: &str,
+    protocol_version: &str,
+) -> Option<PromptContractSignatures> {
+    match (contract_version.trim(), protocol_version.trim()) {
+        ("2.1.0", "om-v2") => Some(PromptContractSignatures {
+            observer_single_blake3: "newhash",
+            reflector_blake3: "oldreflect",
+        }),
+        _ => None,
+    }
+}
+"#;
+
 #[test]
 fn eval_quality_gate_decision_respects_threshold_and_case_count() {
     let no_cases = eval_quality_gate_decision(&eval_report(0, 1.0));
@@ -320,49 +365,45 @@ name = "axiomme-core"
 version = "0.1.0"
 
 [dependencies.episodic]
-version = "0.1.0"
+version = "0.2.0"
 git = "https://example.com/episodic.git"
+rev = "deadbeef"
 "#;
     let dependency = parse_manifest_episodic_dependency(manifest).expect("parse manifest");
-    assert_eq!(dependency.version_req, "0.1.0");
+    assert_eq!(dependency.version_req.as_deref(), Some("0.2.0"));
+    assert_eq!(
+        dependency.git_url.as_deref(),
+        Some("https://example.com/episodic.git")
+    );
+    assert_eq!(dependency.rev.as_deref(), Some("deadbeef"));
     assert!(dependency.has_git);
     assert!(!dependency.has_path);
 }
 
 #[test]
-fn parse_manifest_episodic_dependency_requires_version_field() {
+fn parse_manifest_episodic_dependency_requires_rev_when_git_is_present() {
     let manifest = r#"
 [package]
 name = "axiomme-core"
 version = "0.1.0"
 
 [dependencies.episodic]
-path = "../../../episodic"
+git = "https://example.com/episodic.git"
 "#;
-    let error = parse_manifest_episodic_dependency(manifest).expect_err("missing version");
-    assert_eq!(error, "episodic_dependency_missing_version");
+    let error = parse_manifest_episodic_dependency(manifest).expect_err("missing rev");
+    assert_eq!(error, "episodic_dependency_missing_rev");
 }
 
 #[test]
-fn episodic_manifest_req_contract_matches_accepts_supported_forms() {
-    for value in ["0.1.0", "^0.1.4", "~0.1.9", "=0.1.3", "0.1"] {
-        assert!(
-            episodic_manifest_req_contract_matches(value),
-            "expected supported manifest req: {value}"
-        );
-    }
+fn episodic_manifest_req_contract_matches_requires_exact_git_rev() {
+    assert!(episodic_manifest_req_contract_matches(
+        EPISODIC_REQUIRED_GIT_REV
+    ));
 }
 
 #[test]
-fn episodic_manifest_req_contract_matches_rejects_unsupported_ranges() {
-    for value in [
-        ">=0.1.0",
-        ">0.1.0",
-        "0.2.0",
-        "^0.2.0",
-        "0.1.*",
-        ">=0.1.0,<0.2.0",
-    ] {
+fn episodic_manifest_req_contract_matches_rejects_non_matching_values() {
+    for value in ["0.2.0", "deadbeef", "", "  "] {
         assert!(
             !episodic_manifest_req_contract_matches(value),
             "expected unsupported manifest req: {value}"
@@ -372,9 +413,9 @@ fn episodic_manifest_req_contract_matches_rejects_unsupported_ranges() {
 
 #[test]
 fn episodic_lock_version_contract_matches_checks_exact_version_shape() {
-    assert!(episodic_lock_version_contract_matches("0.1.0"));
-    assert!(episodic_lock_version_contract_matches("0.1.99"));
-    assert!(!episodic_lock_version_contract_matches("0.2.0"));
+    assert!(episodic_lock_version_contract_matches("0.2.0"));
+    assert!(episodic_lock_version_contract_matches("0.2.99"));
+    assert!(!episodic_lock_version_contract_matches("0.1.0"));
     assert!(!episodic_lock_version_contract_matches("invalid"));
 }
 
@@ -398,11 +439,11 @@ fn contract_integrity_gate_fails_when_core_crate_missing() {
 #[test]
 fn contract_integrity_gate_passes_when_contract_probe_succeeds() {
     let temp = tempdir().expect("tempdir");
-    write_contract_gate_workspace_fixture(
-        temp.path(),
-        "episodic = \"0.1.0\"",
-        Some(CRATES_IO_INDEX_SOURCE),
+    let lock_source = format!("{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}");
+    let manifest_dep = format!(
+        "episodic = {{ version = \"0.2.0\", git = \"{EPISODIC_REQUIRED_GIT_URL}\", rev = \"{EPISODIC_REQUIRED_GIT_REV}\" }}"
     );
+    write_contract_gate_workspace_fixture(temp.path(), &manifest_dep, Some(lock_source.as_str()));
 
     let output = format!("running 1 test\ntest {CONTRACT_EXECUTION_TEST_NAME} ... ok\n");
     let episodic_output = format!("running 1 test\ntest {EPISODIC_API_PROBE_TEST_NAME} ... ok\n");
@@ -437,6 +478,30 @@ fn contract_integrity_gate_passes_when_contract_probe_succeeds() {
                 &episodic_output,
             ),
             (
+                "git",
+                &["rev-parse", "--verify", "HEAD~1"],
+                true,
+                "abc123\n",
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "HEAD~1:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_OLD,
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_OLD,
+            ),
+            (
                 "cargo",
                 &[
                     "test",
@@ -463,6 +528,8 @@ fn contract_integrity_gate_passes_when_contract_probe_succeeds() {
             );
             assert!(value.episodic_semver_probe.passed);
             assert_eq!(value.policy.required_minor, EPISODIC_REQUIRED_MINOR);
+            assert_eq!(value.policy.required_git_url, EPISODIC_REQUIRED_GIT_URL);
+            assert_eq!(value.policy.required_git_rev, EPISODIC_REQUIRED_GIT_REV);
             assert!(
                 value
                     .ontology_policy
@@ -483,11 +550,11 @@ fn contract_integrity_gate_passes_when_contract_probe_succeeds() {
 #[test]
 fn contract_integrity_gate_fails_when_contract_probe_output_does_not_match() {
     let temp = tempdir().expect("tempdir");
-    write_contract_gate_workspace_fixture(
-        temp.path(),
-        "episodic = \"0.1.0\"",
-        Some(CRATES_IO_INDEX_SOURCE),
+    let lock_source = format!("{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}");
+    let manifest_dep = format!(
+        "episodic = {{ version = \"0.2.0\", git = \"{EPISODIC_REQUIRED_GIT_URL}\", rev = \"{EPISODIC_REQUIRED_GIT_REV}\" }}"
     );
+    write_contract_gate_workspace_fixture(temp.path(), &manifest_dep, Some(lock_source.as_str()));
 
     let decision = with_workspace_command_mocks(
         &[
@@ -516,6 +583,30 @@ fn contract_integrity_gate_fails_when_contract_probe_output_does_not_match() {
                 ],
                 true,
                 "running 1 test\ntest client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok\n",
+            ),
+            (
+                "git",
+                &["rev-parse", "--verify", "HEAD~1"],
+                true,
+                "abc123\n",
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "HEAD~1:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_OLD,
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_OLD,
             ),
             (
                 "cargo",
@@ -548,7 +639,7 @@ fn contract_integrity_gate_fails_when_episodic_dependency_uses_path() {
     let temp = tempdir().expect("tempdir");
     write_contract_gate_workspace_fixture(
         temp.path(),
-        "episodic = { version = \"0.1.0\", path = \"../../../episodic\" }",
+        "episodic = { version = \"0.2.0\", path = \"../../../episodic\" }",
         None,
     );
 
@@ -581,6 +672,30 @@ fn contract_integrity_gate_fails_when_episodic_dependency_uses_path() {
                 "running 1 test\ntest client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok\n",
             ),
             (
+                "git",
+                &["rev-parse", "--verify", "HEAD~1"],
+                true,
+                "abc123\n",
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "HEAD~1:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_OLD,
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_OLD,
+            ),
+            (
                 "cargo",
                 &[
                     "test",
@@ -604,4 +719,245 @@ fn contract_integrity_gate_fails_when_episodic_dependency_uses_path() {
         }
         other => panic!("expected contract_integrity details, got {other:?}"),
     }
+}
+
+#[test]
+fn contract_integrity_gate_fails_when_prompt_contract_signature_changes_without_tuple_bump() {
+    let temp = tempdir().expect("tempdir");
+    let lock_source = format!("{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}");
+    let manifest_dep = format!(
+        "episodic = {{ version = \"0.2.0\", git = \"{EPISODIC_REQUIRED_GIT_URL}\", rev = \"{EPISODIC_REQUIRED_GIT_REV}\" }}"
+    );
+    write_contract_gate_workspace_fixture(temp.path(), &manifest_dep, Some(lock_source.as_str()));
+
+    let decision = with_workspace_command_mocks(
+        &[
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    CONTRACT_EXECUTION_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms ... ok\n",
+            ),
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    EPISODIC_API_PROBE_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok\n",
+            ),
+            (
+                "git",
+                &["rev-parse", "--verify", "HEAD~1"],
+                true,
+                "abc123\n",
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "HEAD~1:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_OLD,
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_CHANGED_WITHOUT_BUMP,
+            ),
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    ONTOLOGY_CONTRACT_PROBE_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable ... ok\n",
+            ),
+        ],
+        || evaluate_contract_integrity_gate(temp.path()),
+    );
+    assert!(!decision.passed);
+    let details = parse_gate_details(&decision);
+    match details {
+        ReleaseGateDetails::ContractIntegrity(value) => {
+            assert!(!value.episodic_api_probe.passed);
+            assert!(value.episodic_api_probe.output_excerpt.contains(
+                "prompt_contract_signature_changed_without_contract_or_protocol_version_bump"
+            ));
+        }
+        other => panic!("expected contract_integrity details, got {other:?}"),
+    }
+}
+
+#[test]
+fn contract_integrity_gate_allows_prompt_contract_signature_change_with_version_bump() {
+    let temp = tempdir().expect("tempdir");
+    let lock_source = format!("{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}");
+    let manifest_dep = format!(
+        "episodic = {{ version = \"0.2.0\", git = \"{EPISODIC_REQUIRED_GIT_URL}\", rev = \"{EPISODIC_REQUIRED_GIT_REV}\" }}"
+    );
+    write_contract_gate_workspace_fixture(temp.path(), &manifest_dep, Some(lock_source.as_str()));
+
+    let decision = with_workspace_command_mocks(
+        &[
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    CONTRACT_EXECUTION_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms ... ok\n",
+            ),
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    EPISODIC_API_PROBE_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok\n",
+            ),
+            (
+                "git",
+                &["rev-parse", "--verify", "HEAD~1"],
+                true,
+                "abc123\n",
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "HEAD~1:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_OLD,
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_CHANGED_WITH_BUMP,
+            ),
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    ONTOLOGY_CONTRACT_PROBE_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable ... ok\n",
+            ),
+        ],
+        || evaluate_contract_integrity_gate(temp.path()),
+    );
+    assert!(decision.passed, "{:?}", decision.details);
+}
+
+#[test]
+fn contract_integrity_gate_allows_prompt_signature_policy_when_head_parent_is_unavailable() {
+    let temp = tempdir().expect("tempdir");
+    let lock_source = format!("{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}");
+    let manifest_dep = format!(
+        "episodic = {{ version = \"0.2.0\", git = \"{EPISODIC_REQUIRED_GIT_URL}\", rev = \"{EPISODIC_REQUIRED_GIT_REV}\" }}"
+    );
+    write_contract_gate_workspace_fixture(temp.path(), &manifest_dep, Some(lock_source.as_str()));
+
+    let decision = with_workspace_command_mocks(
+        &[
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    CONTRACT_EXECUTION_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms ... ok\n",
+            ),
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    EPISODIC_API_PROBE_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok\n",
+            ),
+            (
+                "git",
+                &["rev-parse", "--verify", "HEAD~1"],
+                false,
+                "fatal: ambiguous argument 'HEAD~1'\n",
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_OLD,
+            ),
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    ONTOLOGY_CONTRACT_PROBE_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable ... ok\n",
+            ),
+        ],
+        || evaluate_contract_integrity_gate(temp.path()),
+    );
+    assert!(decision.passed, "{:?}", decision.details);
 }

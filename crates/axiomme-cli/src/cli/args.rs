@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Args, ValueEnum};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -72,6 +74,10 @@ pub struct FindArgs {
     pub target: Option<String>,
     #[arg(long, default_value_t = 10)]
     pub limit: usize,
+    #[arg(long = "tag", value_name = "TAG")]
+    pub tags: Vec<String>,
+    #[arg(long)]
+    pub mime: Option<String>,
     #[arg(long)]
     pub budget_ms: Option<u64>,
     #[arg(long)]
@@ -83,13 +89,23 @@ pub struct FindArgs {
 #[derive(Debug, Args)]
 pub struct SearchArgs {
     #[arg(allow_hyphen_values = true)]
-    pub query: String,
+    pub query: Option<String>,
     #[arg(long)]
     pub target: Option<String>,
     #[arg(long)]
     pub session: Option<String>,
-    #[arg(long, default_value_t = 10)]
-    pub limit: usize,
+    #[arg(long)]
+    pub limit: Option<usize>,
+    #[arg(long = "tag", value_name = "TAG")]
+    pub tags: Vec<String>,
+    #[arg(long)]
+    pub mime: Option<String>,
+    #[arg(long = "hint", value_name = "KIND:TEXT")]
+    pub hints: Vec<String>,
+    #[arg(long, value_name = "FILE")]
+    pub hint_file: Option<PathBuf>,
+    #[arg(long, value_name = "FILE")]
+    pub request_json: Option<PathBuf>,
     /// Drop hits whose normalized score is below this threshold.
     #[arg(long, value_parser = parse_score_threshold)]
     pub score_threshold: Option<f32>,

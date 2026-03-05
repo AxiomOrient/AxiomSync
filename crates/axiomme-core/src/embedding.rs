@@ -322,16 +322,90 @@ pub(crate) fn clear_embedding_strict_error() {
 
 #[must_use]
 pub fn tokenize_vec(text: &str) -> Vec<String> {
-    text.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|x| !x.is_empty())
-        .map(ToString::to_string)
-        .collect()
+    let features = tokenize_features(text);
+    let mut tokens = features.plain;
+    tokens.extend(features.symbolic);
+    tokens
 }
 
 #[must_use]
 pub fn tokenize_set(text: &str) -> HashSet<String> {
     tokenize_vec(text).into_iter().collect()
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TokenFeatures {
+    pub plain: Vec<String>,
+    pub symbolic: Vec<String>,
+}
+
+#[must_use]
+pub fn tokenize_features(text: &str) -> TokenFeatures {
+    let mut plain = Vec::new();
+    let mut symbolic = Vec::new();
+
+    for raw in text.split_whitespace() {
+        let trimmed = raw.trim_matches(|c: char| {
+            c.is_ascii_punctuation() && !matches!(c, '_' | '-' | '.' | '/' | ':')
+        });
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let lowered = trimmed.to_lowercase();
+        if lowered.chars().any(|ch| ch.is_alphanumeric()) {
+            symbolic.push(lowered);
+        }
+
+        plain.extend(split_identifier_like(trimmed));
+    }
+
+    TokenFeatures { plain, symbolic }
+}
+
+fn split_identifier_like(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let chars = raw.chars().collect::<Vec<_>>();
+
+    for (idx, ch) in chars.iter().copied().enumerate() {
+        if !ch.is_alphanumeric() {
+            flush_token(&mut out, &mut current);
+            continue;
+        }
+
+        if should_split_camel_boundary(&chars, idx) {
+            flush_token(&mut out, &mut current);
+        }
+
+        current.extend(ch.to_lowercase());
+    }
+
+    flush_token(&mut out, &mut current);
+    out
+}
+
+fn should_split_camel_boundary(chars: &[char], idx: usize) -> bool {
+    if idx == 0 {
+        return false;
+    }
+    let ch = chars[idx];
+    if !ch.is_uppercase() {
+        return false;
+    }
+    let prev = chars[idx - 1];
+    prev.is_lowercase()
+        || (idx >= 2
+            && prev.is_uppercase()
+            && chars[idx - 2].is_uppercase()
+            && chars.get(idx + 1).is_some_and(|next| next.is_lowercase()))
+}
+
+fn flush_token(out: &mut Vec<String>, current: &mut String) {
+    if current.is_empty() {
+        return;
+    }
+    out.push(std::mem::take(current));
 }
 
 fn active_embedder() -> &'static dyn Embedder {
@@ -530,6 +604,45 @@ mod tests {
         assert!(tokens.contains("oauth"));
         assert!(tokens.contains("flow"));
         assert!(tokens.contains("api"));
+    }
+
+    #[test]
+    fn tokenizer_preserves_symbolic_tokens() {
+        let features = tokenize_features("src/client/search/mod.rs serde_json::from_str");
+        assert!(
+            features
+                .symbolic
+                .contains(&"src/client/search/mod.rs".to_string())
+        );
+        assert!(
+            features
+                .symbolic
+                .contains(&"serde_json::from_str".to_string())
+        );
+    }
+
+    #[test]
+    fn tokenizer_splits_identifier_variants() {
+        let features = tokenize_features("om_hint_bounds search.omHint.maxChars");
+        for token in ["om", "hint", "bounds", "search", "max", "chars"] {
+            assert!(features.plain.contains(&token.to_string()));
+        }
+        assert!(features.symbolic.contains(&"om_hint_bounds".to_string()));
+        assert!(
+            features
+                .symbolic
+                .contains(&"search.omhint.maxchars".to_string())
+        );
+    }
+
+    #[test]
+    fn tokenizer_keeps_unicode_terms() {
+        let features = tokenize_features("한글 검색 OAuth");
+        assert!(features.plain.contains(&"한글".to_string()));
+        assert!(features.plain.contains(&"검색".to_string()));
+        assert!(features.symbolic.contains(&"한글".to_string()));
+        assert!(features.symbolic.contains(&"검색".to_string()));
+        assert!(features.plain.contains(&"oauth".to_string()));
     }
 
     #[test]

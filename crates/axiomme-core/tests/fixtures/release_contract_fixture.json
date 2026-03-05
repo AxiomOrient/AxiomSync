@@ -8,9 +8,11 @@
       "data": {
         "policy": {
           "required_major": 0,
-          "required_minor": 1,
-          "required_lock_source_prefix": "registry+https://github.com/rust-lang/crates.io-index",
-          "allowed_manifest_operators": ["exact", "caret", "tilde"]
+          "required_minor": 2,
+          "required_lock_source_prefix": "git+https://github.com/AxiomOrient/episodic.git",
+          "allowed_manifest_operators": ["exact_rev"],
+          "required_git_url": "https://github.com/AxiomOrient/episodic.git",
+          "required_git_rev": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5"
         },
         "contract_probe": {
           "test_name": "client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms",
@@ -29,15 +31,21 @@
         "episodic_semver_probe": {
           "passed": true,
           "error": null,
-          "manifest_req": "0.1.0",
+          "manifest_req": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
           "manifest_req_ok": true,
+          "manifest_git": "https://github.com/AxiomOrient/episodic.git",
+          "manifest_git_ok": true,
+          "manifest_rev": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+          "manifest_rev_ok": true,
           "manifest_uses_path": false,
-          "manifest_uses_git": false,
+          "manifest_uses_git": true,
           "manifest_source_ok": true,
-          "lock_version": "0.1.0",
+          "lock_version": "0.2.0",
           "lock_version_ok": true,
-          "lock_source": "registry+https://github.com/rust-lang/crates.io-index",
-          "lock_source_ok": true
+          "lock_source": "git+https://github.com/AxiomOrient/episodic.git?rev=53dfe97bc7df8e32dbee5f7b2be862a6da9171c5#53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+          "lock_source_ok": true,
+          "lock_revision": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+          "lock_revision_ok": true
         }
       }
     }
@@ -77,9 +85,11 @@
           "data": {
             "policy": {
               "required_major": 0,
-              "required_minor": 1,
-              "required_lock_source_prefix": "registry+https://github.com/rust-lang/crates.io-index",
-              "allowed_manifest_operators": ["exact", "caret", "tilde"]
+              "required_minor": 2,
+              "required_lock_source_prefix": "git+https://github.com/AxiomOrient/episodic.git",
+              "allowed_manifest_operators": ["exact_rev"],
+              "required_git_url": "https://github.com/AxiomOrient/episodic.git",
+              "required_git_rev": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5"
             },
             "contract_probe": {
               "test_name": "client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms",
@@ -98,15 +108,21 @@
             "episodic_semver_probe": {
               "passed": true,
               "error": null,
-              "manifest_req": "0.1.0",
+              "manifest_req": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
               "manifest_req_ok": true,
+              "manifest_git": "https://github.com/AxiomOrient/episodic.git",
+              "manifest_git_ok": true,
+              "manifest_rev": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+              "manifest_rev_ok": true,
               "manifest_uses_path": false,
-              "manifest_uses_git": false,
+              "manifest_uses_git": true,
               "manifest_source_ok": true,
-              "lock_version": "0.1.0",
+              "lock_version": "0.2.0",
               "lock_version_ok": true,
-              "lock_source": "registry+https://github.com/rust-lang/crates.io-index",
-              "lock_source_ok": true
+              "lock_source": "git+https://github.com/AxiomOrient/episodic.git?rev=53dfe97bc7df8e32dbee5f7b2be862a6da9171c5#53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+              "lock_source_ok": true,
+              "lock_revision": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+              "lock_revision_ok": true
             }
           }
         }

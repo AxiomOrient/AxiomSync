@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use super::{EPISODIC_REQUIRED_MAJOR, EPISODIC_REQUIRED_MINOR};
 use crate::models::{
     BenchmarkGateArtifacts, BenchmarkGateExecution, BenchmarkGateQuorum, BenchmarkGateResult,
     BenchmarkGateRunResult, BenchmarkGateSnapshot, BenchmarkGateThresholds, BenchmarkSummary,
@@ -118,7 +119,9 @@ pub(super) fn write_contract_gate_workspace_fixture(
         .unwrap_or_default();
     fs::write(
         root.join("Cargo.lock"),
-        format!("[[package]]\nname = \"episodic\"\nversion = \"0.1.0\"\n{lock_source_line}\n"),
+        format!(
+            "[[package]]\nname = \"episodic\"\nversion = \"{EPISODIC_REQUIRED_MAJOR}.{EPISODIC_REQUIRED_MINOR}.0\"\n{lock_source_line}\n"
+        ),
     )
     .expect("write lockfile");
 }

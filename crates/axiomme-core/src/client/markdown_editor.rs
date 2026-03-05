@@ -66,21 +66,63 @@ impl EditorMode {
         }
     }
 
-    fn supports_extension(self, ext: &str) -> bool {
+    fn supports_load_extension(self, ext: &str) -> bool {
+        match self {
+            Self::Markdown => matches!(ext, "md" | "markdown"),
+            Self::Document => matches!(
+                ext,
+                "md" | "markdown" | "json" | "yaml" | "yml" | "jsonl" | "xml" | "txt" | "text"
+            ),
+        }
+    }
+
+    fn supports_save_extension(self, ext: &str) -> bool {
         match self {
             Self::Markdown => matches!(ext, "md" | "markdown"),
             Self::Document => matches!(ext, "md" | "markdown" | "json" | "yaml" | "yml"),
         }
     }
 
-    fn unsupported_target_message(self, uri: &AxiomUri) -> String {
+    fn unsupported_load_target_message(self, uri: &AxiomUri) -> String {
         match self {
             Self::Markdown => {
                 format!("markdown editor only supports .md/.markdown targets: {uri}")
             }
             Self::Document => {
-                format!("document editor supports .md/.markdown/.json/.yaml/.yml targets: {uri}")
+                format!(
+                    "document load supports .md/.markdown/.json/.yaml/.yml/.jsonl/.xml/.txt targets: {uri}"
+                )
             }
+        }
+    }
+
+    fn unsupported_save_target_message(self, uri: &AxiomUri) -> String {
+        match self {
+            Self::Markdown => {
+                format!("markdown editor only supports .md/.markdown targets: {uri}")
+            }
+            Self::Document => {
+                format!("document save supports .md/.markdown/.json/.yaml/.yml targets: {uri}")
+            }
+        }
+    }
+
+    fn format_for_extension(self, ext: &str) -> &'static str {
+        match ext {
+            "md" | "markdown" => "markdown",
+            "json" => "json",
+            "yaml" | "yml" => "yaml",
+            "jsonl" => "jsonl",
+            "xml" => "xml",
+            "txt" | "text" => "text",
+            _ => "text",
+        }
+    }
+
+    fn is_editable_extension(self, ext: &str) -> bool {
+        match self {
+            Self::Markdown => self.supports_save_extension(ext),
+            Self::Document => matches!(ext, "md" | "markdown" | "json" | "yaml" | "yml"),
         }
     }
 }
@@ -92,7 +134,7 @@ fn load_editor_document(app: &AxiomMe, uri: &str, mode: EditorMode) -> Result<Ma
 
     let output = (|| -> Result<MarkdownDocument> {
         let uri = AxiomUri::parse(uri)?;
-        validate_editor_target(app, &uri, mode)?;
+        let ext = validate_editor_target(app, &uri, mode, false)?;
         let uri_gate = app.markdown_gate_for_uri(&uri)?;
 
         let _guard = uri_gate
@@ -107,6 +149,8 @@ fn load_editor_document(app: &AxiomMe, uri: &str, mode: EditorMode) -> Result<Ma
             content,
             etag,
             updated_at: uri_updated_at(app, &uri),
+            format: mode.format_for_extension(&ext).to_string(),
+            editable: mode.is_editable_extension(&ext),
         })
     })();
 
@@ -153,7 +197,7 @@ fn save_editor_document(
 
     let output = (|| -> Result<MarkdownSaveResult> {
         let uri = AxiomUri::parse(uri)?;
-        let ext = validate_editor_target(app, &uri, mode)?;
+        let ext = validate_editor_target(app, &uri, mode, true)?;
         validate_editor_content(mode, &ext, content)?;
         let parent_uri = uri.parent().ok_or_else(|| {
             AxiomError::Validation(format!("{} target must not be a scope root", mode.label()))
@@ -244,7 +288,12 @@ fn save_editor_document(
     }
 }
 
-fn validate_editor_target(app: &AxiomMe, uri: &AxiomUri, mode: EditorMode) -> Result<String> {
+fn validate_editor_target(
+    app: &AxiomMe,
+    uri: &AxiomUri,
+    mode: EditorMode,
+    for_save: bool,
+) -> Result<String> {
     if !matches!(
         uri.scope(),
         Scope::Resources | Scope::User | Scope::Agent | Scope::Session
@@ -286,8 +335,18 @@ fn validate_editor_target(app: &AxiomMe, uri: &AxiomUri, mode: EditorMode) -> Re
         .and_then(|x| x.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if !mode.supports_extension(&ext) {
-        return Err(AxiomError::Validation(mode.unsupported_target_message(uri)));
+    let supported = if for_save {
+        mode.supports_save_extension(&ext)
+    } else {
+        mode.supports_load_extension(&ext)
+    };
+    if !supported {
+        let message = if for_save {
+            mode.unsupported_save_target_message(uri)
+        } else {
+            mode.unsupported_load_target_message(uri)
+        };
+        return Err(AxiomError::Validation(message));
     }
     Ok(ext)
 }

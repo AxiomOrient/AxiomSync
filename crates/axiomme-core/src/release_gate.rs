@@ -41,13 +41,17 @@ const ONTOLOGY_CONTRACT_PROBE_TEST_NAME: &str =
     "ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable";
 const EPISODIC_DEPENDENCY_NAME: &str = "episodic";
 const EPISODIC_REQUIRED_MAJOR: u64 = 0;
-const EPISODIC_REQUIRED_MINOR: u64 = 1;
-const CRATES_IO_INDEX_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
-const EPISODIC_ALLOWED_MANIFEST_OPERATORS: &[&str] = &["exact", "caret", "tilde"];
+const EPISODIC_REQUIRED_MINOR: u64 = 2;
+const EPISODIC_REQUIRED_GIT_URL: &str = "https://github.com/AxiomOrient/episodic.git";
+const EPISODIC_REQUIRED_GIT_REV: &str = "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5";
+const EPISODIC_LOCK_SOURCE_PREFIX: &str = "git+https://github.com/AxiomOrient/episodic.git";
+const EPISODIC_ALLOWED_MANIFEST_OPERATORS: &[&str] = &["exact_rev"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EpisodicManifestDependency {
-    version_req: String,
+    version_req: Option<String>,
+    git_url: Option<String>,
+    rev: Option<String>,
     has_path: bool,
     has_git: bool,
 }
@@ -56,6 +60,7 @@ struct EpisodicManifestDependency {
 struct EpisodicLockDependency {
     version: String,
     source: Option<String>,
+    revision: Option<String>,
 }
 
 impl CommandProbeResult {
@@ -88,6 +93,10 @@ impl EpisodicSemverProbeResult {
             error: Some(error),
             manifest_req: None,
             manifest_req_ok: None,
+            manifest_git: None,
+            manifest_git_ok: None,
+            manifest_rev: None,
+            manifest_rev_ok: None,
             manifest_uses_path: None,
             manifest_uses_git: None,
             manifest_source_ok: None,
@@ -95,6 +104,8 @@ impl EpisodicSemverProbeResult {
             lock_version_ok: None,
             lock_source: None,
             lock_source_ok: None,
+            lock_revision: None,
+            lock_revision_ok: None,
         }
     }
 }

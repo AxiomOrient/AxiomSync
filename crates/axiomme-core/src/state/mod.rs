@@ -16,6 +16,7 @@ mod queue;
 mod queue_lane;
 mod search;
 
+pub(crate) use om::{OmActiveEntry, OmContinuationHints};
 pub(crate) use promotion_checkpoint::PromotionCheckpointPhase;
 
 #[derive(Clone)]
@@ -41,9 +42,6 @@ pub struct OmReflectionBufferPayload<'a> {
     pub reflection: &'a str,
     pub reflection_token_count: u32,
     pub reflection_input_tokens: u32,
-    pub reflected_observation_line_count: u32,
-    pub current_task: Option<&'a str>,
-    pub suggested_response: Option<&'a str>,
 }
 
 impl std::fmt::Debug for SqliteStateStore {
@@ -207,9 +205,10 @@ impl SqliteStateStore {
 
     pub fn remove_index_state_with_prefix(&self, uri_prefix: &str) -> Result<usize> {
         self.with_conn(|conn| {
+            let escaped_prefix = escape_sql_like_pattern(uri_prefix);
             let affected = conn.execute(
-                "DELETE FROM index_state WHERE uri = ?1 OR uri LIKE ?2",
-                params![uri_prefix, format!("{uri_prefix}/%")],
+                "DELETE FROM index_state WHERE uri = ?1 OR uri LIKE ?2 ESCAPE '\\'",
+                params![uri_prefix, format!("{escaped_prefix}/%")],
             )?;
             Ok(affected)
         })
@@ -303,6 +302,12 @@ impl SqliteStateStore {
             Ok(out)
         })
     }
+}
+
+fn escape_sql_like_pattern(raw: &str) -> String {
+    raw.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 fn usize_to_i64_saturating(value: usize) -> i64 {

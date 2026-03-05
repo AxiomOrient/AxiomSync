@@ -93,7 +93,15 @@ pub struct OmHintReadStateV1 {
     pub scope_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialized_at: Option<String>,
     pub activated_message_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buffered_chunk_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_entry_ids: Vec<String>,
     pub observation_tokens_active: u32,
     pub observer_trigger_count_total: u32,
     pub reflector_trigger_count_total: u32,

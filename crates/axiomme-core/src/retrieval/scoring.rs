@@ -1,17 +1,31 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::models::{ContextHit, TracePoint};
+use crate::index::ScoredRecord;
+use crate::models::{ContextHit, ScoreComponents, TracePoint};
 
 use super::planner::PlannedQuery;
 
-pub(super) fn make_hit(record: &crate::models::IndexRecord, score: f32) -> ContextHit {
+const MAX_SNIPPET_CHARS: usize = 240;
+
+pub(super) fn make_hit(
+    record: &crate::models::IndexRecord,
+    score: f32,
+    query: &str,
+    components: Option<&ScoredRecord>,
+) -> ContextHit {
+    let query_tokens = tokenize_keywords(query);
+    let snippet = build_snippet(record, &query_tokens);
+    let matched_heading = find_matched_heading(record, &query_tokens);
     ContextHit {
         uri: record.uri.clone(),
         score,
         abstract_text: record.abstract_text.clone(),
         context_type: record.context_type.clone(),
         relations: Vec::new(),
+        snippet,
+        matched_heading,
+        score_components: score_components_from_scored(components),
     }
 }
 
@@ -69,6 +83,11 @@ pub(super) fn scale_hit_scores(hits: &mut [ContextHit], weight: f32) {
     }
     for hit in hits {
         hit.score *= weight;
+        hit.score_components.exact *= weight;
+        hit.score_components.dense *= weight;
+        hit.score_components.sparse *= weight;
+        hit.score_components.path *= weight;
+        hit.score_components.recency *= weight;
     }
 }
 
@@ -122,10 +141,80 @@ pub(super) fn typed_query_plans(
     out
 }
 
+fn score_components_from_scored(scored: Option<&ScoredRecord>) -> ScoreComponents {
+    let Some(scored) = scored else {
+        return ScoreComponents::default();
+    };
+    ScoreComponents {
+        exact: scored.exact,
+        dense: scored.dense,
+        sparse: scored.sparse,
+        path: scored.path,
+        recency: scored.recency,
+    }
+}
+
+fn build_snippet(record: &crate::models::IndexRecord, query_tokens: &[String]) -> Option<String> {
+    let content_line = record
+        .content
+        .lines()
+        .map(str::trim)
+        .find(|line| {
+            !line.is_empty()
+                && if query_tokens.is_empty() {
+                    true
+                } else {
+                    line_contains_any_token(line, query_tokens)
+                }
+        })
+        .map(clip_preview);
+    if content_line.is_some() {
+        return content_line;
+    }
+
+    let abstract_line = clip_preview(record.abstract_text.trim());
+    if !abstract_line.is_empty() {
+        return Some(abstract_line);
+    }
+    None
+}
+
+fn find_matched_heading(
+    record: &crate::models::IndexRecord,
+    query_tokens: &[String],
+) -> Option<String> {
+    let mut first_heading = None::<String>;
+    for line in record.content.lines().map(str::trim) {
+        if !line.starts_with('#') {
+            continue;
+        }
+        let heading = line.trim_start_matches('#').trim();
+        if heading.is_empty() {
+            continue;
+        }
+        if first_heading.is_none() {
+            first_heading = Some(clip_preview(heading));
+        }
+        if !query_tokens.is_empty() && line_contains_any_token(heading, query_tokens) {
+            return Some(clip_preview(heading));
+        }
+    }
+    first_heading
+}
+
+fn line_contains_any_token(line: &str, query_tokens: &[String]) -> bool {
+    let lowered = line.to_ascii_lowercase();
+    query_tokens.iter().any(|token| lowered.contains(token))
+}
+
+fn clip_preview(raw: &str) -> String {
+    raw.chars().take(MAX_SNIPPET_CHARS).collect::<String>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        fanout_priority_weight, merge_hits, scale_hit_scores, scale_trace_point_scores,
+        fanout_priority_weight, make_hit, merge_hits, scale_hit_scores, scale_trace_point_scores,
         sort_hits_by_score_desc_uri_asc, tokenize_keywords,
     };
     use crate::models::{ContextHit, TracePoint};
@@ -138,6 +227,9 @@ mod tests {
             abstract_text: String::new(),
             context_type: "resource".to_string(),
             relations: Vec::new(),
+            snippet: None,
+            matched_heading: None,
+            score_components: crate::models::ScoreComponents::default(),
         }
     }
 
@@ -173,6 +265,39 @@ mod tests {
 
         assert!((exact - 0.72).abs() < 0.0001);
         assert!(noise < exact);
+    }
+
+    #[test]
+    fn make_hit_contains_snippet_and_score_components() {
+        let record = crate::models::IndexRecord {
+            id: "id-1".to_string(),
+            uri: "axiom://resources/docs/api.md".to_string(),
+            parent_uri: Some("axiom://resources/docs".to_string()),
+            is_leaf: true,
+            context_type: "resource".to_string(),
+            name: "api.md".to_string(),
+            abstract_text: "api guide".to_string(),
+            content: "# OAuth Flow\nUse token exchange endpoint.".to_string(),
+            tags: vec!["markdown".to_string()],
+            updated_at: chrono::Utc::now(),
+            depth: 3,
+        };
+        let scored = crate::index::ScoredRecord {
+            uri: std::sync::Arc::from(record.uri.as_str()),
+            is_leaf: true,
+            depth: 3,
+            exact: 0.91,
+            dense: 0.52,
+            sparse: 0.73,
+            recency: 0.40,
+            path: 0.17,
+            score: 0.88,
+        };
+        let hit = make_hit(&record, 0.88, "oauth token", Some(&scored));
+        assert_eq!(hit.matched_heading.as_deref(), Some("OAuth Flow"));
+        assert!(hit.snippet.is_some());
+        assert!(hit.score_components.exact > 0.0);
+        assert!(hit.score_components.sparse > 0.0);
     }
 
     #[test]

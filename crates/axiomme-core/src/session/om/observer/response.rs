@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use super::super::{
-    MultiThreadObserverRunContext, OmInferenceUsage, OmObserverConfig, OmObserverMessageCandidate,
-    OmObserverMode, OmObserverResponse, OmPendingMessage, OmRecord, OmScope,
-    ResolvedObserverOutput, Result, estimate_text_tokens, select_observed_message_candidates,
-    split_pending_and_other_conversation_candidates, synthesize_observer_observations,
+    MultiThreadObserverRunContext, ObserverThreadStateUpdate, OmInferenceUsage, OmObserverConfig,
+    OmObserverMessageCandidate, OmObserverMode, OmObserverResponse, OmPendingMessage, OmRecord,
+    OmScope, ResolvedObserverOutput, Result, resolve_canonical_thread_id,
+    select_observed_message_candidates, split_pending_and_other_conversation_candidates,
 };
 use super::llm::{
     build_observer_client, build_observer_endpoint, build_observer_llm_request,
@@ -68,14 +68,18 @@ pub(in crate::session::om) fn resolve_observer_response_with_config(
     if !config.model_enabled {
         return Ok(deterministic_observer_output(
             record,
+            scope_key,
             selected,
+            current_session_id,
             config.text_budget.observation_max_chars,
         ));
     }
     match config.mode {
         OmObserverMode::Deterministic => Ok(deterministic_observer_output(
             record,
+            scope_key,
             selected,
+            current_session_id,
             config.text_budget.observation_max_chars,
         )),
         OmObserverMode::Llm => llm_observer_response(
@@ -104,7 +108,9 @@ pub(in crate::session::om) fn resolve_observer_response_with_config(
                     } else {
                         Ok(deterministic_observer_output(
                             record,
+                            scope_key,
                             selected,
+                            current_session_id,
                             config.text_budget.observation_max_chars,
                         ))
                     }
@@ -116,13 +122,21 @@ pub(in crate::session::om) fn resolve_observer_response_with_config(
 
 pub(in crate::session::om) fn deterministic_observer_output(
     record: &OmRecord,
+    scope_key: &str,
     selected: &[OmObserverMessageCandidate],
+    current_session_id: &str,
     observation_max_chars: usize,
 ) -> ResolvedObserverOutput {
     ResolvedObserverOutput {
         selected_messages: selected.to_vec(),
         response: deterministic_observer_response(record, selected, observation_max_chars),
-        thread_states: Vec::new(),
+        thread_states: deterministic_thread_state_updates(
+            record,
+            scope_key,
+            selected,
+            current_session_id,
+            observation_max_chars,
+        ),
     }
 }
 
@@ -140,19 +154,96 @@ pub(in crate::session::om) fn deterministic_observer_response(
             created_at_rfc3339: Some(item.created_at.to_rfc3339()),
         })
         .collect::<Vec<_>>();
-    let observations = synthesize_observer_observations(
+    let inferred = crate::om::infer_deterministic_observer_response(
         &record.active_observations,
         &pending_messages,
         observation_max_chars,
     );
     OmObserverResponse {
-        observation_token_count: estimate_text_tokens(&observations),
-        observations,
-        observed_message_ids: selected.iter().map(|item| item.id.clone()).collect(),
-        current_task: None,
-        suggested_response: None,
+        observation_token_count: inferred.observation_token_count,
+        observations: inferred.observations,
+        observed_message_ids: inferred.observed_message_ids,
+        current_task: normalize_deterministic_current_task(inferred.current_task),
+        suggested_response: inferred.suggested_response,
         usage: OmInferenceUsage::default(),
     }
+}
+
+fn normalize_deterministic_current_task(current_task: Option<String>) -> Option<String> {
+    current_task.and_then(|task| {
+        let trimmed = task.trim();
+        if trimmed.is_empty() {
+            None
+        } else if trimmed.starts_with("Primary:") {
+            Some(trimmed.to_string())
+        } else {
+            Some(format!("Primary: {trimmed}"))
+        }
+    })
+}
+
+fn normalize_deterministic_suggested_response(
+    suggested_response: Option<String>,
+) -> Option<String> {
+    suggested_response.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn deterministic_thread_state_updates(
+    record: &OmRecord,
+    scope_key: &str,
+    selected: &[OmObserverMessageCandidate],
+    current_session_id: &str,
+    observation_max_chars: usize,
+) -> Vec<ObserverThreadStateUpdate> {
+    if record.scope == OmScope::Session {
+        return Vec::new();
+    }
+    let mut pending_by_thread = BTreeMap::<String, Vec<OmPendingMessage>>::new();
+    for item in selected {
+        let thread_id = resolve_observer_thread_group_id(
+            record.scope,
+            scope_key,
+            item.source_thread_id.as_deref(),
+            item.source_session_id.as_deref(),
+            current_session_id,
+        );
+        pending_by_thread
+            .entry(thread_id)
+            .or_default()
+            .push(OmPendingMessage {
+                id: item.id.clone(),
+                role: normalize_text(&item.role),
+                text: normalize_text(&item.text),
+                created_at_rfc3339: Some(item.created_at.to_rfc3339()),
+            });
+    }
+    let mut out = Vec::<ObserverThreadStateUpdate>::new();
+    for (thread_id, pending_messages) in pending_by_thread {
+        let inferred = crate::om::infer_deterministic_observer_response(
+            &record.active_observations,
+            &pending_messages,
+            observation_max_chars,
+        );
+        let current_task = normalize_deterministic_current_task(inferred.current_task);
+        let suggested_response =
+            normalize_deterministic_suggested_response(inferred.suggested_response);
+        if current_task.is_none() && suggested_response.is_none() {
+            continue;
+        }
+        out.push(ObserverThreadStateUpdate {
+            thread_id,
+            current_task,
+            suggested_response,
+        });
+    }
+    out
 }
 
 pub(in crate::session::om) fn llm_observer_response(
@@ -167,7 +258,9 @@ pub(in crate::session::om) fn llm_observer_response(
     if selected.is_empty() {
         return Ok(deterministic_observer_output(
             record,
+            scope_key,
             selected,
+            current_session_id,
             config.text_budget.observation_max_chars,
         ));
     }
@@ -183,7 +276,9 @@ pub(in crate::session::om) fn llm_observer_response(
     if bounded_selected.is_empty() {
         return Ok(deterministic_observer_output(
             record,
+            scope_key,
             selected,
+            current_session_id,
             config.text_budget.observation_max_chars,
         ));
     }
@@ -206,6 +301,13 @@ pub(in crate::session::om) fn llm_observer_response(
         scope_key,
         current_session_id,
     );
+    let preferred_thread_id = resolve_canonical_thread_id(
+        record.scope,
+        scope_key,
+        record.thread_id.as_deref(),
+        Some(current_session_id),
+        current_session_id,
+    );
     let multi_thread_context = MultiThreadObserverRunContext {
         request: &request,
         bounded_selected: &bounded_selected,
@@ -213,6 +315,7 @@ pub(in crate::session::om) fn llm_observer_response(
         scope: record.scope,
         scope_key,
         current_session_id,
+        preferred_thread_id: &preferred_thread_id,
         max_tokens_per_batch,
         skip_continuation_hints,
     };
@@ -233,7 +336,9 @@ pub(in crate::session::om) fn llm_observer_response(
     if response.observations.trim().is_empty() {
         return Ok(deterministic_observer_output(
             record,
+            scope_key,
             selected,
+            current_session_id,
             config.text_budget.observation_max_chars,
         ));
     }

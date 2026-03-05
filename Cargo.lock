@@ -439,12 +439,12 @@ dependencies = [
 
 [[package]]
 name = "episodic"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebd349fc303c6a64921531f4b1dfa37906e1d7a3415e1aeffa373076151126d9"
+version = "0.2.1"
+source = "git+https://github.com/AxiomOrient/episodic.git?rev=53dfe97bc7df8e32dbee5f7b2be862a6da9171c5#53dfe97bc7df8e32dbee5f7b2be862a6da9171c5"
 dependencies = [
  "chrono",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 

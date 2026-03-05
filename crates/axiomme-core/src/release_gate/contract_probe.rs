@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -10,6 +11,12 @@ use crate::models::{
     CommandProbeResult, OntologyContractProbeResult, OntologyInvariantCheckSummary,
     OntologySchemaCardinality, OntologySchemaVersionProbe,
 };
+
+const RELATION_TRACE_LOGS_PATH: &str =
+    "crates/axiomme-core/src/client/tests/relation_trace_logs.rs";
+type PromptSignatureVersionKey = (String, String);
+type PromptSignatureFieldMap = BTreeMap<String, String>;
+type PromptSignaturePolicyMap = BTreeMap<PromptSignatureVersionKey, PromptSignatureFieldMap>;
 
 pub(super) fn run_contract_execution_probe(workspace_dir: &Path) -> CommandProbeResult {
     let core_crate = workspace_dir
@@ -51,7 +58,17 @@ pub(super) fn run_episodic_api_probe(workspace_dir: &Path) -> CommandProbeResult
             "--exact",
         ],
     );
-    CommandProbeResult::from_test_run(EPISODIC_API_PROBE_TEST_NAME, ok, output)
+    let probe = CommandProbeResult::from_test_run(EPISODIC_API_PROBE_TEST_NAME, ok, output);
+    if !probe.passed {
+        return probe;
+    }
+    if let Err(reason) = verify_prompt_contract_version_bump_policy(workspace_dir) {
+        return CommandProbeResult::from_error(
+            EPISODIC_API_PROBE_TEST_NAME,
+            format!("prompt_contract_version_bump_policy_failed: {reason}"),
+        );
+    }
+    probe
 }
 
 pub(super) fn run_ontology_contract_probe(
@@ -158,4 +175,147 @@ fn load_bootstrapped_ontology_schema(
     })();
     let _ = fs::remove_dir_all(&probe_root);
     loaded.map_err(|err| format!("ontology_probe_schema_load_failed: {err}"))
+}
+
+fn verify_prompt_contract_version_bump_policy(
+    workspace_dir: &Path,
+) -> std::result::Result<(), String> {
+    let (rev_ok, _rev_output) =
+        run_workspace_command(workspace_dir, "git", &["rev-parse", "--verify", "HEAD~1"]);
+    if !rev_ok {
+        // Shallow/squash histories may not expose HEAD~1; keep the gate portable
+        // by validating current policy shape instead of hard-failing.
+        return parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD").map(|_| ());
+    }
+    let previous = parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD~1")
+        .map_err(|reason| format!("previous_prompt_signature_policy_load_failed: {reason}"))?;
+    let current = parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD")
+        .map_err(|reason| format!("current_prompt_signature_policy_load_failed: {reason}"))?;
+
+    if prompt_contract_signature_changed_without_version_bump(&previous, &current) {
+        return Err(
+            "prompt_contract_signature_changed_without_contract_or_protocol_version_bump"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn parse_prompt_signature_policy_for_revision(
+    workspace_dir: &Path,
+    revision: &str,
+) -> std::result::Result<PromptSignaturePolicyMap, String> {
+    let (ok, output) = run_workspace_command(
+        workspace_dir,
+        "git",
+        &["show", &format!("{revision}:{RELATION_TRACE_LOGS_PATH}")],
+    );
+    if !ok {
+        return Err(format!(
+            "git_show_failed revision={revision} reason={}",
+            output.trim()
+        ));
+    }
+    parse_prompt_signature_policy_map(&output).map_err(|reason| {
+        format!("prompt_signature_policy_parse_failed revision={revision} reason={reason}")
+    })
+}
+
+fn parse_prompt_signature_policy_map(
+    source: &str,
+) -> std::result::Result<PromptSignaturePolicyMap, String> {
+    let mut map = PromptSignaturePolicyMap::new();
+    let mut current_key: Option<PromptSignatureVersionKey> = None;
+    let mut current_signatures = PromptSignatureFieldMap::new();
+    let mut saw_prompt_contract_entry = false;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some((contract_version, protocol_version)) =
+            parse_prompt_signature_entry_header(trimmed)
+        {
+            saw_prompt_contract_entry = true;
+            if current_key.is_some() {
+                return Err("prompt_signature_policy_nested_entry_detected".to_string());
+            }
+            current_key = Some((contract_version, protocol_version));
+            current_signatures = BTreeMap::new();
+            continue;
+        }
+        if current_key.is_none() {
+            continue;
+        }
+        if let Some((field, signature)) = parse_prompt_signature_field(trimmed) {
+            current_signatures.insert(field, signature);
+            continue;
+        }
+        if trimmed.starts_with("}),") || trimmed.starts_with("})") {
+            let key = current_key
+                .take()
+                .ok_or_else(|| "prompt_signature_policy_entry_close_without_open".to_string())?;
+            if current_signatures.is_empty() {
+                return Err(format!(
+                    "prompt_signature_policy_entry_missing_signatures:{}/{}",
+                    key.0, key.1
+                ));
+            }
+            if map
+                .insert(key, std::mem::take(&mut current_signatures))
+                .is_some()
+            {
+                return Err("prompt_signature_policy_duplicate_version_tuple".to_string());
+            }
+        }
+    }
+
+    if current_key.is_some() {
+        return Err("prompt_signature_policy_entry_not_closed".to_string());
+    }
+    if !saw_prompt_contract_entry || map.is_empty() {
+        return Err("prompt_signature_policy_entries_not_found".to_string());
+    }
+    Ok(map)
+}
+
+fn parse_prompt_signature_entry_header(line: &str) -> Option<(String, String)> {
+    let marker = "=> Some(PromptContractSignatures";
+    let marker_index = line.find(marker)?;
+    let tuple_part = line[..marker_index].trim();
+    let tuple_part = tuple_part.strip_prefix("(\"")?;
+    let contract_end = tuple_part.find('"')?;
+    let contract_version = tuple_part[..contract_end].to_string();
+    let rest = tuple_part[contract_end + 1..].trim_start();
+    let rest = rest.strip_prefix(',')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let protocol_end = rest.find('"')?;
+    let protocol_version = rest[..protocol_end].to_string();
+    Some((contract_version, protocol_version))
+}
+
+fn parse_prompt_signature_field(line: &str) -> Option<(String, String)> {
+    let field_end = line.find(':')?;
+    let field = line[..field_end].trim();
+    if !field.ends_with("_blake3") {
+        return None;
+    }
+    let value_part = line[field_end + 1..].trim_start();
+    let value_part = value_part.strip_prefix('"')?;
+    let value_end = value_part.find('"')?;
+    let value = value_part[..value_end].to_string();
+    Some((field.to_string(), value))
+}
+
+fn prompt_contract_signature_changed_without_version_bump(
+    previous: &PromptSignaturePolicyMap,
+    current: &PromptSignaturePolicyMap,
+) -> bool {
+    for (version_tuple, current_signatures) in current {
+        let Some(previous_signatures) = previous.get(version_tuple) else {
+            continue;
+        };
+        if previous_signatures != current_signatures {
+            return true;
+        }
+    }
+    false
 }

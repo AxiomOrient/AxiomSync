@@ -1,7 +1,9 @@
 use anyhow::Result;
 use axiomme_core::AxiomMe;
 
-use crate::cli::{BenchmarkCommand, Commands, OntologyCommand, RelationCommand, ReleaseCommand};
+use crate::cli::{
+    BenchmarkCommand, Commands, OntologyCommand, RelationCommand, ReleaseCommand, SearchArgs,
+};
 
 use super::ontology::validate_ontology_action_input_source_selection;
 use super::support::{
@@ -74,11 +76,19 @@ pub(super) fn validate_command_preflight(command: &Commands) -> Result<()> {
             let _ = parse_scope_args(&args.scopes)?;
             Ok(())
         }
+        Commands::Search(args) => validate_search_command(args),
         Commands::Document(args) => validate_document_command(&args.command),
         Commands::Ontology(args) => validate_ontology_command(&args.command),
         Commands::Relation(args) => validate_relation_command(&args.command),
         _ => Ok(()),
     }
+}
+
+fn validate_search_command(args: &SearchArgs) -> Result<()> {
+    if args.query.is_none() && args.request_json.is_none() {
+        anyhow::bail!("search requires a positional query or --request-json <file>");
+    }
+    Ok(())
 }
 
 fn validate_document_command(command: &crate::cli::DocumentCommand) -> Result<()> {

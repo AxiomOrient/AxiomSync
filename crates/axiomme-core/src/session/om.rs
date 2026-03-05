@@ -13,18 +13,20 @@ use crate::om::{
     OmObserverMessageCandidate, OmObserverPromptInput, OmObserverRequest, OmObserverResponse,
     OmObserverThreadMessages, OmOriginType, OmPendingMessage, OmRecord, OmReflectionCommandType,
     OmScope, ReflectionEnqueueDecision, ResolvedOmConfig, aggregate_multi_thread_observer_sections,
-    build_multi_thread_observer_system_prompt, build_multi_thread_observer_user_prompt,
+    build_multi_thread_observer_prompt_contract_v2, build_multi_thread_observer_system_prompt,
+    build_multi_thread_observer_user_prompt, build_observer_prompt_contract_v2,
     build_observer_system_prompt, build_observer_user_prompt, build_other_conversation_blocks,
     combine_observations_for_buffering, filter_observer_candidates_by_last_observed_at,
     format_observer_messages_for_prompt, om_observer_error, om_status_kind,
     parse_memory_section_xml_accuracy_first, parse_multi_thread_observer_output_accuracy_first,
-    resolve_observer_model_enabled, select_observed_message_candidates,
-    select_observer_message_candidates, split_pending_and_other_conversation_candidates,
-    synthesize_observer_observations,
+    resolve_canonical_thread_id, resolve_observer_model_enabled,
+    select_observed_message_candidates, select_observer_message_candidates,
+    split_pending_and_other_conversation_candidates,
 };
 use crate::om_bridge::{
     OmObserveBufferRequestedV1, OmReflectBufferRequestedV1, OmReflectRequestedV1,
 };
+use crate::state::OmContinuationHints;
 
 use super::Session;
 #[cfg(test)]
@@ -65,6 +67,8 @@ const ENV_OM_REFLECTOR_BLOCK_AFTER: &str = "AXIOMME_OM_REFLECTOR_BLOCK_AFTER";
 const EVENT_OM_OBSERVE_BUFFER_REQUESTED: &str = "om_observe_buffer_requested";
 const EVENT_OM_REFLECT_BUFFER_REQUESTED: &str = "om_reflect_buffer_requested";
 const EVENT_OM_REFLECT_REQUESTED: &str = "om_reflect_requested";
+const OM_CONTINUATION_SOURCE_OBSERVER: &str = "observer";
+const OM_CONTINUATION_SOURCE_OBSERVER_INTERVAL: &str = "observer_interval";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OmObserverMode {
@@ -178,6 +182,7 @@ struct ObserverBatchTask {
     index: usize,
     threads: Vec<OmObserverThreadMessages>,
     known_ids: Vec<String>,
+    known_ids_by_thread: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +216,7 @@ struct MultiThreadObserverRunContext<'a> {
     scope: OmScope,
     scope_key: &'a str,
     current_session_id: &'a str,
+    preferred_thread_id: &'a str,
     max_tokens_per_batch: u32,
     skip_continuation_hints: bool,
 }
@@ -368,8 +374,11 @@ impl Session {
             }
         }
 
-        let unobserved_candidates =
+        let mut unobserved_candidates =
             filter_observer_candidates_by_last_observed_at(&candidates, last_observed_at);
+        if let Some(cursor) = last_observed_at {
+            unobserved_candidates.retain(|candidate| candidate.created_at > cursor);
+        }
         let candidate_pool = if strict_cursor_filtering {
             &unobserved_candidates
         } else if unobserved_candidates.is_empty() {
@@ -464,15 +473,16 @@ impl Session {
             &observer_config,
         )?;
 
-        if !options.skip_continuation_hints {
-            record
-                .current_task
-                .clone_from(&observer_output.response.current_task);
-            record
-                .suggested_response
-                .clone_from(&observer_output.response.suggested_response);
-        }
-        self.upsert_observer_thread_states(context, &observer_output)?;
+        self.upsert_observer_continuation_state(
+            context,
+            &observer_output,
+            options.skip_continuation_hints,
+        )?;
+        self.upsert_observer_thread_states(
+            context,
+            &observer_output,
+            options.skip_continuation_hints,
+        )?;
         self.append_observer_chunk(
             context,
             options,
@@ -483,18 +493,128 @@ impl Session {
         )
     }
 
+    fn upsert_observer_continuation_state(
+        &self,
+        context: ObserverRunContext<'_>,
+        observer_output: &ResolvedObserverOutput,
+        skip_continuation_hints: bool,
+    ) -> Result<()> {
+        let source_kind = if skip_continuation_hints {
+            OM_CONTINUATION_SOURCE_OBSERVER_INTERVAL
+        } else {
+            OM_CONTINUATION_SOURCE_OBSERVER
+        };
+        let allow_suggested_response = !skip_continuation_hints;
+
+        if context.scope == OmScope::Session {
+            let canonical_thread_id = resolve_canonical_thread_id(
+                context.scope,
+                context.scope_key,
+                None,
+                Some(&self.session_id),
+                &self.session_id,
+            );
+            let current_task =
+                normalize_optional_continuation(observer_output.response.current_task.as_deref());
+            let suggested_response = if allow_suggested_response {
+                normalize_optional_continuation(
+                    observer_output.response.suggested_response.as_deref(),
+                )
+            } else {
+                None
+            };
+            self.state.upsert_om_continuation_state(
+                context.scope_key,
+                &canonical_thread_id,
+                OmContinuationHints {
+                    current_task: current_task.as_deref(),
+                    suggested_response: suggested_response.as_deref(),
+                },
+                continuation_confidence(current_task.as_deref(), suggested_response.as_deref()),
+                source_kind,
+                Some(context.now),
+            )?;
+            return Ok(());
+        }
+
+        let primary_thread_id = resolve_observer_thread_group_id(
+            context.scope,
+            context.scope_key,
+            None,
+            Some(&self.session_id),
+            &self.session_id,
+        );
+        let mut continuation_updates = BTreeMap::<String, (Option<String>, Option<String>)>::new();
+
+        for state in &observer_output.thread_states {
+            let canonical_thread_id = resolve_canonical_thread_id(
+                context.scope,
+                context.scope_key,
+                Some(&state.thread_id),
+                None,
+                &self.session_id,
+            );
+            let current_task = normalize_optional_continuation(state.current_task.as_deref());
+            let suggested_response = if allow_suggested_response {
+                normalize_optional_continuation(state.suggested_response.as_deref())
+            } else {
+                None
+            };
+            if current_task.is_none() && suggested_response.is_none() {
+                continue;
+            }
+            continuation_updates.insert(canonical_thread_id, (current_task, suggested_response));
+        }
+
+        let primary_current_task =
+            normalize_optional_continuation(observer_output.response.current_task.as_deref());
+        let primary_suggested_response = if allow_suggested_response {
+            normalize_optional_continuation(observer_output.response.suggested_response.as_deref())
+        } else {
+            None
+        };
+        if primary_current_task.is_some() || primary_suggested_response.is_some() {
+            let entry = continuation_updates
+                .entry(primary_thread_id)
+                .or_insert_with(|| (None, None));
+            if entry.0.is_none() {
+                entry.0 = primary_current_task;
+            }
+            if entry.1.is_none() {
+                entry.1 = primary_suggested_response;
+            }
+        }
+
+        for (canonical_thread_id, (current_task, suggested_response)) in continuation_updates {
+            self.state.upsert_om_continuation_state(
+                context.scope_key,
+                &canonical_thread_id,
+                OmContinuationHints {
+                    current_task: current_task.as_deref(),
+                    suggested_response: suggested_response.as_deref(),
+                },
+                continuation_confidence(current_task.as_deref(), suggested_response.as_deref()),
+                source_kind,
+                Some(context.now),
+            )?;
+        }
+        Ok(())
+    }
+
     fn upsert_observer_thread_states(
         &self,
         context: ObserverRunContext<'_>,
         observer_output: &ResolvedObserverOutput,
+        skip_continuation_hints: bool,
     ) -> Result<()> {
         if context.scope == OmScope::Session {
             return Ok(());
         }
+        let allow_suggested_response = !skip_continuation_hints;
         let primary_thread_id = resolve_observer_thread_group_id(
             context.scope,
             context.scope_key,
-            Some(&self.session_id),
+            None,
             Some(&self.session_id),
             &self.session_id,
         );
@@ -507,18 +627,37 @@ impl Session {
         let mut thread_state_updates = observer_output
             .thread_states
             .iter()
-            .map(|state| (state.thread_id.clone(), state))
+            .map(|state| {
+                (
+                    resolve_canonical_thread_id(
+                        context.scope,
+                        context.scope_key,
+                        Some(&state.thread_id),
+                        None,
+                        &self.session_id,
+                    ),
+                    state,
+                )
+            })
             .collect::<BTreeMap<_, _>>();
         for (thread_id, last_observed_at) in &last_observed_by_thread {
             let state = thread_state_updates.remove(thread_id);
             let (current_task, suggested_response) = match state {
                 Some(value) => (
                     value.current_task.as_deref(),
-                    value.suggested_response.as_deref(),
+                    if allow_suggested_response {
+                        value.suggested_response.as_deref()
+                    } else {
+                        None
+                    },
                 ),
                 None if thread_id == &primary_thread_id => (
                     observer_output.response.current_task.as_deref(),
-                    observer_output.response.suggested_response.as_deref(),
+                    if allow_suggested_response {
+                        observer_output.response.suggested_response.as_deref()
+                    } else {
+                        None
+                    },
                 ),
                 None => (None, None),
             };
@@ -536,7 +675,11 @@ impl Session {
                 &thread_id,
                 None,
                 state.current_task.as_deref(),
-                state.suggested_response.as_deref(),
+                if allow_suggested_response {
+                    state.suggested_response.as_deref()
+                } else {
+                    None
+                },
             )?;
         }
         Ok(())
@@ -667,3 +810,21 @@ impl Session {
 
 #[cfg(test)]
 mod tests;
+
+fn normalize_optional_continuation(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn continuation_confidence(current_task: Option<&str>, suggested_response: Option<&str>) -> f64 {
+    let has_current_task = normalize_optional_continuation(current_task).is_some();
+    let has_suggested_response = normalize_optional_continuation(suggested_response).is_some();
+    if has_current_task && has_suggested_response {
+        0.92
+    } else if has_current_task || has_suggested_response {
+        0.82
+    } else {
+        0.0
+    }
+}

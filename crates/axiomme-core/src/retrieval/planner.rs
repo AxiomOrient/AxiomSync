@@ -81,6 +81,14 @@ pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
     }
 
     if options.target_uri.is_none() {
+        if has_session_context {
+            planned.push(PlannedQuery::new(
+                "session_focus",
+                options.query.clone(),
+                vec![Scope::Session],
+                session_focus_priority(intent, &options.query),
+            ));
+        }
         if intent.wants_skill {
             planned.push(PlannedQuery::new(
                 "skill_focus",
@@ -108,6 +116,16 @@ fn query_intent(query: &str) -> QueryIntent {
         wants_skill: q.contains("skill"),
         wants_memory: q.contains("memory") || q.contains("preference") || q.contains("prefer"),
     }
+}
+
+fn session_focus_priority(intent: QueryIntent, query: &str) -> u8 {
+    let q = query.to_lowercase();
+    let explicit_session_intent = q.contains("recent")
+        || q.contains("conversation")
+        || q.contains("chat")
+        || q.contains("session");
+    let precision_guard = explicit_session_intent && !intent.wants_skill;
+    if precision_guard { 1 } else { 2 }
 }
 
 fn intent_scopes(intent: QueryIntent, target: Option<&AxiomUri>) -> Vec<Scope> {
@@ -236,8 +254,9 @@ fn get_scope_str_from_uri(uri: &str) -> Option<&str> {
 mod tests {
     use super::{
         PlannedQuery, collect_scope_names, dedup_and_limit_queries, is_om_hint, merge_non_om_hints,
-        normalize_scopes, query_intent,
+        normalize_scopes, plan_queries, query_intent,
     };
+    use crate::models::SearchOptions;
     use crate::uri::Scope;
 
     #[test]
@@ -327,5 +346,71 @@ mod tests {
             " ".to_string(),
         ];
         assert_eq!(merge_non_om_hints(&hints), "recent one recent two");
+    }
+
+    #[test]
+    fn session_search_adds_session_focus_scope() {
+        let options = SearchOptions {
+            query: "oauth".to_string(),
+            target_uri: None,
+            session: Some("s-1".to_string()),
+            session_hints: Vec::new(),
+            budget: None,
+            limit: 5,
+            score_threshold: None,
+            min_match_tokens: None,
+            filter: None,
+            request_type: "search".to_string(),
+        };
+        let planned = plan_queries(&options);
+        assert!(planned.iter().any(|item| {
+            item.kind == "session_focus"
+                && item.scopes == vec![Scope::Session]
+                && item.priority == 2
+        }));
+    }
+
+    #[test]
+    fn recent_chat_query_prefers_session_scope() {
+        let options = SearchOptions {
+            query: "recent chat summary".to_string(),
+            target_uri: None,
+            session: Some("s-2".to_string()),
+            session_hints: Vec::new(),
+            budget: None,
+            limit: 5,
+            score_threshold: None,
+            min_match_tokens: None,
+            filter: None,
+            request_type: "search".to_string(),
+        };
+        let planned = plan_queries(&options);
+        assert!(planned.iter().any(|item| {
+            item.kind == "session_focus"
+                && item.scopes == vec![Scope::Session]
+                && item.priority == 1
+        }));
+    }
+
+    #[test]
+    fn session_priority_boost_keeps_precision_guardrails() {
+        let options = SearchOptions {
+            query: "session skill onboarding".to_string(),
+            target_uri: None,
+            session: Some("s-3".to_string()),
+            session_hints: Vec::new(),
+            budget: None,
+            limit: 5,
+            score_threshold: None,
+            min_match_tokens: None,
+            filter: None,
+            request_type: "search".to_string(),
+        };
+        let planned = plan_queries(&options);
+        assert!(planned.iter().any(|item| {
+            item.kind == "session_focus"
+                && item.scopes == vec![Scope::Session]
+                && item.priority == 2
+        }));
     }
 }
