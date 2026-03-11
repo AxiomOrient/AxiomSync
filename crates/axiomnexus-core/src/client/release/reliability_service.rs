@@ -163,7 +163,8 @@ impl AxiomNexus {
     }
 
     fn seed_reliability_probe(&self, report_id: &str, query: &str) -> Result<String> {
-        let source_path = std::env::temp_dir().join(format!("axiomnexus_reliability_{report_id}.txt"));
+        let source_path =
+            std::env::temp_dir().join(format!("axiomnexus_reliability_{report_id}.txt"));
         let source_path_str = source_path.to_string_lossy().to_string();
         fs::write(&source_path, format!("{query}\n"))?;
 

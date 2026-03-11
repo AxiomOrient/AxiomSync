@@ -14,8 +14,8 @@ use super::support::print_json;
 pub(super) fn handle_ontology_command(app: &AxiomNexus, command: OntologyCommand) -> Result<()> {
     match command {
         OntologyCommand::Validate { uri } => {
-            let uri =
-                uri.unwrap_or_else(|| axiomnexus_core::ontology::ONTOLOGY_SCHEMA_URI_V1.to_string());
+            let uri = uri
+                .unwrap_or_else(|| axiomnexus_core::ontology::ONTOLOGY_SCHEMA_URI_V1.to_string());
             let raw = app.read(&uri)?;
             let schema = axiomnexus_core::ontology::parse_schema_v1(&raw)?;
             let version = schema.version;
@@ -41,8 +41,8 @@ pub(super) fn handle_ontology_command(app: &AxiomNexus, command: OntologyCommand
             min_action_invariant_total,
             min_link_types_per_object_basis_points,
         } => {
-            let uri =
-                uri.unwrap_or_else(|| axiomnexus_core::ontology::ONTOLOGY_SCHEMA_URI_V1.to_string());
+            let uri = uri
+                .unwrap_or_else(|| axiomnexus_core::ontology::ONTOLOGY_SCHEMA_URI_V1.to_string());
             let raw = app.read(&uri)?;
             let schema = axiomnexus_core::ontology::parse_schema_v1(&raw)?;
             let _compiled = axiomnexus_core::ontology::compile_schema(schema.clone())?;
@@ -86,8 +86,8 @@ pub(super) fn handle_ontology_command(app: &AxiomNexus, command: OntologyCommand
             input_file,
             input_stdin,
         } => {
-            let uri =
-                uri.unwrap_or_else(|| axiomnexus_core::ontology::ONTOLOGY_SCHEMA_URI_V1.to_string());
+            let uri = uri
+                .unwrap_or_else(|| axiomnexus_core::ontology::ONTOLOGY_SCHEMA_URI_V1.to_string());
             let raw = app.read(&uri)?;
             let parsed = axiomnexus_core::ontology::parse_schema_v1(&raw)?;
             let compiled = axiomnexus_core::ontology::compile_schema(parsed)?;
@@ -113,8 +113,8 @@ pub(super) fn handle_ontology_command(app: &AxiomNexus, command: OntologyCommand
             input_file,
             input_stdin,
         } => {
-            let uri =
-                uri.unwrap_or_else(|| axiomnexus_core::ontology::ONTOLOGY_SCHEMA_URI_V1.to_string());
+            let uri = uri
+                .unwrap_or_else(|| axiomnexus_core::ontology::ONTOLOGY_SCHEMA_URI_V1.to_string());
             let input = read_ontology_action_input(input_json, input_file, input_stdin)?;
             let (event_id, target_uri, report) = app.enqueue_ontology_action(
                 &uri,
@@ -132,8 +132,8 @@ pub(super) fn handle_ontology_command(app: &AxiomNexus, command: OntologyCommand
             }))?;
         }
         OntologyCommand::InvariantCheck { uri, enforce } => {
-            let uri =
-                uri.unwrap_or_else(|| axiomnexus_core::ontology::ONTOLOGY_SCHEMA_URI_V1.to_string());
+            let uri = uri
+                .unwrap_or_else(|| axiomnexus_core::ontology::ONTOLOGY_SCHEMA_URI_V1.to_string());
             let raw = app.read(&uri)?;
             let parsed = axiomnexus_core::ontology::parse_schema_v1(&raw)?;
             let compiled = axiomnexus_core::ontology::compile_schema(parsed)?;

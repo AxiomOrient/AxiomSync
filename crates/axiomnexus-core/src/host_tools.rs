@@ -245,7 +245,8 @@ mod tests {
     #[cfg(feature = "host-tools")]
     #[test]
     fn run_host_command_with_enabled_policy_reports_spawn_error() {
-        let spec = HostCommandSpec::new("test:spawn_error", "axiomnexus-command-does-not-exist", &[]);
+        let spec =
+            HostCommandSpec::new("test:spawn_error", "axiomnexus-command-does-not-exist", &[]);
         let result = run_host_command_with_policy(
             spec,
             HostToolsPolicy {

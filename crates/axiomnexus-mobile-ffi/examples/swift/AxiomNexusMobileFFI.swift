@@ -1,93 +1,93 @@
 import Foundation
 
-public enum AxiommeClientError: Error {
+public enum AxiomNexusClientError: Error {
     case invalidArgument(String)
     case runtime(String)
     case invalidState(String)
     case decode(String)
 }
 
-/// Minimal Swift wrapper around `axiomme_mobile_ffi`.
+/// Minimal Swift wrapper around `axiomnexus_mobile_ffi`.
 ///
 /// Ownership model:
 /// - Rust allocates `payload` bytes for each call.
-/// - Swift copies payload into `Data` and immediately calls `axiomme_owned_bytes_free`.
+/// - Swift copies payload into `Data` and immediately calls `axiomnexus_owned_bytes_free`.
 /// - The opaque runtime handle is imported as `OpaquePointer` from C.
-public final class AxiommeClient {
+public final class AxiomNexusClient {
     private var runtime: OpaquePointer?
 
     public init(rootDir: String) throws {
         var outRuntime: OpaquePointer?
         let result = rootDir.withCString { rawRoot in
-            axiomme_runtime_new(rawRoot, &outRuntime)
+            axiomnexus_runtime_new(rawRoot, &outRuntime)
         }
         let payload = takePayload(result.payload)
         try throwIfError(result.code, payload: payload)
 
         guard let runtime = outRuntime else {
-            throw AxiommeClientError.invalidState("runtime pointer was not initialized")
+            throw AxiomNexusClientError.invalidState("runtime pointer was not initialized")
         }
         self.runtime = runtime
     }
 
     deinit {
         if let runtime {
-            axiomme_runtime_free(runtime)
+            axiomnexus_runtime_free(runtime)
         }
     }
 
     public func initialize() throws {
         guard let runtime else {
-            throw AxiommeClientError.invalidState("runtime is already released")
+            throw AxiomNexusClientError.invalidState("runtime is already released")
         }
-        let result = axiomme_runtime_initialize(runtime)
+        let result = axiomnexus_runtime_initialize(runtime)
         let payload = takePayload(result.payload)
         try throwIfError(result.code, payload: payload)
     }
 
     public func backendStatus() throws -> [String: Any] {
         guard let runtime else {
-            throw AxiommeClientError.invalidState("runtime is already released")
+            throw AxiomNexusClientError.invalidState("runtime is already released")
         }
-        let result = axiomme_runtime_backend_status_json(runtime)
+        let result = axiomnexus_runtime_backend_status_json(runtime)
         let payload = takePayload(result.payload)
         try throwIfError(result.code, payload: payload)
 
         guard !payload.isEmpty else {
-            throw AxiommeClientError.decode("backend status payload was empty")
+            throw AxiomNexusClientError.decode("backend status payload was empty")
         }
         let json = try JSONSerialization.jsonObject(with: payload, options: [])
         guard let dict = json as? [String: Any] else {
-            throw AxiommeClientError.decode("backend status payload was not a JSON object")
+            throw AxiomNexusClientError.decode("backend status payload was not a JSON object")
         }
         return dict
     }
 }
 
-private func takePayload(_ payload: AxiommeOwnedBytes) -> Data {
+private func takePayload(_ payload: AxiomNexusOwnedBytes) -> Data {
     guard let base = payload.ptr, payload.len > 0 else {
-        axiomme_owned_bytes_free(payload)
+        axiomnexus_owned_bytes_free(payload)
         return Data()
     }
     let count = Int(payload.len)
     let data = Data(bytes: base, count: count)
-    axiomme_owned_bytes_free(payload)
+    axiomnexus_owned_bytes_free(payload)
     return data
 }
 
-private func throwIfError(_ code: AxiommeFfiCode, payload: Data) throws {
-    if code == AXIOMME_FFI_CODE_OK {
+private func throwIfError(_ code: AxiomNexusFfiCode, payload: Data) throws {
+    if code == AXIOMNEXUS_FFI_CODE_OK {
         return
     }
 
     let message = parseErrorMessage(payload) ?? "unknown ffi error"
     switch code {
-    case Int32(AXIOMME_FFI_CODE_INVALID_ARGUMENT):
-        throw AxiommeClientError.invalidArgument(message)
-    case Int32(AXIOMME_FFI_CODE_RUNTIME_ERROR):
-        throw AxiommeClientError.runtime(message)
+    case Int32(AXIOMNEXUS_FFI_CODE_INVALID_ARGUMENT):
+        throw AxiomNexusClientError.invalidArgument(message)
+    case Int32(AXIOMNEXUS_FFI_CODE_RUNTIME_ERROR):
+        throw AxiomNexusClientError.runtime(message)
     default:
-        throw AxiommeClientError.runtime(message)
+        throw AxiomNexusClientError.runtime(message)
     }
 }
 

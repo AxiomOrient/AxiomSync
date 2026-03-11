@@ -9,7 +9,7 @@ use serde::Serialize;
 /// Stable return codes for C/Swift callers.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AxiommeFfiCode {
+pub enum AxiomNexusFfiCode {
     Ok = 0,
     InvalidArgument = 1,
     RuntimeError = 2,
@@ -22,12 +22,12 @@ pub enum AxiommeFfiCode {
 /// - Consumer: Calls `axiomnexus_owned_bytes_free` exactly once.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct AxiommeOwnedBytes {
+pub struct AxiomNexusOwnedBytes {
     pub ptr: *mut u8,
     pub len: usize,
 }
 
-impl AxiommeOwnedBytes {
+impl AxiomNexusOwnedBytes {
     const fn empty() -> Self {
         Self {
             ptr: ptr::null_mut(),
@@ -49,23 +49,23 @@ impl AxiommeOwnedBytes {
 /// Uniform response envelope for every exported call.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct AxiommeFfiResult {
-    pub code: AxiommeFfiCode,
-    pub payload: AxiommeOwnedBytes,
+pub struct AxiomNexusFfiResult {
+    pub code: AxiomNexusFfiCode,
+    pub payload: AxiomNexusOwnedBytes,
 }
 
-impl AxiommeFfiResult {
+impl AxiomNexusFfiResult {
     const fn ok_empty() -> Self {
         Self {
-            code: AxiommeFfiCode::Ok,
-            payload: AxiommeOwnedBytes::empty(),
+            code: AxiomNexusFfiCode::Ok,
+            payload: AxiomNexusOwnedBytes::empty(),
         }
     }
 
     fn ok_json_bytes(payload: Vec<u8>) -> Self {
         Self {
-            code: AxiommeFfiCode::Ok,
-            payload: AxiommeOwnedBytes::from_vec(payload),
+            code: AxiomNexusFfiCode::Ok,
+            payload: AxiomNexusOwnedBytes::from_vec(payload),
         }
     }
 
@@ -75,12 +75,12 @@ impl AxiommeFfiResult {
             operation,
             message: message.into(),
         };
-        Self::json_or_internal(AxiommeFfiCode::InvalidArgument, operation, &payload)
+        Self::json_or_internal(AxiomNexusFfiCode::InvalidArgument, operation, &payload)
     }
 
     fn runtime_error(operation: &'static str, err: AxiomError) -> Self {
         let payload = err.to_payload(operation.to_string(), None);
-        Self::json_or_internal(AxiommeFfiCode::RuntimeError, operation, &payload)
+        Self::json_or_internal(AxiomNexusFfiCode::RuntimeError, operation, &payload)
     }
 
     fn internal_error(operation: &'static str, message: impl Into<String>) -> Self {
@@ -89,18 +89,18 @@ impl AxiommeFfiResult {
             operation,
             message: message.into(),
         };
-        Self::json_or_internal(AxiommeFfiCode::RuntimeError, operation, &payload)
+        Self::json_or_internal(AxiomNexusFfiCode::RuntimeError, operation, &payload)
     }
 
     fn json_or_internal(
-        code: AxiommeFfiCode,
+        code: AxiomNexusFfiCode,
         operation: &'static str,
         payload: &impl Serialize,
     ) -> Self {
         match serde_json::to_vec(payload) {
             Ok(json) => Self {
                 code,
-                payload: AxiommeOwnedBytes::from_vec(json),
+                payload: AxiomNexusOwnedBytes::from_vec(json),
             },
             Err(err) => {
                 let fallback = format!(
@@ -108,8 +108,8 @@ impl AxiommeFfiResult {
                 )
                 .into_bytes();
                 Self {
-                    code: AxiommeFfiCode::RuntimeError,
-                    payload: AxiommeOwnedBytes::from_vec(fallback),
+                    code: AxiomNexusFfiCode::RuntimeError,
+                    payload: AxiomNexusOwnedBytes::from_vec(fallback),
                 }
             }
         }
@@ -124,7 +124,7 @@ struct FfiArgumentErrorPayload<'a> {
 }
 
 /// Opaque runtime handle for mobile callers.
-pub struct AxiommeRuntime {
+pub struct AxiomNexusRuntime {
     app: AxiomNexus,
 }
 
@@ -137,12 +137,12 @@ pub struct AxiommeRuntime {
 /// - Caller must eventually pass returned runtime to `axiomnexus_runtime_free`.
 pub unsafe extern "C" fn axiomnexus_runtime_new(
     root_dir: *const c_char,
-    out_runtime: *mut *mut AxiommeRuntime,
-) -> AxiommeFfiResult {
+    out_runtime: *mut *mut AxiomNexusRuntime,
+) -> AxiomNexusFfiResult {
     const OPERATION: &str = "runtime.new";
 
     if out_runtime.is_null() {
-        return AxiommeFfiResult::invalid_argument(OPERATION, "out_runtime pointer is null");
+        return AxiomNexusFfiResult::invalid_argument(OPERATION, "out_runtime pointer is null");
     }
 
     let root_dir = match parse_required_c_string(root_dir, OPERATION, "root_dir") {
@@ -152,14 +152,14 @@ pub unsafe extern "C" fn axiomnexus_runtime_new(
 
     match AxiomNexus::new(&root_dir) {
         Ok(app) => {
-            let runtime = Box::new(AxiommeRuntime { app });
+            let runtime = Box::new(AxiomNexusRuntime { app });
             // SAFETY: `out_runtime` was validated as non-null and points to writable caller memory.
             unsafe {
                 *out_runtime = Box::into_raw(runtime);
             }
-            AxiommeFfiResult::ok_empty()
+            AxiomNexusFfiResult::ok_empty()
         }
-        Err(err) => AxiommeFfiResult::runtime_error(OPERATION, err),
+        Err(err) => AxiomNexusFfiResult::runtime_error(OPERATION, err),
     }
 }
 
@@ -170,8 +170,8 @@ pub unsafe extern "C" fn axiomnexus_runtime_new(
 /// - `runtime` must be a live pointer previously returned by `axiomnexus_runtime_new`.
 /// - `runtime` must not be used concurrently without external synchronization.
 pub unsafe extern "C" fn axiomnexus_runtime_initialize(
-    runtime: *mut AxiommeRuntime,
-) -> AxiommeFfiResult {
+    runtime: *mut AxiomNexusRuntime,
+) -> AxiomNexusFfiResult {
     const OPERATION: &str = "runtime.initialize";
 
     let runtime = match runtime_from_ptr(runtime, OPERATION) {
@@ -180,8 +180,8 @@ pub unsafe extern "C" fn axiomnexus_runtime_initialize(
     };
 
     match runtime.app.initialize() {
-        Ok(()) => AxiommeFfiResult::ok_empty(),
-        Err(err) => AxiommeFfiResult::runtime_error(OPERATION, err),
+        Ok(()) => AxiomNexusFfiResult::ok_empty(),
+        Err(err) => AxiomNexusFfiResult::runtime_error(OPERATION, err),
     }
 }
 
@@ -192,8 +192,8 @@ pub unsafe extern "C" fn axiomnexus_runtime_initialize(
 /// - `runtime` must be a live pointer previously returned by `axiomnexus_runtime_new`.
 /// - `runtime` must not be used concurrently without external synchronization.
 pub unsafe extern "C" fn axiomnexus_runtime_backend_status_json(
-    runtime: *mut AxiommeRuntime,
-) -> AxiommeFfiResult {
+    runtime: *mut AxiomNexusRuntime,
+) -> AxiomNexusFfiResult {
     const OPERATION: &str = "runtime.backend_status_json";
 
     let runtime = match runtime_from_ptr(runtime, OPERATION) {
@@ -203,7 +203,7 @@ pub unsafe extern "C" fn axiomnexus_runtime_backend_status_json(
 
     let status = match runtime.app.backend_status() {
         Ok(status) => status,
-        Err(err) => return AxiommeFfiResult::runtime_error(OPERATION, err),
+        Err(err) => return AxiomNexusFfiResult::runtime_error(OPERATION, err),
     };
     json_success(OPERATION, &status)
 }
@@ -215,9 +215,9 @@ pub unsafe extern "C" fn axiomnexus_runtime_backend_status_json(
 /// - `runtime` must be a live pointer previously returned by `axiomnexus_runtime_new`.
 /// - `uri` must be a valid NUL-terminated UTF-8 string.
 pub unsafe extern "C" fn axiomnexus_runtime_mkdir(
-    runtime: *mut AxiommeRuntime,
+    runtime: *mut AxiomNexusRuntime,
     uri: *const c_char,
-) -> AxiommeFfiResult {
+) -> AxiomNexusFfiResult {
     const OPERATION: &str = "runtime.mkdir";
 
     let runtime = match runtime_from_ptr(runtime, OPERATION) {
@@ -230,8 +230,8 @@ pub unsafe extern "C" fn axiomnexus_runtime_mkdir(
     };
 
     match runtime.app.mkdir(&uri) {
-        Ok(()) => AxiommeFfiResult::ok_empty(),
-        Err(err) => AxiommeFfiResult::runtime_error(OPERATION, err),
+        Ok(()) => AxiomNexusFfiResult::ok_empty(),
+        Err(err) => AxiomNexusFfiResult::runtime_error(OPERATION, err),
     }
 }
 
@@ -242,10 +242,10 @@ pub unsafe extern "C" fn axiomnexus_runtime_mkdir(
 /// - `runtime` must be a live pointer previously returned by `axiomnexus_runtime_new`.
 /// - `uri` must be a valid NUL-terminated UTF-8 string.
 pub unsafe extern "C" fn axiomnexus_runtime_ls_json(
-    runtime: *mut AxiommeRuntime,
+    runtime: *mut AxiomNexusRuntime,
     uri: *const c_char,
     recursive: bool,
-) -> AxiommeFfiResult {
+) -> AxiomNexusFfiResult {
     const OPERATION: &str = "runtime.ls_json";
 
     let runtime = match runtime_from_ptr(runtime, OPERATION) {
@@ -259,7 +259,7 @@ pub unsafe extern "C" fn axiomnexus_runtime_ls_json(
 
     match runtime.app.ls(&uri, recursive, true) {
         Ok(entries) => json_success(OPERATION, &entries),
-        Err(err) => AxiommeFfiResult::runtime_error(OPERATION, err),
+        Err(err) => AxiomNexusFfiResult::runtime_error(OPERATION, err),
     }
 }
 
@@ -270,9 +270,9 @@ pub unsafe extern "C" fn axiomnexus_runtime_ls_json(
 /// - `runtime` must be a live pointer previously returned by `axiomnexus_runtime_new`.
 /// - `uri` must be a valid NUL-terminated UTF-8 string.
 pub unsafe extern "C" fn axiomnexus_runtime_load_markdown_json(
-    runtime: *mut AxiommeRuntime,
+    runtime: *mut AxiomNexusRuntime,
     uri: *const c_char,
-) -> AxiommeFfiResult {
+) -> AxiomNexusFfiResult {
     const OPERATION: &str = "runtime.load_markdown_json";
 
     let runtime = match runtime_from_ptr(runtime, OPERATION) {
@@ -286,7 +286,7 @@ pub unsafe extern "C" fn axiomnexus_runtime_load_markdown_json(
 
     match runtime.app.load_markdown(&uri) {
         Ok(document) => json_success(OPERATION, &document),
-        Err(err) => AxiommeFfiResult::runtime_error(OPERATION, err),
+        Err(err) => AxiomNexusFfiResult::runtime_error(OPERATION, err),
     }
 }
 
@@ -302,11 +302,11 @@ pub unsafe extern "C" fn axiomnexus_runtime_load_markdown_json(
 /// - `uri` and `content` must be valid NUL-terminated UTF-8 strings.
 /// - `expected_etag` may be null.
 pub unsafe extern "C" fn axiomnexus_runtime_save_markdown_json(
-    runtime: *mut AxiommeRuntime,
+    runtime: *mut AxiomNexusRuntime,
     uri: *const c_char,
     content: *const c_char,
     expected_etag: *const c_char,
-) -> AxiommeFfiResult {
+) -> AxiomNexusFfiResult {
     const OPERATION: &str = "runtime.save_markdown_json";
 
     let runtime = match runtime_from_ptr(runtime, OPERATION) {
@@ -328,7 +328,7 @@ pub unsafe extern "C" fn axiomnexus_runtime_save_markdown_json(
 
     match save_markdown_with_create(runtime, &uri, &content, expected_etag.as_deref()) {
         Ok(saved) => json_success(OPERATION, &saved),
-        Err(err) => AxiommeFfiResult::runtime_error(OPERATION, err),
+        Err(err) => AxiomNexusFfiResult::runtime_error(OPERATION, err),
     }
 }
 
@@ -339,10 +339,10 @@ pub unsafe extern "C" fn axiomnexus_runtime_save_markdown_json(
 /// - `runtime` must be a live pointer previously returned by `axiomnexus_runtime_new`.
 /// - `uri` must be a valid NUL-terminated UTF-8 string.
 pub unsafe extern "C" fn axiomnexus_runtime_rm(
-    runtime: *mut AxiommeRuntime,
+    runtime: *mut AxiomNexusRuntime,
     uri: *const c_char,
     recursive: bool,
-) -> AxiommeFfiResult {
+) -> AxiomNexusFfiResult {
     const OPERATION: &str = "runtime.rm";
 
     let runtime = match runtime_from_ptr(runtime, OPERATION) {
@@ -355,8 +355,8 @@ pub unsafe extern "C" fn axiomnexus_runtime_rm(
     };
 
     match runtime.app.rm(&uri, recursive) {
-        Ok(()) => AxiommeFfiResult::ok_empty(),
-        Err(err) => AxiommeFfiResult::runtime_error(OPERATION, err),
+        Ok(()) => AxiomNexusFfiResult::ok_empty(),
+        Err(err) => AxiomNexusFfiResult::runtime_error(OPERATION, err),
     }
 }
 
@@ -366,7 +366,7 @@ pub unsafe extern "C" fn axiomnexus_runtime_rm(
 /// # Safety
 /// - `runtime` must be null or a pointer returned by `axiomnexus_runtime_new`.
 /// - The pointer must be freed exactly once.
-pub unsafe extern "C" fn axiomnexus_runtime_free(runtime: *mut AxiommeRuntime) {
+pub unsafe extern "C" fn axiomnexus_runtime_free(runtime: *mut AxiomNexusRuntime) {
     if runtime.is_null() {
         return;
     }
@@ -382,11 +382,11 @@ pub unsafe extern "C" fn axiomnexus_runtime_free(runtime: *mut AxiommeRuntime) {
 /// # Safety
 /// - `bytes` must be a value returned by this crate.
 /// - The value must be freed exactly once.
-pub unsafe extern "C" fn axiomnexus_owned_bytes_free(bytes: AxiommeOwnedBytes) {
+pub unsafe extern "C" fn axiomnexus_owned_bytes_free(bytes: AxiomNexusOwnedBytes) {
     if bytes.ptr.is_null() || bytes.len == 0 {
         return;
     }
-    // SAFETY: pointer/len come from `AxiommeOwnedBytes::from_vec`, which uses `Box<[u8]>`.
+    // SAFETY: pointer/len come from `AxiomNexusOwnedBytes::from_vec`, which uses `Box<[u8]>`.
     unsafe {
         let slice_ptr = ptr::slice_from_raw_parts_mut(bytes.ptr, bytes.len);
         drop(Box::from_raw(slice_ptr));
@@ -397,9 +397,9 @@ fn parse_required_c_string(
     raw: *const c_char,
     operation: &'static str,
     field: &'static str,
-) -> std::result::Result<String, AxiommeFfiResult> {
+) -> std::result::Result<String, AxiomNexusFfiResult> {
     if raw.is_null() {
-        return Err(AxiommeFfiResult::invalid_argument(
+        return Err(AxiomNexusFfiResult::invalid_argument(
             operation,
             format!("{field} pointer is null"),
         ));
@@ -408,10 +408,13 @@ fn parse_required_c_string(
     // SAFETY: `raw` is checked for null and expected to be a NUL-terminated C string.
     let c_str = unsafe { CStr::from_ptr(raw) };
     let value = c_str.to_str().map(str::trim).map_err(|err| {
-        AxiommeFfiResult::invalid_argument(operation, format!("{field} must be valid UTF-8: {err}"))
+        AxiomNexusFfiResult::invalid_argument(
+            operation,
+            format!("{field} must be valid UTF-8: {err}"),
+        )
     })?;
     if value.is_empty() {
-        return Err(AxiommeFfiResult::invalid_argument(
+        return Err(AxiomNexusFfiResult::invalid_argument(
             operation,
             format!("{field} must be non-empty"),
         ));
@@ -423,9 +426,9 @@ fn parse_c_string_allow_empty(
     raw: *const c_char,
     operation: &'static str,
     field: &'static str,
-) -> std::result::Result<String, AxiommeFfiResult> {
+) -> std::result::Result<String, AxiomNexusFfiResult> {
     if raw.is_null() {
-        return Err(AxiommeFfiResult::invalid_argument(
+        return Err(AxiomNexusFfiResult::invalid_argument(
             operation,
             format!("{field} pointer is null"),
         ));
@@ -434,7 +437,10 @@ fn parse_c_string_allow_empty(
     // SAFETY: `raw` is checked for null and expected to be a NUL-terminated C string.
     let c_str = unsafe { CStr::from_ptr(raw) };
     c_str.to_str().map(str::to_string).map_err(|err| {
-        AxiommeFfiResult::invalid_argument(operation, format!("{field} must be valid UTF-8: {err}"))
+        AxiomNexusFfiResult::invalid_argument(
+            operation,
+            format!("{field} must be valid UTF-8: {err}"),
+        )
     })
 }
 
@@ -442,7 +448,7 @@ fn parse_optional_c_string(
     raw: *const c_char,
     operation: &'static str,
     field: &'static str,
-) -> std::result::Result<Option<String>, AxiommeFfiResult> {
+) -> std::result::Result<Option<String>, AxiomNexusFfiResult> {
     if raw.is_null() {
         return Ok(None);
     }
@@ -450,7 +456,10 @@ fn parse_optional_c_string(
     // SAFETY: `raw` is non-null and expected to be a NUL-terminated C string.
     let c_str = unsafe { CStr::from_ptr(raw) };
     let value = c_str.to_str().map(str::trim).map_err(|err| {
-        AxiommeFfiResult::invalid_argument(operation, format!("{field} must be valid UTF-8: {err}"))
+        AxiomNexusFfiResult::invalid_argument(
+            operation,
+            format!("{field} must be valid UTF-8: {err}"),
+        )
     })?;
     if value.is_empty() {
         return Ok(None);
@@ -459,11 +468,11 @@ fn parse_optional_c_string(
 }
 
 fn runtime_from_ptr<'a>(
-    runtime: *mut AxiommeRuntime,
+    runtime: *mut AxiomNexusRuntime,
     operation: &'static str,
-) -> std::result::Result<&'a mut AxiommeRuntime, AxiommeFfiResult> {
+) -> std::result::Result<&'a mut AxiomNexusRuntime, AxiomNexusFfiResult> {
     if runtime.is_null() {
-        return Err(AxiommeFfiResult::invalid_argument(
+        return Err(AxiomNexusFfiResult::invalid_argument(
             operation,
             "runtime pointer is null",
         ));
@@ -472,10 +481,10 @@ fn runtime_from_ptr<'a>(
     Ok(unsafe { &mut *runtime })
 }
 
-fn json_success(operation: &'static str, payload: &impl Serialize) -> AxiommeFfiResult {
+fn json_success(operation: &'static str, payload: &impl Serialize) -> AxiomNexusFfiResult {
     match serde_json::to_vec(payload) {
-        Ok(payload) => AxiommeFfiResult::ok_json_bytes(payload),
-        Err(err) => AxiommeFfiResult::internal_error(
+        Ok(payload) => AxiomNexusFfiResult::ok_json_bytes(payload),
+        Err(err) => AxiomNexusFfiResult::internal_error(
             operation,
             format!("json encode failed for {operation}: {err}"),
         ),
@@ -483,7 +492,7 @@ fn json_success(operation: &'static str, payload: &impl Serialize) -> AxiommeFfi
 }
 
 fn save_markdown_with_create(
-    runtime: &mut AxiommeRuntime,
+    runtime: &mut AxiomNexusRuntime,
     uri: &str,
     content: &str,
     expected_etag: Option<&str>,
@@ -542,7 +551,7 @@ mod tests {
 
     #[test]
     fn owned_bytes_empty_is_null() {
-        let bytes = AxiommeOwnedBytes::empty();
+        let bytes = AxiomNexusOwnedBytes::empty();
         assert!(bytes.ptr.is_null());
         assert_eq!(bytes.len, 0);
     }
@@ -550,14 +559,14 @@ mod tests {
     #[test]
     fn owned_bytes_round_trip() {
         let original = br#"{"ok":true}"#.to_vec();
-        let bytes = AxiommeOwnedBytes::from_vec(original.clone());
+        let bytes = AxiomNexusOwnedBytes::from_vec(original.clone());
         assert!(!bytes.ptr.is_null());
         assert_eq!(bytes.len, original.len());
 
         // SAFETY: pointer and length are from `from_vec` and valid until freed.
         let slice = unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len) };
         assert_eq!(slice, original.as_slice());
-        // SAFETY: `bytes` originates from `AxiommeOwnedBytes::from_vec`.
+        // SAFETY: `bytes` originates from `AxiomNexusOwnedBytes::from_vec`.
         unsafe {
             axiomnexus_owned_bytes_free(bytes);
         }

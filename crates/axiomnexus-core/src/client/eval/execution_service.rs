@@ -317,7 +317,10 @@ fn run_intent_probe(
     Ok(())
 }
 
-fn run_archive_context_probe(probe: &AxiomNexus, buckets: &mut HashMap<String, usize>) -> Result<()> {
+fn run_archive_context_probe(
+    probe: &AxiomNexus,
+    buckets: &mut HashMap<String, usize>,
+) -> Result<()> {
     let archive_session = probe.session(Some("eval-probe-archive"));
     archive_session.load()?;
     archive_session.add_message("user", "archive probe token refresh context")?;
@@ -333,7 +336,10 @@ fn run_archive_context_probe(probe: &AxiomNexus, buckets: &mut HashMap<String, u
     Ok(())
 }
 
-fn run_memory_category_probe(probe: &AxiomNexus, buckets: &mut HashMap<String, usize>) -> Result<()> {
+fn run_memory_category_probe(
+    probe: &AxiomNexus,
+    buckets: &mut HashMap<String, usize>,
+) -> Result<()> {
     let memory_session = probe.session(Some("eval-probe-memory"));
     memory_session.load()?;
     memory_session.add_message("user", "My name is Eval Probe")?;

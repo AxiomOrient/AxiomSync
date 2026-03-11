@@ -419,8 +419,8 @@ fn document_preview_from_uri_parses() {
 
 #[test]
 fn find_query_with_leading_hyphen_parses() {
-    let cli =
-        Cli::try_parse_from(["axiomnexus", "find", "--dash-prefixed", "--limit", "7"]).expect("parse");
+    let cli = Cli::try_parse_from(["axiomnexus", "find", "--dash-prefixed", "--limit", "7"])
+        .expect("parse");
 
     match cli.command {
         Commands::Find(FindArgs { query, limit, .. }) => {
@@ -551,8 +551,8 @@ fn release_pack_parses_benchmark_min_stress_top1_accuracy() {
 
 #[test]
 fn security_audit_parses_mode() {
-    let cli =
-        Cli::try_parse_from(["axiomnexus", "security", "audit", "--mode", "strict"]).expect("parse");
+    let cli = Cli::try_parse_from(["axiomnexus", "security", "audit", "--mode", "strict"])
+        .expect("parse");
 
     match cli.command {
         Commands::Security(SecurityArgs {
@@ -744,8 +744,13 @@ fn queue_daemon_rejects_zero_idle_cycles() {
 
 #[test]
 fn benchmark_gate_rejects_nan_min_top1_accuracy() {
-    let parsed =
-        Cli::try_parse_from(["axiomnexus", "benchmark", "gate", "--min-top1-accuracy", "NaN"]);
+    let parsed = Cli::try_parse_from([
+        "axiomnexus",
+        "benchmark",
+        "gate",
+        "--min-top1-accuracy",
+        "NaN",
+    ]);
     assert!(parsed.is_err(), "NaN threshold must be rejected");
 }
 
@@ -790,7 +795,12 @@ fn release_pack_rejects_nan_benchmark_min_top1_accuracy() {
 
 #[test]
 fn release_pack_rejects_zero_benchmark_window_size() {
-    let parsed =
-        Cli::try_parse_from(["axiomnexus", "release", "pack", "--benchmark-window-size", "0"]);
+    let parsed = Cli::try_parse_from([
+        "axiomnexus",
+        "release",
+        "pack",
+        "--benchmark-window-size",
+        "0",
+    ]);
     assert!(parsed.is_err(), "benchmark-window-size must be >= 1");
 }

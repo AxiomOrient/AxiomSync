@@ -1,6 +1,6 @@
 [package]
 name = "axiomnexus-mobile-ffi"
-version = "0.1.7"
+version = "0.1.9"
 authors = { workspace = true }
 edition = { workspace = true }
 description = "Mobile FFI boundary for AxiomNexus core runtime."
@@ -19,6 +19,6 @@ name = "axiomnexus_mobile_ffi"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-axiomnexus-core = { version = "0.1.6", path = "../axiomnexus-core", default-features = false }
+axiomnexus-core = { version = "0.1.9", path = "../axiomnexus-core", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }

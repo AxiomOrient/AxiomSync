@@ -1,6 +1,6 @@
 [package]
 name = "axiomnexus-core"
-version = "0.1.7"
+version = "0.1.9"
 authors = { workspace = true }
 edition = { workspace = true }
 description = "Core data-processing engine for AxiomNexus local retrieval runtime."

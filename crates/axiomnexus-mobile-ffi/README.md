@@ -19,7 +19,7 @@ Minimal mobile FFI boundary for `axiomnexus-core`.
 
 ## Data Contract
 
-- Every call returns `AxiommeFfiResult`:
+- Every call returns `AxiomNexusFfiResult`:
   - `code`: `ok | invalid_argument | runtime_error`
   - `payload`: UTF-8 JSON bytes (success payload or structured error payload)
 - Returned byte buffers are Rust-owned and must be released with
@@ -27,7 +27,7 @@ Minimal mobile FFI boundary for `axiomnexus-core`.
 
 Header and Swift sample:
 - C header: `include/axiomnexus_mobile_ffi.h`
-- Swift wrapper sample: `examples/swift/AxiommeMobileFFI.swift`
+- Swift wrapper sample: `examples/swift/AxiomNexusMobileFFI.swift`
   - Note: Swift imports runtime handle type as `OpaquePointer`.
 
 ## Build

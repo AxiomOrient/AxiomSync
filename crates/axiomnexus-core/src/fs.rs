@@ -133,7 +133,10 @@ impl LocalContextFs {
             .file_name()
             .and_then(|x| x.to_str())
             .ok_or_else(|| AxiomError::Validation(format!("invalid target filename: {uri}")))?;
-        let tmp_name = format!(".{file_name}.axiomnexus.tmp.{}", uuid::Uuid::new_v4().simple());
+        let tmp_name = format!(
+            ".{file_name}.axiomnexus.tmp.{}",
+            uuid::Uuid::new_v4().simple()
+        );
         let tmp_path = parent.join(tmp_name);
         self.ensure_path_within_root(&tmp_path)?;
 

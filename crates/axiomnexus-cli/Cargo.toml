@@ -1,6 +1,6 @@
 [package]
 name = "axiomnexus-cli"
-version = "0.1.7"
+version = "0.1.9"
 authors = { workspace = true }
 edition = { workspace = true }
 description = "Command-line interface for AxiomNexus data runtime."
@@ -19,7 +19,7 @@ clap = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-axiomnexus-core = { version = "0.1.6", path = "../axiomnexus-core", default-features = false, features = ["host-tools", "markdown-preview"] }
+axiomnexus-core = { version = "0.1.9", path = "../axiomnexus-core", default-features = false, features = ["host-tools", "markdown-preview"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
