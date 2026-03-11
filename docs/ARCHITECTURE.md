@@ -1,7 +1,7 @@
-# AxiomMe Architecture
+# AxiomNexus Architecture
 
 ## 1. Intent
-AxiomMe는 로컬 우선 컨텍스트 런타임입니다.  
+AxiomNexus는 로컬 우선 컨텍스트 런타임입니다.  
 핵심 목표는 `axiom://` URI 기반의 일관된 데이터 모델, 예측 가능한 검색, 명시적인 상태 전이입니다.
 
 ## 2. Core Data Model
@@ -12,11 +12,11 @@ AxiomMe는 로컬 우선 컨텍스트 런타임입니다.
 
 ## 3. Runtime Layers
 1. Interface
-- `axiomme-cli`
-- `axiomme-mobile-ffi`
+- `axiomnexus-cli`
+- `axiomnexus-mobile-ffi`
 
 2. Coordinator
-- `AxiomMe` facade가 FS/State/Index/Session 경계를 오케스트레이션
+- `AxiomNexus` facade가 FS/State/Index/Session 경계를 오케스트레이션
 
 3. Storage/Logic
 - `LocalContextFs`: 파일 I/O 경계
@@ -33,4 +33,4 @@ AxiomMe는 로컬 우선 컨텍스트 런타임입니다.
 ## 5. Boundary Rules
 - 부수효과는 `Fs/State` 레이어에만 둡니다.
 - 검색/선택/계약 검증은 가능한 순수 변환으로 유지합니다.
-- `episodic`은 pure OM contract/transform 계층, AxiomMe는 런타임/영속 계층입니다.
+- `episodic`은 pure OM contract/transform 계층, AxiomNexus는 런타임/영속 계층입니다.

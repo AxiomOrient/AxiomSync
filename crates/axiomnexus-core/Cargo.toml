@@ -1,0 +1,41 @@
+[package]
+name = "axiomnexus-core"
+version = "0.1.7"
+authors = { workspace = true }
+edition = { workspace = true }
+description = "Core data-processing engine for AxiomNexus local retrieval runtime."
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+readme = "README.md"
+exclude = [
+    "tests/fixtures/*",
+    "../../logs/*",
+    "../../target/*",
+]
+
+[features]
+default = ["host-tools"]
+host-tools = []
+markdown-preview = ["dep:pulldown-cmark"]
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+walkdir = { workspace = true }
+globset = { workspace = true }
+blake3 = { workspace = true }
+zip = { workspace = true }
+rusqlite = { workspace = true }
+reqwest = { workspace = true }
+serde_norway = { workspace = true }
+pulldown-cmark = { workspace = true, optional = true }
+toml = { workspace = true }
+semver = { workspace = true }
+episodic = { version = "0.2.2", git = "https://github.com/AxiomOrient/episodic.git", rev = "19d40691bdba3493150d6afdbc728df97550a21a" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

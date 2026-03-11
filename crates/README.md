@@ -8,9 +8,9 @@ Minimal crate index for the runtime repository.
 
 ## Modules
 
-- [`axiomme-core`](./axiomme-core/README.md): domain/runtime engine, persistence, retrieval.
-- [`axiomme-cli`](./axiomme-cli/README.md): operator/automation command surface.
-- [`axiomme-mobile-ffi`](./axiomme-mobile-ffi/README.md): native mobile FFI boundary.
+- [`axiomnexus-core`](./axiomnexus-core/README.md): domain/runtime engine, persistence, retrieval.
+- [`axiomnexus-cli`](./axiomnexus-cli/README.md): operator/automation command surface.
+- [`axiomnexus-mobile-ffi`](./axiomnexus-mobile-ffi/README.md): native mobile FFI boundary.
 
 Out of scope in this repository:
 - web viewer/server crate (moved to external project)
@@ -19,7 +19,7 @@ Out of scope in this repository:
 ## Run
 
 ```bash
-cargo run -p axiomme-cli -- --help
+cargo run -p axiomnexus-cli -- --help
 ```
 
 Queue daemon (local operator workflow):

@@ -4,10 +4,10 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-quality_report_dir="${AXIOMME_QUALITY_REPORT_DIR:-logs/quality}"
-notice_gate_json="${AXIOMME_QUALITY_NOTICE_GATE_JSON:-${quality_report_dir}/mirror_notice_gate.json}"
-notice_router_json="${AXIOMME_QUALITY_NOTICE_ROUTER_JSON:-${quality_report_dir}/mirror_notice_router.json}"
-enforce_notice_gate="${AXIOMME_QUALITY_ENFORCE_MIRROR_NOTICE:-off}"
+quality_report_dir="${AXIOMNEXUS_QUALITY_REPORT_DIR:-logs/quality}"
+notice_gate_json="${AXIOMNEXUS_QUALITY_NOTICE_GATE_JSON:-${quality_report_dir}/mirror_notice_gate.json}"
+notice_router_json="${AXIOMNEXUS_QUALITY_NOTICE_ROUTER_JSON:-${quality_report_dir}/mirror_notice_router.json}"
+enforce_notice_gate="${AXIOMNEXUS_QUALITY_ENFORCE_MIRROR_NOTICE:-off}"
 
 mkdir -p "$(dirname "$notice_gate_json")" "$(dirname "$notice_router_json")"
 
@@ -34,7 +34,7 @@ echo "[quality] clippy"
 cargo clippy --workspace --all-targets -- -D warnings
 
 echo "[quality] om bridge invariants"
-cargo test -p axiomme-core om_reflection_apply_uses_generation_cas_and_event_idempotency --quiet
+cargo test -p axiomnexus-core om_reflection_apply_uses_generation_cas_and_event_idempotency --quiet
 
 echo "[quality] workspace tests"
 cargo test --workspace --quiet
@@ -56,7 +56,7 @@ router_reason="$(jq -r '.route_reason' "$notice_router_json")"
 echo "[quality] mirror notice router selected: ${router_next} (${router_type}/${router_reason})"
 
 if [[ "$enforce_notice_gate" == "on" && "$notice_status" != "ready" ]]; then
-  echo "[quality] mirror notice gate is not ready and AXIOMME_QUALITY_ENFORCE_MIRROR_NOTICE=on" >&2
+  echo "[quality] mirror notice gate is not ready and AXIOMNEXUS_QUALITY_ENFORCE_MIRROR_NOTICE=on" >&2
   exit 1
 fi
 

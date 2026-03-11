@@ -13,7 +13,7 @@
 ## README Link Graph
 - Root README -> `crates/README.md`, `docs/README.md`
 - docs/README -> `ARCHITECTURE.md`, `API_CONTRACT.md`, `ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md`, `USAGE_PLAYBOOK.md`
-- crates/README -> crate-level READMEs (`axiomme-core`, `axiomme-cli`, `axiomme-mobile-ffi`)
+- crates/README -> crate-level READMEs (`axiomnexus-core`, `axiomnexus-cli`, `axiomnexus-mobile-ffi`)
 
 ## Cleanup Actions
 - keep: `README.md`, `docs/README.md`, `docs/ARCHITECTURE.md`, `docs/API_CONTRACT.md`, `docs/ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md`, `docs/USAGE_PLAYBOOK.md`

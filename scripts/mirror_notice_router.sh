@@ -4,9 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-QUALITY_REPORT_DIR="${AXIOMME_QUALITY_REPORT_DIR:-logs/quality}"
-GATE_JSON="${AXIOMME_QUALITY_NOTICE_GATE_JSON:-${REPO_ROOT}/${QUALITY_REPORT_DIR}/mirror_notice_gate.json}"
-OUTPUT_JSON="${AXIOMME_QUALITY_NOTICE_ROUTER_JSON:-${REPO_ROOT}/${QUALITY_REPORT_DIR}/mirror_notice_router.json}"
+QUALITY_REPORT_DIR="${AXIOMNEXUS_QUALITY_REPORT_DIR:-logs/quality}"
+GATE_JSON="${AXIOMNEXUS_QUALITY_NOTICE_GATE_JSON:-${REPO_ROOT}/${QUALITY_REPORT_DIR}/mirror_notice_gate.json}"
+OUTPUT_JSON="${AXIOMNEXUS_QUALITY_NOTICE_ROUTER_JSON:-${REPO_ROOT}/${QUALITY_REPORT_DIR}/mirror_notice_router.json}"
 
 usage() {
   cat <<'EOU'
@@ -19,9 +19,9 @@ Options:
   -h, --help             Show help
 
 Environment:
-  AXIOMME_QUALITY_REPORT_DIR         Base quality report dir for default paths (default: logs/quality)
-  AXIOMME_QUALITY_NOTICE_GATE_JSON   Override default gate JSON path
-  AXIOMME_QUALITY_NOTICE_ROUTER_JSON Override default router JSON path
+  AXIOMNEXUS_QUALITY_REPORT_DIR         Base quality report dir for default paths (default: logs/quality)
+  AXIOMNEXUS_QUALITY_NOTICE_GATE_JSON   Override default gate JSON path
+  AXIOMNEXUS_QUALITY_NOTICE_ROUTER_JSON Override default router JSON path
 EOU
 }
 

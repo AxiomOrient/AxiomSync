@@ -139,11 +139,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "axiomme-cli"
+name = "axiomnexus-cli"
 version = "0.1.7"
 dependencies = [
  "anyhow",
- "axiomme-core",
+ "axiomnexus-core",
  "chrono",
  "clap",
  "serde",
@@ -152,7 +152,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axiomme-core"
+name = "axiomnexus-core"
 version = "0.1.7"
 dependencies = [
  "blake3",
@@ -175,10 +175,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "axiomme-mobile-ffi"
+name = "axiomnexus-mobile-ffi"
 version = "0.1.7"
 dependencies = [
- "axiomme-core",
+ "axiomnexus-core",
  "serde",
  "serde_json",
 ]
@@ -1234,9 +1234,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.13"
+version = "0.11.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1906b49b0c3bc04b5fe5d86a77925ae6524a19b816ae38ce1e426255f1d8a31"
+checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",

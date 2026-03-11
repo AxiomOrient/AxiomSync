@@ -1,7 +1,7 @@
 # API Contract
 
 ## 0. Scope
-이 문서는 현재 AxiomMe 런타임의 핵심 계약만 정의합니다.
+이 문서는 현재 AxiomNexus 런타임의 핵심 계약만 정의합니다.
 상세 구현/실험 옵션은 제외합니다.
 
 ## 1. URI Contract
@@ -36,7 +36,7 @@
 
 ## 3. OM v2 Boundary Contract
 - Pure OM contract/transform 계층: `episodic`
-- Runtime/persistence 계층: `axiomme-core`
+- Runtime/persistence 계층: `axiomnexus-core`
 - Prompt/response header strict fields:
   - `contract_name`
   - `contract_version`

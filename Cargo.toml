@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "crates/axiomme-core",
-    "crates/axiomme-cli",
-    "crates/axiomme-mobile-ffi",
+    "crates/axiomnexus-core",
+    "crates/axiomnexus-cli",
+    "crates/axiomnexus-mobile-ffi",
 ]
 resolver = "2"
 
@@ -11,8 +11,8 @@ edition = "2024"
 version = "0.1.7"
 license = "Apache-2.0"
 authors = ["axient"]
-repository = "https://github.com/AxiomOrient/AxiomMe"
-homepage = "https://github.com/AxiomOrient/AxiomMe"
+repository = "https://github.com/AxiomOrient/AxiomNexus"
+homepage = "https://github.com/AxiomOrient/AxiomNexus"
 
 [workspace.dependencies]
 anyhow = "1.0.98"

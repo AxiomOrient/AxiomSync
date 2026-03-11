@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR=""
 ROOT_CREATED=false
-DEFAULT_BIN="$(pwd)/target/debug/axiomme-cli"
-BIN="${AXIOMME_BIN:-${DEFAULT_BIN}}"
+DEFAULT_BIN="$(pwd)/target/debug/axiomnexus-cli"
+BIN="${AXIOMNEXUS_BIN:-${DEFAULT_BIN}}"
 BIN_OVERRIDDEN=false
 OUTPUT_PATH=""
 QUERY_LIMIT=120
@@ -23,8 +23,8 @@ Usage:
   scripts/perf_regression_gate.sh [options]
 
 Options:
-  --root <path>                     AxiomMe root directory (default: temporary directory)
-  --axiomme-bin <path>              CLI binary path (default: target/debug/axiomme-cli)
+  --root <path>                     AxiomNexus root directory (default: temporary directory)
+  --axiomnexus-bin <path>              CLI binary path (default: target/debug/axiomnexus-cli)
   --output <path>                   Write summary JSON to file
   --query-limit <n>                 benchmark query limit (default: 120)
   --search-limit <n>                benchmark search limit (default: 10)
@@ -44,7 +44,7 @@ while [[ $# -gt 0 ]]; do
       ROOT_DIR="${2:-}"
       shift 2
       ;;
-    --axiomme-bin)
+    --axiomnexus-bin)
       BIN="${2:-}"
       BIN_OVERRIDDEN=true
       shift 2
@@ -107,7 +107,7 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # Resolve override intent from environment as well.
-if [[ -n "${AXIOMME_BIN:-}" ]]; then
+if [[ -n "${AXIOMNEXUS_BIN:-}" ]]; then
   BIN_OVERRIDDEN=true
 fi
 
@@ -124,14 +124,14 @@ resolve_bin_path() {
 
 # Default local binary path should reflect latest source changes.
 if [[ "$BIN_OVERRIDDEN" != "true" ]]; then
-  cargo build -p axiomme-cli >/dev/null
+  cargo build -p axiomnexus-cli >/dev/null
   BIN="${DEFAULT_BIN}"
 fi
 
 if ! resolve_bin_path; then
-  echo "axiomme CLI binary not found/executable: ${BIN}" >&2
+  echo "axiomnexus CLI binary not found/executable: ${BIN}" >&2
   if [[ "$BIN_OVERRIDDEN" == "true" ]]; then
-    echo "hint: fix --axiomme-bin or AXIOMME_BIN" >&2
+    echo "hint: fix --axiomnexus-bin or AXIOMNEXUS_BIN" >&2
   else
     echo "hint: build failed or binary path is invalid: ${DEFAULT_BIN}" >&2
   fi
@@ -139,11 +139,11 @@ if ! resolve_bin_path; then
 fi
 
 if [[ -z "$ROOT_DIR" ]]; then
-  ROOT_DIR="$(mktemp -d /tmp/axiomme-perf-root-XXXXXX)"
+  ROOT_DIR="$(mktemp -d /tmp/axiomnexus-perf-root-XXXXXX)"
   ROOT_CREATED=true
 fi
 
-DATA_DIR="$(mktemp -d /tmp/axiomme-perf-data-XXXXXX)"
+DATA_DIR="$(mktemp -d /tmp/axiomnexus-perf-data-XXXXXX)"
 
 cleanup() {
   rm -rf "$DATA_DIR"

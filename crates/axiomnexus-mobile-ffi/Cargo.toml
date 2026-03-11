@@ -1,0 +1,24 @@
+[package]
+name = "axiomnexus-mobile-ffi"
+version = "0.1.7"
+authors = { workspace = true }
+edition = { workspace = true }
+description = "Mobile FFI boundary for AxiomNexus core runtime."
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+readme = "README.md"
+exclude = [
+    "examples/swift/*",
+    "../../logs/*",
+    "../../target/*",
+]
+
+[lib]
+name = "axiomnexus_mobile_ffi"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+axiomnexus-core = { version = "0.1.6", path = "../axiomnexus-core", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }

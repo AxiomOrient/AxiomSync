@@ -14,7 +14,7 @@ if command -v rg >/dev/null 2>&1; then
         --hidden \
         --glob '!.git/**' \
         --glob '!target/**' \
-        --glob '!.axiomme/**' \
+        --glob '!.axiomnexus/**' \
         --glob '!logs/**' \
         --glob '!Cargo.lock' \
         "$pattern" \
@@ -27,7 +27,7 @@ else
     if grep -RInE \
         --exclude-dir=.git \
         --exclude-dir=target \
-        --exclude-dir=.axiomme \
+        --exclude-dir=.axiomnexus \
         --exclude-dir=logs \
         --exclude=Cargo.lock \
         "$pattern" \

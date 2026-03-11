@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR=""
 ROOT_CREATED=false
 WORKSPACE_DIR="$(pwd)"
-DEFAULT_BIN="$(pwd)/target/debug/axiomme-cli"
-BIN="${AXIOMME_BIN:-${DEFAULT_BIN}}"
+DEFAULT_BIN="$(pwd)/target/debug/axiomnexus-cli"
+BIN="${AXIOMNEXUS_BIN:-${DEFAULT_BIN}}"
 BIN_OVERRIDDEN=false
 OUTPUT_PATH=""
 
@@ -29,9 +29,9 @@ Usage:
   scripts/release_pack_strict_gate.sh [options]
 
 Options:
-  --root <path>                    AxiomMe root directory (default: temporary)
+  --root <path>                    AxiomNexus root directory (default: temporary)
   --workspace-dir <path>           Workspace directory (default: current directory)
-  --axiomme-bin <path>             CLI binary path (default: target/debug/axiomme-cli)
+  --axiomnexus-bin <path>             CLI binary path (default: target/debug/axiomnexus-cli)
   --output <path>                  Write release pack report JSON to file
   --replay-limit <n>               Replay limit (default: 20)
   --replay-max-cycles <n>          Replay max cycles (default: 2)
@@ -59,7 +59,7 @@ while [[ $# -gt 0 ]]; do
       WORKSPACE_DIR="${2:-}"
       shift 2
       ;;
-    --axiomme-bin)
+    --axiomnexus-bin)
       BIN="${2:-}"
       BIN_OVERRIDDEN=true
       shift 2
@@ -142,7 +142,7 @@ if [[ ! -d "$WORKSPACE_DIR" ]]; then
   exit 1
 fi
 
-if [[ -n "${AXIOMME_BIN:-}" ]]; then
+if [[ -n "${AXIOMNEXUS_BIN:-}" ]]; then
   BIN_OVERRIDDEN=true
 fi
 
@@ -158,14 +158,14 @@ resolve_bin_path() {
 }
 
 if [[ "$BIN_OVERRIDDEN" != "true" ]]; then
-  cargo build -p axiomme-cli >/dev/null
+  cargo build -p axiomnexus-cli >/dev/null
   BIN="${DEFAULT_BIN}"
 fi
 
 if ! resolve_bin_path; then
-  echo "axiomme CLI binary not found/executable: ${BIN}" >&2
+  echo "axiomnexus CLI binary not found/executable: ${BIN}" >&2
   if [[ "$BIN_OVERRIDDEN" == "true" ]]; then
-    echo "hint: fix --axiomme-bin or AXIOMME_BIN" >&2
+    echo "hint: fix --axiomnexus-bin or AXIOMNEXUS_BIN" >&2
   else
     echo "hint: build failed or binary path is invalid: ${DEFAULT_BIN}" >&2
   fi
@@ -173,7 +173,7 @@ if ! resolve_bin_path; then
 fi
 
 if [[ -z "$ROOT_DIR" ]]; then
-  ROOT_DIR="$(mktemp -d /tmp/axiomme-release-gate-XXXXXX)"
+  ROOT_DIR="$(mktemp -d /tmp/axiomnexus-release-gate-XXXXXX)"
   ROOT_CREATED=true
 fi
 
