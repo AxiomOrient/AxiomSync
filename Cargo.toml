@@ -31,3 +31,13 @@ pulldown-cmark = "0.13.0"
 serde_norway = "0.9.42"
 toml = "0.8.23"
 semver = "1.0.27"
+
+[profile.dev]
+debug = 0
+incremental = false
+codegen-units = 64
+
+[profile.test]
+debug = 0
+incremental = false
+codegen-units = 64

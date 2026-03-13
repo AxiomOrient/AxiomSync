@@ -1,11 +1,12 @@
 # Docs
 
-현재 유지하는 문서는 이 네 개면 충분합니다. 나머지는 crate README와 코드가 증거 원본입니다.
+현재 유지하는 문서는 이 다섯 개면 충분합니다. 나머지는 crate README와 코드가 증거 원본입니다.
 
 ## Start Here
 - [README.md](../README.md): 저장소가 무엇을 소유하는지, 어떻게 실행하는지, 어떤 gate로 릴리즈하는지
 - [ARCHITECTURE.md](./ARCHITECTURE.md): 런타임 레이어, 데이터 흐름, 외부 프로젝트 경계
 - [API_CONTRACT.md](./API_CONTRACT.md): URI, 저장소, 검색, 세션, 릴리즈 계약
+- [BUILD_ARTIFACT_CONTROL.md](./BUILD_ARTIFACT_CONTROL.md): Rust `target/` 폭증 원인과 artifact 절감 운영 방법
 - [../crates/README.md](../crates/README.md): runtime package map
 
 ## Read By Need
@@ -15,6 +16,8 @@
   `ARCHITECTURE.md`, `API_CONTRACT.md`, `crates/axiomsync/README.md`
 - Release owner:
   Root README, `API_CONTRACT.md`, `scripts/quality_gates.sh`, `scripts/release_pack_strict_gate.sh`
+- Rust workspace operator:
+  `BUILD_ARTIFACT_CONTROL.md`, `scripts/quality_gates.sh`, `Cargo.toml`
 
 ## Repository Boundary
 - This repository owns the runtime library and CLI only.
