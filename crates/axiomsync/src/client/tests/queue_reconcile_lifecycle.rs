@@ -1118,7 +1118,7 @@ fn replay_handles_om_reflection_event_with_cas_and_stale_noop() {
 
     let done = app
         .state
-        .fetch_outbox(QueueEventStatus::Done, 10)
+        .fetch_outbox(QueueEventStatus::Done, 32)
         .expect("done events");
     assert!(done.iter().any(|event| event.id == first_event_id));
     assert!(done.iter().any(|event| event.id == second_event_id));
@@ -1246,7 +1246,7 @@ fn replay_handles_om_reflection_buffer_then_apply_with_stale_noop() {
 
     let done = app
         .state
-        .fetch_outbox(QueueEventStatus::Done, 10)
+        .fetch_outbox(QueueEventStatus::Done, 32)
         .expect("done events");
     assert!(done.iter().any(|event| event.id == buffer_event_1));
     assert!(done.iter().any(|event| event.id == buffer_event_2));

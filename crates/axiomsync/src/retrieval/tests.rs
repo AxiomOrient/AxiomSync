@@ -612,6 +612,10 @@ fn drr_applies_filter_in_child_and_fallback_paths() {
             filter: Some(SearchFilter {
                 tags: vec!["auth".to_string()],
                 mime: None,
+                namespace_prefix: None,
+                kind: None,
+                start_time: None,
+                end_time: None,
             }),
             request_type: "find".to_string(),
         },
@@ -782,6 +786,43 @@ fn drr_enforces_score_threshold_for_expansion_selected_hits() {
     );
 
     assert!(result.query_results.is_empty());
+}
+
+#[test]
+fn search_query_plan_carries_v3_filter_fields() {
+    let engine = DrrEngine::new(DrrConfig::default());
+    let result = engine.run(
+        &InMemoryIndex::new(),
+        &SearchOptions {
+            query: "oauth".to_string(),
+            target_uri: Some(AxiomUri::parse("axiom://events").expect("events root uri")),
+            session: None,
+            session_hints: Vec::new(),
+            budget: None,
+            limit: 10,
+            score_threshold: None,
+            min_match_tokens: None,
+            filter: Some(SearchFilter {
+                tags: Vec::new(),
+                mime: None,
+                namespace_prefix: Some("acme".to_string()),
+                kind: Some("incident".to_string()),
+                start_time: Some(100),
+                end_time: Some(200),
+            }),
+            request_type: "search".to_string(),
+        },
+    );
+
+    let typed = result
+        .query_plan
+        .typed_queries
+        .first()
+        .expect("typed query");
+    assert_eq!(typed.namespace_prefix.as_deref(), Some("acme"));
+    assert_eq!(typed.resource_kind.as_deref(), Some("incident"));
+    assert_eq!(typed.start_time, Some(100));
+    assert_eq!(typed.end_time, Some(200));
 }
 
 #[test]

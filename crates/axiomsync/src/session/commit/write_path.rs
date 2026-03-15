@@ -221,7 +221,7 @@ pub(super) fn reindex_memory_uris(session: &Session, uris: &[AxiomUri]) -> Resul
         if let Some(parent) = uri.parent() {
             ensure_directory_record(&session.fs, &mut index, &parent)?;
             if let Some(record) = index.get(&parent.to_string()).cloned() {
-                session.state.upsert_search_document(&record)?;
+                session.state.persist_search_document(&record)?;
             }
         }
         if has_markdown_extension(&uri.to_string()) {
@@ -241,7 +241,7 @@ pub(super) fn reindex_memory_uris(session: &Session, uris: &[AxiomUri]) -> Resul
                 depth: uri.segments().len(),
             };
             index.upsert(record.clone());
-            session.state.upsert_search_document(&record)?;
+            session.state.persist_search_document(&record)?;
         }
     }
 

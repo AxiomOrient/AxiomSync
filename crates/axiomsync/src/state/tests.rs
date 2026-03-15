@@ -2,8 +2,9 @@ use chrono::{Duration, Utc};
 use rusqlite::Connection;
 use tempfile::tempdir;
 
+use crate::error::AxiomError;
 use crate::models::{IndexRecord, OmReflectionApplyMetrics, QueueEventStatus, ReconcileRunStatus};
-use crate::om::{OM_PROTOCOL_VERSION, OmObservationChunk, OmOriginType, OmRecord, OmScope};
+use crate::om::{OmObservationChunk, OmOriginType, OmRecord, OmScope};
 
 use super::*;
 
@@ -81,7 +82,7 @@ fn open_sets_busy_timeout_and_hot_path_indexes() {
         )
         .expect("enqueue");
     store
-        .upsert_search_document(&search_index_record(
+        .persist_search_document(&search_index_record(
             "doc-1",
             "axiom://resources/demo/a.md",
             SearchIndexRecordSpec {
@@ -95,7 +96,7 @@ fn open_sets_busy_timeout_and_hot_path_indexes() {
         ))
         .expect("upsert search doc");
 
-    let conn = store.conn.lock().expect("sqlite lock");
+    let conn = store.test_connection().expect("sqlite conn");
     let busy_timeout_ms = conn
         .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))
         .expect("busy timeout");
@@ -272,7 +273,7 @@ fn system_value_roundtrip() {
 }
 
 #[test]
-fn migration_creates_om_tables() {
+fn open_creates_om_tables() {
     let temp = tempdir().expect("tempdir");
     let db_path = temp.path().join("state.db");
     let store = SqliteStateStore::open(db_path).expect("open failed");
@@ -284,7 +285,7 @@ fn migration_creates_om_tables() {
         "om_thread_states",
     ];
     {
-        let conn = store.conn.lock().expect("sqlite lock");
+        let conn = store.test_connection().expect("sqlite conn");
         for table in tables {
             let exists = conn
                 .query_row(
@@ -302,57 +303,7 @@ fn migration_creates_om_tables() {
 }
 
 #[test]
-fn migration_drops_legacy_search_docs_fts_table() {
-    let temp = tempdir().expect("tempdir");
-    let db_path = temp.path().join("state-legacy-search-fts.db");
-
-    {
-        let conn = Connection::open(&db_path).expect("open db");
-        conn.execute_batch(
-            r"
-                CREATE TABLE IF NOT EXISTS search_docs_fts (
-                    id INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL
-                );
-                ",
-        )
-        .expect("create legacy search_docs_fts");
-        let exists_before = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
-                params!["search_docs_fts"],
-                |_| Ok(()),
-            )
-            .optional()
-            .expect("query legacy table")
-            .is_some();
-        assert!(
-            exists_before,
-            "legacy search_docs_fts table must exist before migrate"
-        );
-    }
-
-    let store = SqliteStateStore::open(&db_path).expect("open failed");
-    let conn = store.conn.lock().expect("sqlite lock");
-    let sql_after = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE name = ?1 LIMIT 1",
-            params!["search_docs_fts"],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .expect("query table after migrate")
-        .expect("fts table after migrate");
-    assert!(
-        sql_after
-            .to_ascii_uppercase()
-            .starts_with("CREATE VIRTUAL TABLE"),
-        "legacy search_docs_fts table must be replaced by virtual table: {sql_after}"
-    );
-}
-
-#[test]
-fn migration_rebuilds_fts_when_bootstrap_marker_is_missing() {
+fn open_rebuilds_fts_when_fts_marker_is_missing() {
     let temp = tempdir().expect("tempdir");
     let db_path = temp.path().join("state-fts-bootstrap.db");
 
@@ -370,7 +321,7 @@ fn migration_rebuilds_fts_when_bootstrap_marker_is_missing() {
     );
     let store = SqliteStateStore::open(&db_path).expect("open failed");
     store
-        .upsert_search_document(&original)
+        .persist_search_document(&original)
         .expect("upsert original doc");
     drop(store);
 
@@ -380,7 +331,7 @@ fn migration_rebuilds_fts_when_bootstrap_marker_is_missing() {
             "DELETE FROM system_kv WHERE key = ?1",
             params!["search_docs_fts_schema_version"],
         )
-        .expect("delete bootstrap marker");
+        .expect("delete fts marker");
         conn.execute(
             "INSERT INTO search_docs_fts(search_docs_fts) VALUES ('delete-all')",
             [],
@@ -398,302 +349,6 @@ fn migration_rebuilds_fts_when_bootstrap_marker_is_missing() {
     assert_eq!(
         hits.first().map(String::as_str),
         Some(original.uri.as_str())
-    );
-}
-
-#[test]
-fn om_v2_migration_dry_run_reports_plan_without_writes() {
-    let temp = tempdir().expect("tempdir");
-    let db_path = temp.path().join("state.db");
-    let store = SqliteStateStore::open(db_path).expect("open failed");
-    let now = Utc::now();
-    let record = OmRecord {
-        id: "record-migrate-dry".to_string(),
-        scope: OmScope::Session,
-        scope_key: "session:migrate-dry".to_string(),
-        session_id: Some("migrate-dry".to_string()),
-        thread_id: None,
-        resource_id: None,
-        generation_count: 3,
-        last_applied_outbox_event_id: None,
-        origin_type: OmOriginType::Initial,
-        active_observations: "user asked for migration status".to_string(),
-        observation_token_count: 32,
-        pending_message_tokens: 5,
-        last_observed_at: Some(now),
-        current_task: Some("Verify OM migration state".to_string()),
-        suggested_response: Some("Share migration status".to_string()),
-        last_activated_message_ids: vec!["m-dry-1".to_string()],
-        observer_trigger_count_total: 1,
-        reflector_trigger_count_total: 0,
-        is_observing: false,
-        is_reflecting: false,
-        is_buffering_observation: false,
-        is_buffering_reflection: false,
-        last_buffered_at_tokens: 0,
-        last_buffered_at_time: None,
-        buffered_reflection: None,
-        buffered_reflection_tokens: None,
-        buffered_reflection_input_tokens: None,
-        created_at: now,
-        updated_at: now,
-    };
-    store.upsert_om_record(&record).expect("upsert");
-
-    let report = store.om_v2_migration_dry_run().expect("dry run");
-    assert!(report.dry_run);
-    assert!(!report.already_applied);
-    assert_eq!(report.records_scanned, 1);
-    assert_eq!(report.entries_planned, 1);
-    assert_eq!(report.continuation_planned, 1);
-    assert_eq!(report.entries_upserted, 0);
-    assert_eq!(report.continuation_upserted, 0);
-    assert_eq!(report.protocol_version, OM_PROTOCOL_VERSION);
-    assert!(report.integrity_ok);
-
-    let conn = store.conn.lock().expect("sqlite lock");
-    let entries_count = conn
-        .query_row("SELECT COUNT(*) FROM om_entries", [], |row| {
-            row.get::<_, i64>(0)
-        })
-        .expect("count om_entries");
-    let continuation_count = conn
-        .query_row("SELECT COUNT(*) FROM om_continuation_state", [], |row| {
-            row.get::<_, i64>(0)
-        })
-        .expect("count om_continuation_state");
-    let protocol_meta_count = conn
-        .query_row("SELECT COUNT(*) FROM om_protocol_meta", [], |row| {
-            row.get::<_, i64>(0)
-        })
-        .expect("count om_protocol_meta");
-    assert_eq!(entries_count, 0);
-    assert_eq!(continuation_count, 0);
-    assert_eq!(protocol_meta_count, 0);
-    drop(conn);
-
-    let marker = store
-        .get_system_value("om_v2_one_shot_migration_applied_at")
-        .expect("marker value");
-    assert!(marker.is_none());
-}
-
-#[test]
-fn om_v2_migration_apply_is_idempotent() {
-    let temp = tempdir().expect("tempdir");
-    let db_path = temp.path().join("state.db");
-    let store = SqliteStateStore::open(db_path).expect("open failed");
-    let now = Utc::now();
-    let record = OmRecord {
-        id: "record-migrate-apply".to_string(),
-        scope: OmScope::Thread,
-        scope_key: "thread:t-migrate-apply".to_string(),
-        session_id: Some("s-migrate-apply".to_string()),
-        thread_id: Some("t-migrate-apply".to_string()),
-        resource_id: None,
-        generation_count: 8,
-        last_applied_outbox_event_id: None,
-        origin_type: OmOriginType::Reflection,
-        active_observations: "reflection merged from observer".to_string(),
-        observation_token_count: 48,
-        pending_message_tokens: 7,
-        last_observed_at: Some(now),
-        current_task: Some("Finalize migration verification".to_string()),
-        suggested_response: Some("Report completion state".to_string()),
-        last_activated_message_ids: vec!["m-apply-1".to_string(), "m-apply-2".to_string()],
-        observer_trigger_count_total: 2,
-        reflector_trigger_count_total: 1,
-        is_observing: false,
-        is_reflecting: false,
-        is_buffering_observation: false,
-        is_buffering_reflection: false,
-        last_buffered_at_tokens: 0,
-        last_buffered_at_time: None,
-        buffered_reflection: None,
-        buffered_reflection_tokens: None,
-        buffered_reflection_input_tokens: None,
-        created_at: now,
-        updated_at: now,
-    };
-    store.upsert_om_record(&record).expect("upsert");
-
-    let first = store
-        .apply_om_v2_one_shot_migration()
-        .expect("first migration apply");
-    assert!(!first.dry_run);
-    assert!(!first.already_applied);
-    assert!(first.integrity_ok);
-    assert_eq!(first.entries_upserted, 1);
-    assert_eq!(first.continuation_upserted, 1);
-    assert_eq!(first.protocol_version, OM_PROTOCOL_VERSION);
-
-    let conn = store.conn.lock().expect("sqlite lock");
-    let entries_count = conn
-        .query_row("SELECT COUNT(*) FROM om_entries", [], |row| {
-            row.get::<_, i64>(0)
-        })
-        .expect("count entries");
-    let continuation_count = conn
-        .query_row("SELECT COUNT(*) FROM om_continuation_state", [], |row| {
-            row.get::<_, i64>(0)
-        })
-        .expect("count continuation");
-    let (protocol_version, episodic_rev) = conn
-        .query_row(
-            "SELECT protocol_version, episodic_rev FROM om_protocol_meta WHERE id = 1",
-            [],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .expect("read protocol meta");
-    assert_eq!(entries_count, 1);
-    assert_eq!(continuation_count, 1);
-    assert_eq!(protocol_version, OM_PROTOCOL_VERSION);
-    assert_eq!(episodic_rev, "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5");
-    drop(conn);
-
-    let marker = store
-        .get_system_value("om_v2_one_shot_migration_applied_at")
-        .expect("marker");
-    assert!(marker.is_some());
-
-    let second = store
-        .apply_om_v2_one_shot_migration()
-        .expect("second migration apply");
-    assert!(second.already_applied);
-    assert_eq!(second.entries_upserted, 0);
-    assert_eq!(second.continuation_upserted, 0);
-}
-
-#[test]
-fn open_rejects_om_record_schema_without_required_columns() {
-    let temp = tempdir().expect("tempdir");
-    let db_path = temp.path().join("om-missing-required-columns.db");
-    let now = Utc::now().to_rfc3339();
-
-    {
-        let conn = Connection::open(&db_path).expect("open db");
-        conn.execute_batch(
-            r"
-                CREATE TABLE IF NOT EXISTS om_records (
-                    id TEXT PRIMARY KEY,
-                    scope TEXT NOT NULL CHECK(scope IN ('session', 'thread', 'resource')),
-                    scope_key TEXT NOT NULL UNIQUE,
-                    session_id TEXT,
-                    thread_id TEXT,
-                    resource_id TEXT,
-                    generation_count INTEGER NOT NULL DEFAULT 0,
-                    last_applied_outbox_event_id INTEGER,
-                    origin_type TEXT NOT NULL CHECK(origin_type IN ('initial', 'reflection')),
-                    active_observations TEXT NOT NULL DEFAULT '',
-                    observation_token_count INTEGER NOT NULL DEFAULT 0,
-                    pending_message_tokens INTEGER NOT NULL DEFAULT 0,
-                    last_observed_at TEXT,
-                    is_observing INTEGER NOT NULL DEFAULT 0,
-                    is_reflecting INTEGER NOT NULL DEFAULT 0,
-                    is_buffering_observation INTEGER NOT NULL DEFAULT 0,
-                    is_buffering_reflection INTEGER NOT NULL DEFAULT 0,
-                    last_buffered_at_tokens INTEGER NOT NULL DEFAULT 0,
-                    last_buffered_at_time TEXT,
-                    buffered_reflection TEXT,
-                    buffered_reflection_tokens INTEGER,
-                    buffered_reflection_input_tokens INTEGER,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                ",
-        )
-        .expect("create om table without required columns");
-        conn.execute(
-            r"
-                INSERT INTO om_records(
-                    id, scope, scope_key, session_id, origin_type,
-                    active_observations, observation_token_count, pending_message_tokens,
-                    created_at, updated_at
-                )
-                VALUES(?1, 'session', 'session:s1', 's1', 'initial', 'observation', 10, 20, ?2, ?2)
-                ",
-            params!["record-old-schema", now],
-        )
-        .expect("insert om row");
-    }
-
-    let err = SqliteStateStore::open(&db_path)
-        .expect_err("must reject om_records schema without required columns");
-    assert_eq!(err.code(), "VALIDATION_FAILED");
-    assert!(
-        err.to_string()
-            .contains("unsupported om_records schema: last_activated_message_ids_json is missing"),
-        "unexpected error message: {err}"
-    );
-}
-
-#[test]
-fn open_rejects_om_record_schema_without_reflected_observation_line_count() {
-    let temp = tempdir().expect("tempdir");
-    let db_path = temp
-        .path()
-        .join("om-missing-reflected-observation-line-count.db");
-    let now = Utc::now().to_rfc3339();
-
-    {
-        let conn = Connection::open(&db_path).expect("open db");
-        conn.execute_batch(
-            r"
-                CREATE TABLE IF NOT EXISTS om_records (
-                    id TEXT PRIMARY KEY,
-                    scope TEXT NOT NULL CHECK(scope IN ('session', 'thread', 'resource')),
-                    scope_key TEXT NOT NULL UNIQUE,
-                    session_id TEXT,
-                    thread_id TEXT,
-                    resource_id TEXT,
-                    generation_count INTEGER NOT NULL DEFAULT 0,
-                    last_applied_outbox_event_id INTEGER,
-                    origin_type TEXT NOT NULL CHECK(origin_type IN ('initial', 'reflection')),
-                    active_observations TEXT NOT NULL DEFAULT '',
-                    observation_token_count INTEGER NOT NULL DEFAULT 0,
-                    pending_message_tokens INTEGER NOT NULL DEFAULT 0,
-                    last_observed_at TEXT,
-                    current_task TEXT,
-                    suggested_response TEXT,
-                    last_activated_message_ids_json TEXT NOT NULL DEFAULT '[]',
-                    observer_trigger_count_total INTEGER NOT NULL DEFAULT 0,
-                    reflector_trigger_count_total INTEGER NOT NULL DEFAULT 0,
-                    is_observing INTEGER NOT NULL DEFAULT 0,
-                    is_reflecting INTEGER NOT NULL DEFAULT 0,
-                    is_buffering_observation INTEGER NOT NULL DEFAULT 0,
-                    is_buffering_reflection INTEGER NOT NULL DEFAULT 0,
-                    last_buffered_at_tokens INTEGER NOT NULL DEFAULT 0,
-                    last_buffered_at_time TEXT,
-                    buffered_reflection TEXT,
-                    buffered_reflection_tokens INTEGER,
-                    buffered_reflection_input_tokens INTEGER,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                ",
-        )
-        .expect("create om table without reflected_observation_line_count");
-        conn.execute(
-            r"
-                INSERT INTO om_records(
-                    id, scope, scope_key, session_id, origin_type,
-                    active_observations, observation_token_count, pending_message_tokens,
-                    created_at, updated_at
-                )
-                VALUES(?1, 'session', 'session:s2', 's2', 'initial', 'observation', 10, 20, ?2, ?2)
-                ",
-            params!["record-missing-reflect-count", now],
-        )
-        .expect("insert om row");
-    }
-
-    let err = SqliteStateStore::open(&db_path)
-        .expect_err("must reject om_records schema without reflected_observation_line_count");
-    assert_eq!(err.code(), "VALIDATION_FAILED");
-    assert!(
-        err.to_string()
-            .contains("unsupported om_records schema: reflected_observation_line_count is missing"),
-        "unexpected error message: {err}"
     );
 }
 
@@ -989,7 +644,7 @@ fn om_continuation_states_upsert_and_resolve_preferred_thread() {
         .expect("default missing");
     assert_eq!(default_selected.canonical_thread_id, "t-main");
     let row: (Option<String>, String) = {
-        let conn = store.conn.lock().expect("lock");
+        let conn = store.test_connection().expect("sqlite conn");
         conn.query_row(
             r"
             SELECT current_task, source_kind
@@ -1078,7 +733,7 @@ fn om_reflection_apply_uses_generation_cas_and_event_idempotency() {
     assert!(!fetched.is_reflecting);
     assert!(!fetched.is_buffering_reflection);
     let (covers_entry_ids_json, reflection_entry_id): (String, String) = {
-        let conn = store.conn.lock().expect("lock");
+        let conn = store.test_connection().expect("sqlite conn");
         conn.query_row(
             r"
             SELECT covers_entry_ids_json, reflection_entry_id
@@ -1094,7 +749,7 @@ fn om_reflection_apply_uses_generation_cas_and_event_idempotency() {
         serde_json::from_str::<Vec<String>>(&covers_entry_ids_json).expect("covers json");
     assert_eq!(covers_entry_ids.len(), 0);
     let superseded_count: i64 = {
-        let conn = store.conn.lock().expect("lock");
+        let conn = store.test_connection().expect("sqlite conn");
         conn.query_row(
             "SELECT COUNT(*) FROM om_entries WHERE superseded_by = ?1",
             params![reflection_entry_id],
@@ -1104,7 +759,7 @@ fn om_reflection_apply_uses_generation_cas_and_event_idempotency() {
     };
     assert_eq!(superseded_count, 0);
     let continuation_row: (String, Option<String>, Option<String>, String) = {
-        let conn = store.conn.lock().expect("lock");
+        let conn = store.test_connection().expect("sqlite conn");
         conn.query_row(
             r"
             SELECT canonical_thread_id, current_task, suggested_response, source_kind
@@ -1363,7 +1018,7 @@ fn om_observation_chunks_roundtrip_and_clear_by_seq() {
         vec!["m2".to_string(), "m3".to_string()]
     );
     let entry_rows: Vec<(String, String, String)> = {
-        let conn = store.conn.lock().expect("lock");
+        let conn = store.test_connection().expect("sqlite conn");
         let mut stmt = conn
             .prepare(
                 r"
@@ -1482,7 +1137,7 @@ fn om_observation_chunk_event_cas_blocks_duplicate_replay() {
     assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0].id, "chunk-cas-1");
     let observation_entries_count: i64 = {
-        let conn = store.conn.lock().expect("lock");
+        let conn = store.test_connection().expect("sqlite conn");
         conn.query_row(
             "SELECT COUNT(*) FROM om_entries WHERE scope_key = ?1 AND origin_kind = ?2",
             params!["session:s-obs-cas", "observation"],
@@ -1625,161 +1280,6 @@ fn recover_timed_out_processing_events_requeues_stale_events() {
 }
 
 #[test]
-fn open_rejects_outbox_without_next_attempt_at() {
-    let temp = tempdir().expect("tempdir");
-    let db_path = temp.path().join("outbox-missing-next-at.db");
-
-    {
-        let conn = Connection::open(&db_path).expect("open db");
-        conn.execute_batch(
-            r"
-                CREATE TABLE IF NOT EXISTS outbox (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_type TEXT NOT NULL,
-                    uri TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    attempt_count INTEGER NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL
-                );
-                ",
-        )
-        .expect("create outbox schema without next_attempt_at");
-    }
-
-    let err =
-        SqliteStateStore::open(&db_path).expect_err("must reject outbox schema without next_at");
-    assert_eq!(err.code(), "VALIDATION_FAILED");
-    assert!(
-        err.to_string().contains("unsupported outbox schema"),
-        "unexpected error message: {err}"
-    );
-}
-
-#[test]
-fn open_rejects_outbox_without_lane_column() {
-    let temp = tempdir().expect("tempdir");
-    let db_path = temp.path().join("outbox-missing-lane.db");
-
-    {
-        let conn = Connection::open(&db_path).expect("open db");
-        conn.execute_batch(
-            r"
-                CREATE TABLE IF NOT EXISTS outbox (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_type TEXT NOT NULL,
-                    uri TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    attempt_count INTEGER NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL,
-                    next_attempt_at TEXT NOT NULL
-                );
-                ",
-        )
-        .expect("create outbox schema without lane");
-        let now = Utc::now().to_rfc3339();
-        conn.execute(
-                r"
-                INSERT INTO outbox(event_type, uri, payload_json, created_at, attempt_count, status, next_attempt_at)
-                VALUES (?1, ?2, '{}', ?3, 0, 'done', ?3)
-                ",
-                params!["semantic_scan", "axiom://resources/a", now],
-            )
-            .expect("insert semantic done");
-        conn.execute(
-                r"
-                INSERT INTO outbox(event_type, uri, payload_json, created_at, attempt_count, status, next_attempt_at)
-                VALUES (?1, ?2, '{}', ?3, 0, 'done', ?3)
-                ",
-                params!["upsert", "axiom://resources/a.md", now],
-            )
-            .expect("insert embedding done");
-        conn.execute(
-                r"
-                INSERT INTO outbox(event_type, uri, payload_json, created_at, attempt_count, status, next_attempt_at)
-                VALUES (?1, ?2, '{}', ?3, 0, 'dead_letter', ?3)
-                ",
-                params!["embedding_search_failed", "axiom://resources/a.md", now],
-            )
-            .expect("insert embedding dead");
-    }
-
-    let err = SqliteStateStore::open(&db_path)
-        .expect_err("must reject outbox schema without required lane");
-    assert_eq!(err.code(), "VALIDATION_FAILED");
-    assert!(
-        err.to_string()
-            .contains("unsupported outbox schema: lane is missing"),
-        "unexpected error message: {err}"
-    );
-}
-
-#[test]
-fn open_accepts_outbox_with_required_lane_column_and_existing_rows() {
-    let temp = tempdir().expect("tempdir");
-    let db_path = temp.path().join("outbox-with-lane.db");
-
-    {
-        let conn = Connection::open(&db_path).expect("open db");
-        conn.execute_batch(
-            r"
-                CREATE TABLE IF NOT EXISTS outbox (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_type TEXT NOT NULL,
-                    uri TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    attempt_count INTEGER NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL,
-                    next_attempt_at TEXT NOT NULL,
-                    lane TEXT NOT NULL
-                );
-                ",
-        )
-        .expect("create outbox schema with lane");
-        let now = Utc::now().to_rfc3339();
-        conn.execute(
-                r"
-                INSERT INTO outbox(event_type, uri, payload_json, created_at, attempt_count, status, next_attempt_at, lane)
-                VALUES (?1, ?2, '{}', ?3, 0, 'done', ?3, 'semantic')
-                ",
-                params!["semantic_scan", "axiom://resources/a", now],
-            )
-            .expect("insert semantic done");
-        conn.execute(
-                r"
-                INSERT INTO outbox(event_type, uri, payload_json, created_at, attempt_count, status, next_attempt_at, lane)
-                VALUES (?1, ?2, '{}', ?3, 0, 'done', ?3, 'embedding')
-                ",
-                params!["upsert", "axiom://resources/a.md", now],
-            )
-            .expect("insert embedding done");
-        conn.execute(
-                r"
-                INSERT INTO outbox(event_type, uri, payload_json, created_at, attempt_count, status, next_attempt_at, lane)
-                VALUES (?1, ?2, '{}', ?3, 0, 'dead_letter', ?3, 'embedding')
-                ",
-                params!["embedding_search_failed", "axiom://resources/a.md", now],
-            )
-            .expect("insert embedding dead");
-    }
-
-    let store = SqliteStateStore::open(&db_path).expect("open store");
-    let status = store.queue_status().expect("queue status");
-    assert_eq!(status.semantic.new_total, 0);
-    assert_eq!(status.semantic.new_due, 0);
-    assert_eq!(status.semantic.processing, 0);
-    assert_eq!(status.semantic.processed, 1);
-    assert_eq!(status.semantic.error_count, 0);
-    assert_eq!(status.embedding.new_total, 0);
-    assert_eq!(status.embedding.new_due, 0);
-    assert_eq!(status.embedding.processing, 0);
-    assert_eq!(status.embedding.processed, 1);
-    assert_eq!(status.embedding.error_count, 1);
-}
-
-#[test]
 fn open_rejects_outbox_with_invalid_status_domain_value() {
     let temp = tempdir().expect("tempdir");
     let db_path = temp.path().join("outbox-invalid-status.db");
@@ -1840,7 +1340,7 @@ fn open_rejects_outbox_with_invalid_status_domain_value() {
                 );
             ",
         )
-        .expect("create legacy schema");
+        .expect("create partial schema");
         let now = Utc::now().to_rfc3339();
         conn.execute(
             r"
@@ -1928,7 +1428,7 @@ fn open_normalizes_whitespace_and_case_for_status_columns() {
                 );
             ",
         )
-        .expect("create legacy schema");
+        .expect("create partial schema");
         let now = Utc::now().to_rfc3339();
         conn.execute(
             r"
@@ -1953,7 +1453,7 @@ fn open_normalizes_whitespace_and_case_for_status_columns() {
     assert_eq!(counts.done, 1);
 
     let status_raw = {
-        let conn = store.conn.lock().expect("lock");
+        let conn = store.test_connection().expect("sqlite conn");
         conn.query_row(
             "SELECT status FROM reconcile_runs WHERE run_id = ?1",
             params!["run-1"],
@@ -2121,7 +1621,7 @@ fn queue_status_treats_unknown_lane_rows_as_semantic() {
         .expect("mark done");
 
     {
-        let conn = store.conn.lock().expect("lock");
+        let conn = store.test_connection().expect("sqlite conn");
         conn.execute(
             "UPDATE outbox SET lane = 'unknown_lane' WHERE id = ?1",
             params![id],
@@ -2412,7 +1912,7 @@ fn list_search_documents_reconstructs_records() {
             depth: 3,
         },
     );
-    store.upsert_search_document(&record).expect("upsert");
+    store.persist_search_document(&record).expect("upsert");
 
     let listed = store.list_search_documents().expect("list");
     assert_eq!(listed.len(), 1);
@@ -2452,8 +1952,8 @@ fn search_documents_fts_tracks_upsert_and_remove() {
         },
     );
 
-    store.upsert_search_document(&auth).expect("upsert auth");
-    store.upsert_search_document(&queue).expect("upsert queue");
+    store.persist_search_document(&auth).expect("upsert auth");
+    store.persist_search_document(&queue).expect("upsert queue");
 
     let auth_hits = store.search_documents_fts("oauth", 5).expect("fts auth");
     assert_eq!(
@@ -2522,12 +2022,12 @@ fn remove_search_documents_with_prefix_prunes_descendants() {
         },
     );
 
-    store.upsert_search_document(&first).expect("upsert first");
+    store.persist_search_document(&first).expect("upsert first");
     store
-        .upsert_search_document(&second)
+        .persist_search_document(&second)
         .expect("upsert second");
     store
-        .upsert_search_document(&outside)
+        .persist_search_document(&outside)
         .expect("upsert outside");
 
     store

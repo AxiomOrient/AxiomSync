@@ -329,6 +329,134 @@ fn relation_unlink_parses_owner_and_relation_id() {
 }
 
 #[test]
+fn repo_mount_parses_core_fields() {
+    let cli = Cli::try_parse_from([
+        "axiomsync",
+        "repo",
+        "mount",
+        "../demo",
+        "--target-uri",
+        "axiom://resources/acme/repos/demo",
+        "--namespace",
+        "acme/platform",
+        "--kind",
+        "repository",
+        "--tag",
+        "repo",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Repo(RepoArgs {
+            command:
+                RepoCommand::Mount {
+                    source_path,
+                    target_uri,
+                    namespace,
+                    kind,
+                    tags,
+                    wait,
+                    ..
+                },
+        }) => {
+            assert_eq!(source_path, "../demo");
+            assert_eq!(target_uri, "axiom://resources/acme/repos/demo");
+            assert_eq!(namespace, "acme/platform");
+            assert_eq!(kind, "repository");
+            assert_eq!(tags, vec!["repo".to_string()]);
+            assert!(wait);
+        }
+        _ => panic!("expected repo mount command"),
+    }
+}
+
+#[test]
+fn event_add_parses_event_payload() {
+    let cli = Cli::try_parse_from([
+        "axiomsync",
+        "event",
+        "add",
+        "--event-id",
+        "evt-1",
+        "--uri",
+        "axiom://events/acme/incidents/1",
+        "--namespace",
+        "acme/platform",
+        "--kind",
+        "incident",
+        "--event-time",
+        "1710000000",
+        "--title",
+        "OAuth outage",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Event(EventArgs {
+            command:
+                EventCommand::Add {
+                    event_id,
+                    uri,
+                    namespace,
+                    kind,
+                    event_time,
+                    title,
+                    ..
+                },
+        }) => {
+            assert_eq!(event_id, "evt-1");
+            assert_eq!(uri, "axiom://events/acme/incidents/1");
+            assert_eq!(namespace, "acme/platform");
+            assert_eq!(kind, "incident");
+            assert_eq!(event_time, 1_710_000_000);
+            assert_eq!(title.as_deref(), Some("OAuth outage"));
+        }
+        _ => panic!("expected event add command"),
+    }
+}
+
+#[test]
+fn link_add_parses_global_link_fields() {
+    let cli = Cli::try_parse_from([
+        "axiomsync",
+        "link",
+        "add",
+        "--link-id",
+        "lnk-1",
+        "--namespace",
+        "acme/platform",
+        "--from-uri",
+        "axiom://events/acme/incidents/1",
+        "--relation",
+        "resolved_by",
+        "--to-uri",
+        "axiom://resources/acme/runbooks/auth",
+        "--weight",
+        "0.8",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Link(LinkArgs {
+            command:
+                LinkCommand::Add {
+                    link_id,
+                    namespace,
+                    from_uri,
+                    relation,
+                    to_uri,
+                    weight,
+                },
+        }) => {
+            assert_eq!(link_id, "lnk-1");
+            assert_eq!(namespace, "acme/platform");
+            assert_eq!(from_uri, "axiom://events/acme/incidents/1");
+            assert_eq!(relation, "resolved_by");
+            assert_eq!(to_uri, "axiom://resources/acme/runbooks/auth");
+            assert_eq!(weight, 0.8);
+        }
+        _ => panic!("expected link add command"),
+    }
+}
+
+#[test]
 fn document_save_from_file_parses() {
     let cli = Cli::try_parse_from([
         "axiomsync",

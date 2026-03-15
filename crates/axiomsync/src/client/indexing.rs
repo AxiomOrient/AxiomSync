@@ -9,9 +9,9 @@ use crate::config::{InternalTierPolicy, TierSynthesisMode, should_persist_scope_
 use crate::config::{resolve_internal_tier_policy, resolve_tier_synthesis_mode};
 use crate::context_ops::{RecordInput, build_record, classify_context, infer_tags};
 use crate::error::{AxiomError, Result};
+use crate::ingest::adr::infer_adr_from_repo_path;
 use crate::mime::infer_mime_from_name;
-use crate::models::IndexRecord;
-use crate::models::QueueEventStatus;
+use crate::models::{IndexRecord, QueueEventStatus, ResourceRecord};
 use crate::tier_documents::{
     abstract_path, overview_path, read_abstract, read_overview, write_tiers,
 };
@@ -238,6 +238,12 @@ fn infer_doc_class_tag(context_type: &str, name: &str, parser: &str) -> &'static
     "general"
 }
 
+fn inherited_namespace_tags(resource: Option<&ResourceRecord>) -> Vec<String> {
+    resource
+        .map(|resource| vec![format!("ns:{}", resource.namespace.as_path())])
+        .unwrap_or_default()
+}
+
 impl AxiomSync {
     fn prune_generated_tiers_recursive(&self, root: &AxiomUri) -> Result<usize> {
         let root_path = self.fs.resolve_uri(root);
@@ -269,6 +275,7 @@ impl AxiomSync {
             Scope::User,
             Scope::Agent,
             Scope::Session,
+            Scope::Events,
             Scope::Temp,
             Scope::Queue,
         ] {
@@ -355,7 +362,7 @@ impl AxiomSync {
             return Ok(());
         }
 
-        self.state.upsert_search_document(&record)?;
+        self.state.persist_search_document(&record)?;
         self.index
             .write()
             .map_err(|_| AxiomError::lock_poisoned("index"))?
@@ -486,6 +493,15 @@ impl AxiomSync {
             "doc_class:{}",
             infer_doc_class_tag(&context_type, &name, &parser)
         ));
+        let resource = match uri.scope() {
+            Scope::Resources => self.state.nearest_active_resource(uri)?,
+            _ => None,
+        };
+        tags.extend(inherited_namespace_tags(resource.as_ref()));
+        let repo_rel_path = std::path::PathBuf::from(uri.path());
+        if let Some(inference) = infer_adr_from_repo_path(&repo_rel_path) {
+            tags.push(format!("kind:{}", inference.kind));
+        }
         tags.sort();
         tags.dedup();
         let record = build_record(RecordInput {

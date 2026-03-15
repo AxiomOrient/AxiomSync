@@ -30,16 +30,15 @@ pub(super) fn make_hit(
 }
 
 pub(super) fn tokenize_keywords(query: &str) -> Vec<String> {
-    let mut out = Vec::<String>::new();
-    let mut seen = HashSet::<String>::new();
-    for token in query
-        .to_lowercase()
+    let lowered = query.to_lowercase();
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for token in lowered
         .split(|c: char| !c.is_alphanumeric())
         .filter(|x| !x.is_empty())
     {
-        let token = token.to_string();
-        if seen.insert(token.clone()) {
-            out.push(token);
+        if seen.insert(token) {
+            out.push(token.to_string());
         }
     }
     out
@@ -136,6 +135,10 @@ pub(super) fn typed_query_plans(
             query: x.query.clone(),
             scopes: x.scopes.iter().map(|s| s.as_str().to_string()).collect(),
             priority: x.priority,
+            namespace_prefix: x.namespace_prefix.clone(),
+            resource_kind: x.resource_kind.clone(),
+            start_time: x.start_time,
+            end_time: x.end_time,
         });
     }
     out
@@ -203,8 +206,12 @@ fn find_matched_heading(
 }
 
 fn line_contains_any_token(line: &str, query_tokens: &[String]) -> bool {
-    let lowered = line.to_ascii_lowercase();
-    query_tokens.iter().any(|token| lowered.contains(token))
+    query_tokens.iter().any(|token| {
+        let needle = token.as_bytes();
+        line.as_bytes()
+            .windows(needle.len())
+            .any(|w| w.eq_ignore_ascii_case(needle))
+    })
 }
 
 fn clip_preview(raw: &str) -> String {

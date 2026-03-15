@@ -34,16 +34,71 @@ pub fn retry_backoff_seconds(event_type: &str, attempt: u32, event_id: i64) -> i
     };
     let baseline = base.min(max);
     let jitter_bound = (baseline / 4).max(1);
-    let jitter_seed = format!("{event_type}:{attempt}:{event_id}");
-    let hash = blake3::hash(jitter_seed.as_bytes());
+    let hash = retry_jitter_hash(event_type, attempt, event_id);
     let bytes = hash.as_bytes();
     let rand = i64::from(u16::from_be_bytes([bytes[0], bytes[1]]));
     let jitter = rand % (jitter_bound + 1);
     (baseline + jitter).min(max)
 }
 
+fn retry_jitter_hash(event_type: &str, attempt: u32, event_id: i64) -> blake3::Hash {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(event_type.as_bytes());
+    hasher.update(b":");
+
+    let mut attempt_buf = [0u8; 10];
+    hasher.update(decimal_bytes_u32(attempt, &mut attempt_buf));
+    hasher.update(b":");
+
+    let mut event_id_buf = [0u8; 20];
+    hasher.update(decimal_bytes_i64(event_id, &mut event_id_buf));
+    hasher.finalize()
+}
+
+fn decimal_bytes_u32(value: u32, buf: &mut [u8; 10]) -> &[u8] {
+    decimal_bytes_u64(u64::from(value), buf)
+}
+
+fn decimal_bytes_i64(value: i64, buf: &mut [u8; 20]) -> &[u8] {
+    let negative = value < 0;
+    let mut magnitude = value.unsigned_abs();
+    let mut cursor = buf.len();
+    loop {
+        cursor -= 1;
+        buf[cursor] = b'0' + u8::try_from(magnitude % 10).unwrap_or(0);
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    if negative {
+        cursor -= 1;
+        buf[cursor] = b'-';
+    }
+    &buf[cursor..]
+}
+
+fn decimal_bytes_u64(mut value: u64, buf: &mut [u8]) -> &[u8] {
+    let mut cursor = buf.len();
+    loop {
+        cursor -= 1;
+        buf[cursor] = b'0' + u8::try_from(value % 10).unwrap_or(0);
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    &buf[cursor..]
+}
+
 pub fn default_scope_set() -> Vec<Scope> {
-    vec![Scope::Resources, Scope::User, Scope::Agent, Scope::Session]
+    vec![
+        Scope::Resources,
+        Scope::User,
+        Scope::Agent,
+        Scope::Session,
+        Scope::Events,
+    ]
 }
 
 pub fn push_drift_sample(sample: &mut Vec<String>, uri: &str, max: usize) {
@@ -80,6 +135,18 @@ mod tests {
         assert_eq!(a, b);
         assert!(a >= 4);
         assert!(a <= 60);
+    }
+
+    #[test]
+    fn retry_jitter_hash_matches_legacy_formatted_seed() {
+        let expected = blake3::hash("semantic_scan:3:101".as_bytes());
+        assert_eq!(retry_jitter_hash("semantic_scan", 3, 101), expected);
+
+        let expected_negative = blake3::hash("semantic_scan:3:-101".as_bytes());
+        assert_eq!(
+            retry_jitter_hash("semantic_scan", 3, -101),
+            expected_negative
+        );
     }
 
     #[test]
@@ -121,11 +188,12 @@ mod tests {
     #[test]
     fn default_scope_set_contains_all_expected_scopes() {
         let scopes = default_scope_set();
-        assert_eq!(scopes.len(), 4);
+        assert_eq!(scopes.len(), 5);
         assert!(scopes.contains(&Scope::Resources));
         assert!(scopes.contains(&Scope::User));
         assert!(scopes.contains(&Scope::Agent));
         assert!(scopes.contains(&Scope::Session));
+        assert!(scopes.contains(&Scope::Events));
         assert!(!scopes.contains(&Scope::Temp));
         assert!(!scopes.contains(&Scope::Queue));
     }

@@ -1,8 +1,9 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
-use globset::{Glob, GlobSetBuilder};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use walkdir::WalkDir;
 
 use crate::error::{AxiomError, Result};
@@ -12,11 +13,30 @@ use crate::uri::{AxiomUri, Scope};
 #[derive(Debug, Clone)]
 pub struct LocalContextFs {
     root: PathBuf,
+    canonical_root: OnceLock<PathBuf>,
 }
+
+#[derive(Debug, Clone, Copy)]
+struct WalkBounds {
+    max_depth: usize,
+    max_entries: usize,
+}
+
+const RECURSIVE_LIST_BOUNDS: WalkBounds = WalkBounds {
+    max_depth: 64,
+    max_entries: 50_000,
+};
+const GLOB_BOUNDS: WalkBounds = WalkBounds {
+    max_depth: 64,
+    max_entries: 50_000,
+};
 
 impl LocalContextFs {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            canonical_root: OnceLock::new(),
+        }
     }
 
     #[must_use]
@@ -31,6 +51,7 @@ impl LocalContextFs {
             Scope::User,
             Scope::Agent,
             Scope::Session,
+            Scope::Events,
             Scope::Temp,
             Scope::Queue,
         ] {
@@ -206,39 +227,11 @@ impl LocalContextFs {
             return Err(AxiomError::NotFound(uri.to_string()));
         }
         self.ensure_path_within_root(&base)?;
-        let mut entries = Vec::new();
-
-        if recursive {
-            for item in WalkDir::new(&base).follow_links(false) {
-                let item = item.map_err(|e| AxiomError::Validation(e.to_string()))?;
-                if item.path() == base {
-                    continue;
-                }
-                let meta = item
-                    .metadata()
-                    .map_err(|e| AxiomError::Validation(e.to_string()))?;
-                let item_uri = self.uri_from_path(item.path())?;
-                entries.push(Entry {
-                    uri: item_uri.to_string(),
-                    name: item.file_name().to_string_lossy().to_string(),
-                    is_dir: meta.is_dir(),
-                    size: if meta.is_file() { meta.len() } else { 0 },
-                });
-            }
+        let mut entries = if recursive {
+            self.list_recursive_entries(&base, RECURSIVE_LIST_BOUNDS)?
         } else {
-            for item in fs::read_dir(&base)? {
-                let item = item?;
-                let path = item.path();
-                let meta = fs::symlink_metadata(&path)?;
-                let item_uri = self.uri_from_path(&path)?;
-                entries.push(Entry {
-                    uri: item_uri.to_string(),
-                    name: item.file_name().to_string_lossy().to_string(),
-                    is_dir: meta.file_type().is_dir(),
-                    size: if meta.is_file() { meta.len() } else { 0 },
-                });
-            }
-        }
+            self.list_shallow_entries(&base)?
+        };
 
         entries.sort_by(|a, b| a.uri.cmp(&b.uri));
         Ok(entries)
@@ -259,22 +252,8 @@ impl LocalContextFs {
         let matcher = builder
             .build()
             .map_err(|e| AxiomError::Validation(e.to_string()))?;
-
-        let mut matched_uris = Vec::new();
-        for item in WalkDir::new(&base).follow_links(false) {
-            let item = item.map_err(|e| AxiomError::Validation(e.to_string()))?;
-            if item.path() == base {
-                continue;
-            }
-            let rel = item
-                .path()
-                .strip_prefix(&base)
-                .map_err(|e| AxiomError::Validation(e.to_string()))?;
-            if matcher.is_match(rel) {
-                let item_uri = self.uri_from_path(item.path())?;
-                matched_uris.push(item_uri.to_string());
-            }
-        }
+        let mut matched_uris =
+            self.glob_matches_with_bounds(&base, &matcher, GLOB_BOUNDS, "glob")?;
         matched_uris.sort();
         Ok(matched_uris)
     }
@@ -355,6 +334,73 @@ impl LocalContextFs {
         Ok(())
     }
 
+    fn list_recursive_entries(&self, base: &Path, bounds: WalkBounds) -> Result<Vec<Entry>> {
+        let mut entries = Vec::new();
+        let mut visited = 0usize;
+        for item in walk_with_bounds(base, bounds) {
+            let item = item.map_err(|e| AxiomError::Validation(e.to_string()))?;
+            if item.path() == base {
+                continue;
+            }
+            record_walk_visit(base, &mut visited, bounds, "list")?;
+            let meta = item
+                .metadata()
+                .map_err(|e| AxiomError::Validation(e.to_string()))?;
+            let item_uri = self.uri_from_path(item.path())?;
+            entries.push(Entry {
+                uri: item_uri.to_string(),
+                name: item.file_name().to_string_lossy().to_string(),
+                is_dir: meta.is_dir(),
+                size: if meta.is_file() { meta.len() } else { 0 },
+            });
+        }
+        Ok(entries)
+    }
+
+    fn list_shallow_entries(&self, base: &Path) -> Result<Vec<Entry>> {
+        let mut entries = Vec::new();
+        for item in fs::read_dir(base)? {
+            let item = item?;
+            let path = item.path();
+            let meta = fs::symlink_metadata(&path)?;
+            let item_uri = self.uri_from_path(&path)?;
+            entries.push(Entry {
+                uri: item_uri.to_string(),
+                name: item.file_name().to_string_lossy().to_string(),
+                is_dir: meta.file_type().is_dir(),
+                size: if meta.is_file() { meta.len() } else { 0 },
+            });
+        }
+        Ok(entries)
+    }
+
+    fn glob_matches_with_bounds(
+        &self,
+        base: &Path,
+        matcher: &GlobSet,
+        bounds: WalkBounds,
+        operation: &str,
+    ) -> Result<Vec<String>> {
+        let mut matched_uris = Vec::new();
+        let mut visited = 0usize;
+        for item in walk_with_bounds(base, bounds) {
+            let item = item.map_err(|e| AxiomError::Validation(e.to_string()))?;
+            if item.path() == base {
+                continue;
+            }
+            record_walk_visit(base, &mut visited, bounds, operation)?;
+            let rel = item
+                .path()
+                .strip_prefix(base)
+                .map_err(|e| AxiomError::Validation(e.to_string()))?;
+            if matcher.is_match(rel) {
+                let item_uri = self.uri_from_path(item.path())?;
+                matched_uris.push(item_uri.to_string());
+            }
+        }
+        Ok(matched_uris)
+    }
+
     fn ensure_path_within_root(&self, path: &Path) -> Result<()> {
         let root = self.canonical_root()?;
         let mut probe = path.to_path_buf();
@@ -389,11 +435,39 @@ impl LocalContextFs {
     }
 
     fn canonical_root(&self) -> Result<PathBuf> {
+        if let Some(root) = self.canonical_root.get() {
+            return Ok(root.clone());
+        }
         if !self.root.exists() {
             fs::create_dir_all(&self.root)?;
         }
-        Ok(fs::canonicalize(&self.root)?)
+        let canonical = fs::canonicalize(&self.root)?;
+        let _ = self.canonical_root.set(canonical.clone());
+        Ok(canonical)
     }
+}
+
+fn walk_with_bounds(base: &Path, bounds: WalkBounds) -> WalkDir {
+    WalkDir::new(base)
+        .follow_links(false)
+        .max_depth(bounds.max_depth)
+}
+
+fn record_walk_visit(
+    base: &Path,
+    visited: &mut usize,
+    bounds: WalkBounds,
+    operation: &str,
+) -> Result<()> {
+    *visited = visited.saturating_add(1);
+    if *visited > bounds.max_entries {
+        return Err(AxiomError::Validation(format!(
+            "{operation} exceeded traversal limit {} under {}",
+            bounds.max_entries,
+            base.display()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -601,6 +675,60 @@ mod tests {
         let file_uri = AxiomUri::parse("axiom://resources/docs/readme.md").expect("uri parse");
         fs.write(&file_uri, "hello", true).expect("write file");
         let err = read_relations(&fs, &file_uri).expect_err("must fail");
+        assert!(matches!(err, AxiomError::Validation(_)));
+    }
+
+    #[test]
+    fn recursive_list_enforces_walk_bounds() {
+        let temp = tempdir().expect("tempdir");
+        let fs = LocalContextFs::new(temp.path());
+        fs.initialize().expect("init failed");
+
+        for name in ["a.md", "b.md", "c.md"] {
+            let uri = AxiomUri::parse(&format!("axiom://resources/docs/{name}")).expect("uri");
+            fs.write(&uri, "x", true).expect("write file");
+        }
+
+        let base = fs.resolve_uri(&AxiomUri::parse("axiom://resources/docs").expect("base uri"));
+        let err = fs
+            .list_recursive_entries(
+                &base,
+                WalkBounds {
+                    max_depth: 8,
+                    max_entries: 2,
+                },
+            )
+            .expect_err("must reject oversized walk");
+        assert!(matches!(err, AxiomError::Validation(_)));
+    }
+
+    #[test]
+    fn glob_enforces_walk_bounds() {
+        let temp = tempdir().expect("tempdir");
+        let fs = LocalContextFs::new(temp.path());
+        fs.initialize().expect("init failed");
+
+        for name in ["a.md", "b.md", "c.md"] {
+            let uri = AxiomUri::parse(&format!("axiom://resources/docs/{name}")).expect("uri");
+            fs.write(&uri, "x", true).expect("write file");
+        }
+
+        let base = fs.resolve_uri(&AxiomUri::parse("axiom://resources/docs").expect("base uri"));
+        let mut builder = GlobSetBuilder::new();
+        builder.add(Glob::new("**/*.md").expect("glob"));
+        let matcher = builder.build().expect("matcher");
+
+        let err = fs
+            .glob_matches_with_bounds(
+                &base,
+                &matcher,
+                WalkBounds {
+                    max_depth: 8,
+                    max_entries: 2,
+                },
+                "glob",
+            )
+            .expect_err("must reject oversized walk");
         assert!(matches!(err, AxiomError::Validation(_)));
     }
 }

@@ -15,15 +15,15 @@ mod validation;
 mod web;
 
 use self::handlers::{
-    handle_benchmark, handle_eval, handle_relation, handle_release, handle_security,
-    handle_session, handle_trace,
+    handle_benchmark, handle_eval, handle_event, handle_link, handle_relation, handle_release,
+    handle_repo, handle_security, handle_session, handle_trace,
 };
 use self::ontology::handle_ontology_command;
 use self::queue::{run_queue_daemon, run_queue_worker};
 use self::support::{
-    build_add_ingest_options, build_metadata_filter, parse_runtime_hints, parse_scope_args,
-    parse_search_budget, parse_search_request_file, print_json, read_document_content,
-    read_preview_content,
+    build_add_ingest_options, build_metadata_filter, build_metadata_filter_v3, parse_runtime_hints,
+    parse_scope_args, parse_search_budget, parse_search_request_file, print_json,
+    read_document_content, read_preview_content,
 };
 use self::validation::{apply_bootstrap_mode, resolve_bootstrap_mode, validate_command_preflight};
 use self::web::{WebServeOptions, serve};
@@ -159,7 +159,14 @@ fn run_validated(app: &AxiomSync, root: &Path, command: Commands) -> Result<()> 
         }
         Commands::Search(args) => {
             let budget = parse_search_budget(args.budget_ms, args.budget_nodes, args.budget_depth);
-            let cli_filter = build_metadata_filter(&args.tags, args.mime.as_deref())?;
+            let cli_filter = build_metadata_filter_v3(
+                &args.tags,
+                args.mime.as_deref(),
+                args.namespace.as_deref(),
+                args.kind.as_deref(),
+                args.start_time,
+                args.end_time,
+            )?;
             let cli_hints = parse_runtime_hints(&args.hints, args.hint_file.as_deref())?;
 
             let mut request = if let Some(path) = args.request_json.as_deref() {
@@ -213,6 +220,15 @@ fn run_validated(app: &AxiomSync, root: &Path, command: Commands) -> Result<()> 
 
             let result = app.search_with_request(request)?;
             print_json(&result)?;
+        }
+        Commands::Repo(args) => {
+            handle_repo(app, args.command)?;
+        }
+        Commands::Event(args) => {
+            handle_event(app, args.command)?;
+        }
+        Commands::Link(args) => {
+            handle_link(app, args.command)?;
         }
         Commands::Backend => {
             let status = app.backend_status()?;

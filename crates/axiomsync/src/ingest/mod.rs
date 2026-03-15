@@ -1,3 +1,5 @@
+pub mod adr;
+
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 

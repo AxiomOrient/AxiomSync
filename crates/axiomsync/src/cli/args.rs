@@ -100,6 +100,14 @@ pub struct SearchArgs {
     pub tags: Vec<String>,
     #[arg(long)]
     pub mime: Option<String>,
+    #[arg(long)]
+    pub namespace: Option<String>,
+    #[arg(long)]
+    pub kind: Option<String>,
+    #[arg(long)]
+    pub start_time: Option<i64>,
+    #[arg(long)]
+    pub end_time: Option<i64>,
     #[arg(long = "hint", value_name = "KIND:TEXT")]
     pub hints: Vec<String>,
     #[arg(long, value_name = "FILE")]

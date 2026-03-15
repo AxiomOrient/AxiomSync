@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::models::SearchOptions;
+use crate::models::{Kind, SearchFilter, SearchOptions};
 use crate::uri::{AxiomUri, Scope};
 
 #[derive(Debug, Clone)]
@@ -9,6 +9,10 @@ pub(super) struct PlannedQuery {
     pub query: String,
     pub scopes: Vec<Scope>,
     pub priority: u8,
+    pub namespace_prefix: Option<String>,
+    pub resource_kind: Option<String>,
+    pub start_time: Option<i64>,
+    pub end_time: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -18,25 +22,42 @@ struct QueryIntent {
 }
 
 impl PlannedQuery {
-    fn new(kind: &str, query: String, scopes: Vec<Scope>, priority: u8) -> Self {
+    fn new(
+        kind: &str,
+        query: String,
+        scopes: Vec<Scope>,
+        priority: u8,
+        options: &SearchOptions,
+    ) -> Self {
         Self {
             kind: kind.to_string(),
             query,
             scopes: normalize_scopes(scopes),
             priority,
+            namespace_prefix: options
+                .filter
+                .as_ref()
+                .and_then(|filter| filter.namespace_prefix.clone()),
+            resource_kind: options
+                .filter
+                .as_ref()
+                .and_then(|filter| filter.kind.clone()),
+            start_time: options.filter.as_ref().and_then(|filter| filter.start_time),
+            end_time: options.filter.as_ref().and_then(|filter| filter.end_time),
         }
     }
 }
 
 pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
     let intent = query_intent(&options.query);
-    let base_scopes = intent_scopes(intent, options.target_uri.as_ref());
+    let base_scopes = intent_scopes(intent, options.target_uri.as_ref(), options.filter.as_ref());
     let has_session_context = options.session.is_some();
     let mut planned = vec![PlannedQuery::new(
         "primary",
         options.query.clone(),
         base_scopes.clone(),
         1,
+        options,
     )];
 
     if !options.request_type.starts_with("search") {
@@ -56,6 +77,7 @@ pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
                 format!("{} {}", options.query, hint_text),
                 base_scopes.clone(),
                 2,
+                options,
             ));
         }
 
@@ -76,6 +98,7 @@ pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
                 format!("{} {}", options.query, om_hint),
                 om_scopes,
                 2,
+                options,
             ));
         }
     }
@@ -87,6 +110,7 @@ pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
                 options.query.clone(),
                 vec![Scope::Session],
                 session_focus_priority(intent, &options.query),
+                options,
             ));
         }
         if intent.wants_skill {
@@ -95,6 +119,7 @@ pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
                 options.query.clone(),
                 vec![Scope::Agent],
                 2,
+                options,
             ));
         }
         if intent.wants_memory || has_session_context {
@@ -103,6 +128,7 @@ pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
                 options.query.clone(),
                 vec![Scope::User, Scope::Agent],
                 3,
+                options,
             ));
         }
     }
@@ -128,9 +154,17 @@ fn session_focus_priority(intent: QueryIntent, query: &str) -> u8 {
     if precision_guard { 1 } else { 2 }
 }
 
-fn intent_scopes(intent: QueryIntent, target: Option<&AxiomUri>) -> Vec<Scope> {
+fn intent_scopes(
+    intent: QueryIntent,
+    target: Option<&AxiomUri>,
+    filter: Option<&SearchFilter>,
+) -> Vec<Scope> {
     if let Some(target) = target {
         return vec![target.scope()];
+    }
+
+    if let Some(filter_scope) = filter_scope(filter) {
+        return vec![filter_scope];
     }
 
     if intent.wants_skill {
@@ -140,6 +174,35 @@ fn intent_scopes(intent: QueryIntent, target: Option<&AxiomUri>) -> Vec<Scope> {
         return vec![Scope::User, Scope::Agent];
     }
     vec![Scope::Resources]
+}
+
+fn filter_scope(filter: Option<&SearchFilter>) -> Option<Scope> {
+    let filter = filter?;
+    if filter.start_time.is_some() || filter.end_time.is_some() {
+        return Some(Scope::Events);
+    }
+    let kind = filter.kind.as_deref()?;
+    if is_event_kind(kind) {
+        return Some(Scope::Events);
+    }
+    if is_resource_kind(kind) {
+        return Some(Scope::Resources);
+    }
+    None
+}
+
+fn is_event_kind(kind: &str) -> bool {
+    matches!(
+        Kind::new(kind.to_string()).ok().as_ref().map(Kind::as_str),
+        Some("incident" | "run" | "deploy" | "log" | "trace")
+    )
+}
+
+fn is_resource_kind(kind: &str) -> bool {
+    matches!(
+        Kind::new(kind.to_string()).ok().as_ref().map(Kind::as_str),
+        Some("contract" | "adr" | "runbook" | "repository")
+    )
 }
 
 fn dedup_and_limit_queries(mut planned: Vec<PlannedQuery>, max_len: usize) -> Vec<PlannedQuery> {
@@ -153,7 +216,7 @@ fn dedup_and_limit_queries(mut planned: Vec<PlannedQuery>, max_len: usize) -> Ve
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for item in planned {
-        let key = (item.query.to_lowercase(), item.scopes.clone());
+        let key = (item.query.to_lowercase(), scope_signature(&item.scopes));
         if !seen.insert(key) {
             continue;
         }
@@ -169,10 +232,40 @@ fn dedup_and_limit_queries(mut planned: Vec<PlannedQuery>, max_len: usize) -> Ve
             String::new(),
             vec![Scope::Resources],
             1,
+            &SearchOptions {
+                query: String::new(),
+                target_uri: None,
+                session: None,
+                session_hints: Vec::new(),
+                budget: None,
+                limit: 0,
+                score_threshold: None,
+                min_match_tokens: None,
+                filter: None,
+                request_type: String::new(),
+            },
         ));
     }
 
     out
+}
+
+fn scope_signature(scopes: &[Scope]) -> u8 {
+    scopes
+        .iter()
+        .fold(0u8, |mask, scope| mask | scope_bit(*scope))
+}
+
+const fn scope_bit(scope: Scope) -> u8 {
+    match scope {
+        Scope::Resources => 1 << 0,
+        Scope::User => 1 << 1,
+        Scope::Agent => 1 << 2,
+        Scope::Session => 1 << 3,
+        Scope::Events => 1 << 4,
+        Scope::Temp => 1 << 5,
+        Scope::Queue => 1 << 6,
+    }
 }
 
 fn normalize_scopes(scopes: Vec<Scope>) -> Vec<Scope> {
@@ -256,8 +349,23 @@ mod tests {
         PlannedQuery, collect_scope_names, dedup_and_limit_queries, is_om_hint, merge_non_om_hints,
         normalize_scopes, plan_queries, query_intent,
     };
-    use crate::models::SearchOptions;
+    use crate::models::{SearchFilter, SearchOptions};
     use crate::uri::Scope;
+
+    fn test_options() -> SearchOptions {
+        SearchOptions {
+            query: String::new(),
+            target_uri: None,
+            session: None,
+            session_hints: Vec::new(),
+            budget: None,
+            limit: 10,
+            score_threshold: None,
+            min_match_tokens: None,
+            filter: None,
+            request_type: "search".to_string(),
+        }
+    }
 
     #[test]
     fn normalize_scopes_is_value_based_and_sorted() {
@@ -278,12 +386,14 @@ mod tests {
                 "oauth flow".to_string(),
                 vec![Scope::User, Scope::Resources],
                 1,
+                &test_options(),
             ),
             PlannedQuery::new(
                 "primary",
                 "OAUTH FLOW".to_string(),
                 vec![Scope::Resources, Scope::User],
                 1,
+                &test_options(),
             ),
         ];
         let deduped = dedup_and_limit_queries(queries, 5);
@@ -298,12 +408,14 @@ mod tests {
                 "q".to_string(),
                 vec![Scope::Resources, Scope::User],
                 1,
+                &test_options(),
             ),
             PlannedQuery::new(
                 "secondary",
                 "q2".to_string(),
                 vec![Scope::Agent, Scope::User],
                 2,
+                &test_options(),
             ),
         ];
         let names = collect_scope_names(&planned);
@@ -412,5 +524,58 @@ mod tests {
                 && item.scopes == vec![Scope::Session]
                 && item.priority == 2
         }));
+    }
+
+    #[test]
+    fn event_filter_without_target_switches_primary_scope_to_events() {
+        let options = SearchOptions {
+            query: "stale jwks refresh failures".to_string(),
+            target_uri: None,
+            session: Some("s-1".to_string()),
+            session_hints: Vec::new(),
+            budget: None,
+            limit: 10,
+            score_threshold: None,
+            min_match_tokens: None,
+            filter: Some(SearchFilter {
+                tags: Vec::new(),
+                mime: None,
+                namespace_prefix: Some("acme/identity/prod".to_string()),
+                kind: Some("incident".to_string()),
+                start_time: Some(1_710_499_000),
+                end_time: Some(1_710_501_000),
+            }),
+            request_type: "search".to_string(),
+        };
+
+        let planned = plan_queries(&options);
+        assert_eq!(planned[0].kind, "primary");
+        assert_eq!(planned[0].scopes, vec![Scope::Events]);
+    }
+
+    #[test]
+    fn resource_filter_without_target_keeps_primary_scope_on_resources() {
+        let options = SearchOptions {
+            query: "oauth runbook".to_string(),
+            target_uri: None,
+            session: None,
+            session_hints: Vec::new(),
+            budget: None,
+            limit: 10,
+            score_threshold: None,
+            min_match_tokens: None,
+            filter: Some(SearchFilter {
+                tags: Vec::new(),
+                mime: None,
+                namespace_prefix: Some("acme/identity".to_string()),
+                kind: Some("runbook".to_string()),
+                start_time: None,
+                end_time: None,
+            }),
+            request_type: "search".to_string(),
+        };
+
+        let planned = plan_queries(&options);
+        assert_eq!(planned[0].scopes, vec![Scope::Resources]);
     }
 }

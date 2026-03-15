@@ -6,11 +6,14 @@ mod args;
 mod benchmark;
 mod document;
 mod eval;
+mod event;
+mod link;
 mod ontology;
 mod parsers;
 mod queue;
 mod relation;
 mod release;
+mod repo;
 mod security;
 mod session;
 mod trace;
@@ -25,10 +28,13 @@ pub use args::{
 pub use benchmark::{BenchmarkArgs, BenchmarkCommand, BenchmarkFixtureCommand};
 pub use document::{DocumentArgs, DocumentCommand, DocumentMode};
 pub use eval::{EvalArgs, EvalCommand, EvalGoldenCommand};
+pub use event::{EventArgs, EventCommand};
+pub use link::{LinkArgs, LinkCommand};
 pub use ontology::{OntologyArgs, OntologyCommand};
 pub use queue::{QueueArgs, QueueCommand};
 pub use relation::{RelationArgs, RelationCommand};
 pub use release::{ReleaseArgs, ReleaseCommand, ReleaseSecurityAuditModeArg};
+pub use repo::{RepoArgs, RepoCommand};
 pub use security::{SecurityArgs, SecurityAuditModeArg, SecurityCommand};
 pub use session::{SessionArgs, SessionCommand};
 pub use trace::{TraceArgs, TraceCommand};
@@ -60,6 +66,9 @@ pub enum Commands {
     Document(DocumentArgs),
     Find(FindArgs),
     Search(SearchArgs),
+    Repo(RepoArgs),
+    Event(EventArgs),
+    Link(LinkArgs),
     Backend,
     Queue(QueueArgs),
     Trace(TraceArgs),

@@ -2,15 +2,16 @@ use anyhow::Result;
 use axiomsync::AxiomSync;
 use axiomsync::client::BenchmarkFixtureCreateOptions;
 use axiomsync::models::{
-    BenchmarkGateOptions, BenchmarkRunOptions, EvalRunOptions, ReleaseGateBenchmarkGatePlan,
-    ReleaseGateBenchmarkRunPlan, ReleaseGateEvalPlan, ReleaseGateOperabilityPlan,
-    ReleaseGatePackOptions, ReleaseGateReplayPlan, ReleaseSecurityAuditMode,
+    AddEventRequest, BenchmarkGateOptions, BenchmarkRunOptions, EvalRunOptions, Kind, LinkRequest,
+    NamespaceKey, ReleaseGateBenchmarkGatePlan, ReleaseGateBenchmarkRunPlan, ReleaseGateEvalPlan,
+    ReleaseGateOperabilityPlan, ReleaseGatePackOptions, ReleaseGateReplayPlan,
+    ReleaseSecurityAuditMode, RepoMountRequest,
 };
 
 use crate::cli::{
-    BenchmarkCommand, BenchmarkFixtureCommand, EvalCommand, EvalGoldenCommand, RelationCommand,
-    ReleaseCommand, ReleaseSecurityAuditModeArg, SecurityAuditModeArg, SecurityCommand,
-    SessionCommand, TraceCommand,
+    BenchmarkCommand, BenchmarkFixtureCommand, EvalCommand, EvalGoldenCommand, EventCommand,
+    LinkCommand, RelationCommand, ReleaseCommand, ReleaseSecurityAuditModeArg, RepoCommand,
+    SecurityAuditModeArg, SecurityCommand, SessionCommand, TraceCommand,
 };
 
 use super::print_json;
@@ -173,6 +174,266 @@ pub(super) fn handle_relation(app: &AxiomSync, command: RelationCommand) -> Resu
                 "relation_id": relation_id,
                 "removed": removed
             }))?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn handle_repo(app: &AxiomSync, command: RepoCommand) -> Result<()> {
+    match command {
+        RepoCommand::Mount {
+            source_path,
+            target_uri,
+            namespace,
+            kind,
+            title,
+            tags,
+            wait,
+        } => {
+            let report = app.mount_repo(RepoMountRequest {
+                source_path,
+                target_uri: axiomsync::AxiomUri::parse(&target_uri)?,
+                namespace: namespace.parse()?,
+                kind: kind.parse()?,
+                title,
+                tags,
+                attrs: serde_json::json!({}),
+                wait,
+            })?;
+            print_json(&report)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn handle_event(app: &AxiomSync, command: EventCommand) -> Result<()> {
+    match command {
+        EventCommand::Add {
+            event_id,
+            uri,
+            namespace,
+            kind,
+            event_time,
+            title,
+            summary,
+            severity,
+            run_id,
+            session_id,
+            tags,
+        } => {
+            let event = app.add_event(AddEventRequest {
+                event_id,
+                uri: axiomsync::AxiomUri::parse(&uri)?,
+                namespace: namespace.parse()?,
+                kind: kind.parse()?,
+                event_time,
+                title,
+                summary_text: summary,
+                severity,
+                actor_uri: None,
+                subject_uri: None,
+                run_id,
+                session_id,
+                tags,
+                attrs: serde_json::json!({}),
+                object_uri: None,
+                content_hash: None,
+                created_at: None,
+            })?;
+            print_json(&event)?;
+        }
+        EventCommand::Import {
+            file,
+            namespace,
+            kind,
+        } => {
+            let raw = std::fs::read_to_string(&file)?;
+            let namespace = namespace.parse()?;
+            let kind = kind.parse()?;
+            let batch = parse_event_import_requests(&raw, &namespace, &kind)?;
+            let events = app.add_events(batch)?;
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "count": events.len(),
+                "events": events,
+            }))?;
+        }
+    }
+    Ok(())
+}
+
+fn parse_event_import_requests(
+    raw: &str,
+    namespace: &NamespaceKey,
+    kind: &Kind,
+) -> Result<Vec<AddEventRequest>> {
+    event_import_values(raw)?
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| build_import_event_request(index, value, namespace, kind))
+        .collect()
+}
+
+fn event_import_values(raw: &str) -> Result<Vec<serde_json::Value>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(serde_json::Value::Array(values)) => Ok(values),
+        Ok(value @ serde_json::Value::Object(_)) => Ok(vec![value]),
+        Ok(_) => Err(anyhow::anyhow!(
+            "event import payload must be a JSON object, JSON array, or JSONL object stream"
+        )),
+        Err(_) => raw
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into),
+    }
+}
+
+fn build_import_event_request(
+    index: usize,
+    value: serde_json::Value,
+    namespace: &NamespaceKey,
+    kind: &Kind,
+) -> Result<AddEventRequest> {
+    let Some(object) = value.as_object() else {
+        anyhow::bail!("event import entry {} must be a JSON object", index + 1);
+    };
+    let uri = object
+        .get("uri")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("event import entry {} missing uri", index + 1))?;
+    let event_time = object
+        .get("event_time")
+        .and_then(|value| value.as_i64())
+        .ok_or_else(|| anyhow::anyhow!("event import entry {} missing event_time", index + 1))?;
+
+    Ok(AddEventRequest {
+        event_id: object
+            .get("event_id")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("import-{}", index + 1)),
+        uri: axiomsync::AxiomUri::parse(uri)?,
+        namespace: namespace.clone(),
+        kind: kind.clone(),
+        event_time,
+        title: object
+            .get("title")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        summary_text: object
+            .get("summary_text")
+            .or_else(|| object.get("summary"))
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        severity: object
+            .get("severity")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        actor_uri: None,
+        subject_uri: None,
+        run_id: object
+            .get("run_id")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        session_id: object
+            .get("session_id")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        tags: object
+            .get("tags")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(ToString::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        attrs: import_event_attrs(object),
+        object_uri: None,
+        content_hash: None,
+        created_at: object.get("created_at").and_then(|value| value.as_i64()),
+    })
+}
+
+fn import_event_attrs(object: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+    if let Some(attrs) = object.get("attrs") {
+        return attrs.clone();
+    }
+
+    let attrs = object
+        .iter()
+        .filter(|(key, _)| {
+            !matches!(
+                key.as_str(),
+                "event_id"
+                    | "uri"
+                    | "event_time"
+                    | "title"
+                    | "summary"
+                    | "summary_text"
+                    | "severity"
+                    | "run_id"
+                    | "session_id"
+                    | "tags"
+                    | "attrs"
+                    | "created_at"
+            )
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    serde_json::Value::Object(attrs)
+}
+
+pub(super) fn handle_link(app: &AxiomSync, command: LinkCommand) -> Result<()> {
+    match command {
+        LinkCommand::Add {
+            link_id,
+            namespace,
+            from_uri,
+            relation,
+            to_uri,
+            weight,
+        } => {
+            let link = app.link_records(LinkRequest {
+                link_id,
+                namespace: namespace.parse()?,
+                from_uri: axiomsync::AxiomUri::parse(&from_uri)?,
+                relation,
+                to_uri: axiomsync::AxiomUri::parse(&to_uri)?,
+                weight,
+                attrs: serde_json::json!({}),
+                created_at: None,
+            })?;
+            print_json(&link)?;
+        }
+        LinkCommand::List {
+            namespace,
+            from_uri,
+            to_uri,
+            relation,
+            limit,
+        } => {
+            let links = app.state.query_links(axiomsync::models::LinkQuery {
+                namespace_prefix: namespace.map(|value| value.parse()).transpose()?,
+                from_uri: from_uri
+                    .map(|value| axiomsync::AxiomUri::parse(&value))
+                    .transpose()?,
+                to_uri: to_uri
+                    .map(|value| axiomsync::AxiomUri::parse(&value))
+                    .transpose()?,
+                relation,
+                limit,
+            })?;
+            print_json(&links)?;
         }
     }
     Ok(())

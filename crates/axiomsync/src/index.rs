@@ -326,7 +326,7 @@ mod tests {
     use crate::models::SearchFilter;
 
     #[test]
-    fn build_upsert_text_matches_legacy_join_shape_with_tags() {
+    fn build_upsert_text_joins_search_fields_with_tags() {
         let record = IndexRecord {
             id: "1".to_string(),
             uri: "axiom://resources/docs/a.md".to_string(),
@@ -340,18 +340,18 @@ mod tests {
             updated_at: Utc::now(),
             depth: 3,
         };
-        let legacy = [
+        let expected = [
             record.name.as_str(),
             record.abstract_text.as_str(),
             record.content.as_str(),
             &record.tags.join(" "),
         ]
         .join(" ");
-        assert_eq!(build_upsert_text(&record), legacy);
+        assert_eq!(build_upsert_text(&record), expected);
     }
 
     #[test]
-    fn build_upsert_text_matches_legacy_join_shape_without_tags() {
+    fn build_upsert_text_joins_search_fields_without_tags() {
         let record = IndexRecord {
             id: "1".to_string(),
             uri: "axiom://resources/docs/a.md".to_string(),
@@ -365,14 +365,14 @@ mod tests {
             updated_at: Utc::now(),
             depth: 3,
         };
-        let legacy = [
+        let expected = [
             record.name.as_str(),
             record.abstract_text.as_str(),
             record.content.as_str(),
             &record.tags.join(" "),
         ]
         .join(" ");
-        assert_eq!(build_upsert_text(&record), legacy);
+        assert_eq!(build_upsert_text(&record), expected);
     }
 
     #[test]
@@ -1128,6 +1128,10 @@ mod tests {
         let filter = SearchFilter {
             tags: vec!["auth".to_string()],
             mime: None,
+            namespace_prefix: None,
+            kind: None,
+            start_time: None,
+            end_time: None,
         };
         let result = index.search("docs", None, 20, None, Some(&filter));
         assert!(
@@ -1206,6 +1210,10 @@ mod tests {
         let filter = SearchFilter {
             tags: vec!["auth".to_string()],
             mime: None,
+            namespace_prefix: None,
+            kind: None,
+            start_time: None,
+            end_time: None,
         };
         let result = index.search("docs", None, 20, None, Some(&filter));
         assert!(
@@ -1276,6 +1284,10 @@ mod tests {
         let filter = SearchFilter {
             tags: vec!["auth".to_string()],
             mime: None,
+            namespace_prefix: None,
+            kind: None,
+            start_time: None,
+            end_time: None,
         };
         let docs = index.get("axiom://resources/docs").expect("docs record");
         let other = index.get("axiom://resources/other").expect("other record");
@@ -1316,6 +1328,10 @@ mod tests {
         let filter = SearchFilter {
             tags: vec![],
             mime: Some("text/markdown".to_string()),
+            namespace_prefix: None,
+            kind: None,
+            start_time: None,
+            end_time: None,
         };
         let result = index.search("schema guide", None, 20, None, Some(&filter));
         assert!(result.iter().any(|x| x.uri.ends_with("guide.md")));

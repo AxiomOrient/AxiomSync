@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::cmp::{Ordering, Reverse};
+use std::collections::{BinaryHeap, HashMap};
 use std::time::Instant;
 
 use uuid::Uuid;
@@ -6,7 +7,7 @@ use uuid::Uuid;
 use crate::index::InMemoryIndex;
 use crate::models::{
     ContextHit, FindResult, QueryPlan, RetrievalStep, RetrievalTrace, SearchOptions, TracePoint,
-    TraceStats, classify_hit_buckets,
+    TraceStats,
 };
 
 use super::budget::{ResolvedBudget, resolve_budget};
@@ -47,9 +48,7 @@ impl DrrEngine {
         );
 
         let limit = options.limit.max(1);
-        let mut hits: Vec<_> = fanout.merged_hits.into_values().collect();
-        sort_hits_by_score_desc_uri_asc(&mut hits);
-        hits.truncate(limit);
+        let hits = select_top_hits(fanout.merged_hits.into_values(), limit);
 
         let final_topk = hits
             .iter()
@@ -81,39 +80,17 @@ impl DrrEngine {
             },
         };
 
-        let hit_buckets = classify_hit_buckets(&hits);
         let notes = build_query_notes(options, request_budget, planned_queries.len());
-        let memories = hit_buckets
-            .memories
-            .iter()
-            .filter_map(|&index| hits.get(index).cloned())
-            .collect::<Vec<_>>();
-        let resources = hit_buckets
-            .resources
-            .iter()
-            .filter_map(|&index| hits.get(index).cloned())
-            .collect::<Vec<_>>();
-        let skills = hit_buckets
-            .skills
-            .iter()
-            .filter_map(|&index| hits.get(index).cloned())
-            .collect::<Vec<_>>();
-
-        FindResult {
-            query_plan: QueryPlan {
+        FindResult::new(
+            QueryPlan {
                 scopes: collect_scope_names(&planned_queries),
                 keywords: tokenize_keywords(&options.query),
                 typed_queries: typed_query_plans(&planned_queries),
                 notes,
             },
-            query_results: hits,
-            hit_buckets,
-            memories,
-            resources,
-            skills,
-            trace: Some(trace),
-            trace_uri: None,
-        }
+            hits,
+            Some(trace),
+        )
     }
 }
 
@@ -204,6 +181,57 @@ fn build_stop_reason(stop_reasons: &[String]) -> String {
     }
 }
 
+fn select_top_hits(hits: impl IntoIterator<Item = ContextHit>, limit: usize) -> Vec<ContextHit> {
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut heap = BinaryHeap::<Reverse<RankedHit>>::new();
+    for hit in hits {
+        heap.push(Reverse(RankedHit(hit)));
+        if heap.len() > limit {
+            heap.pop();
+        }
+    }
+
+    let mut out = heap
+        .into_iter()
+        .map(|Reverse(hit)| hit.0)
+        .collect::<Vec<_>>();
+    sort_hits_by_score_desc_uri_asc(&mut out);
+    out
+}
+
+fn compare_context_hit_rank(a: &ContextHit, b: &ContextHit) -> Ordering {
+    b.score
+        .partial_cmp(&a.score)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| a.uri.cmp(&b.uri))
+}
+
+#[derive(Debug)]
+struct RankedHit(ContextHit);
+
+impl PartialEq for RankedHit {
+    fn eq(&self, other: &Self) -> bool {
+        compare_context_hit_rank(&self.0, &other.0) == Ordering::Equal
+    }
+}
+
+impl Eq for RankedHit {}
+
+impl PartialOrd for RankedHit {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RankedHit {
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare_context_hit_rank(&other.0, &self.0)
+    }
+}
+
 fn build_query_notes(
     options: &SearchOptions,
     request_budget: ResolvedBudget,
@@ -232,4 +260,45 @@ fn build_query_notes(
         notes.push(format!("budget_ms:{max_ms}"));
     }
     notes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_top_hits;
+    use crate::models::{ContextHit, ScoreComponents};
+
+    fn hit(uri: &str, score: f32) -> ContextHit {
+        ContextHit {
+            uri: uri.to_string(),
+            score,
+            abstract_text: String::new(),
+            context_type: "resource".to_string(),
+            relations: Vec::new(),
+            snippet: None,
+            matched_heading: None,
+            score_components: ScoreComponents::default(),
+        }
+    }
+
+    #[test]
+    fn select_top_hits_preserves_rank_order_and_limit() {
+        let hits = select_top_hits(
+            vec![
+                hit("axiom://resources/z.md", 0.70),
+                hit("axiom://resources/a.md", 0.70),
+                hit("axiom://resources/m.md", 0.90),
+                hit("axiom://resources/b.md", 0.60),
+            ],
+            2,
+        );
+
+        let uris = hits
+            .iter()
+            .map(|item| item.uri.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            uris,
+            vec!["axiom://resources/m.md", "axiom://resources/a.md"]
+        );
+    }
 }

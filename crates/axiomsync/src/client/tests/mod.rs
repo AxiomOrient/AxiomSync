@@ -22,6 +22,7 @@ use super::AxiomSync;
 mod benchmark_suite_tests;
 mod core_editor_retrieval;
 mod eval_suite_tests;
+mod facade_v3;
 mod initialization_lifecycle;
 mod om_bridge_contract;
 mod ontology_enqueue;

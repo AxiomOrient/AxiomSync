@@ -6,6 +6,7 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::config::TierSynthesisMode;
+use crate::models::{NamespaceKey, UpsertResource};
 use crate::tier_documents::{abstract_path, overview_path, read_overview};
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
@@ -232,6 +233,54 @@ fn synthesize_directory_tiers_fails_for_non_directory_path() {
     let err = synthesize_directory_tiers(&uri, &file_path, TierSynthesisMode::Deterministic)
         .expect_err("must fail");
     assert!(matches!(err, AxiomError::Io(_)));
+}
+
+#[test]
+fn index_file_entry_inherits_namespace_tag_from_nearest_resource() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app new");
+    app.initialize().expect("init");
+
+    let repo_uri = AxiomUri::parse("axiom://resources/acme/repos/platform").expect("repo uri");
+    app.fs.create_dir_all(&repo_uri, true).expect("mkdir");
+    app.state
+        .persist_resource(UpsertResource {
+            resource_id: "repo-root".to_string(),
+            uri: repo_uri.clone(),
+            namespace: NamespaceKey::parse("acme/platform").expect("namespace"),
+            kind: "repository".parse().expect("kind"),
+            title: Some("Platform Repo".to_string()),
+            mime: None,
+            tags: vec!["repo".to_string()],
+            attrs: serde_json::json!({}),
+            object_uri: None,
+            excerpt_text: None,
+            content_hash: "hash-root".to_string(),
+            tombstoned_at: None,
+            created_at: 1_710_000_000,
+            updated_at: 1_710_000_000,
+        })
+        .expect("persist resource");
+
+    let file_uri =
+        AxiomUri::parse("axiom://resources/acme/repos/platform/runbooks/oauth.md").expect("uri");
+    app.fs
+        .write(
+            &file_uri,
+            "# OAuth Runbook\n\nRotate keys and restart auth-worker.\n",
+            true,
+        )
+        .expect("write");
+
+    let path = app.fs.resolve_uri(&file_uri);
+    app.index_file_entry(&file_uri, &path).expect("index file");
+
+    let stored = app
+        .state
+        .get_search_document(&file_uri.to_string())
+        .expect("get search doc")
+        .expect("search doc");
+    assert!(stored.tags.iter().any(|tag| tag == "ns:acme/platform"));
 }
 
 #[test]

@@ -1,28 +1,36 @@
 use std::path::Path;
-#[cfg(unix)]
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::error::{AxiomError, Result};
+use crate::error::Result;
 use crate::models::TraceIndexEntry;
 
-mod migration;
+mod capabilities;
+mod db;
+mod events;
+mod links;
 mod om;
 mod promotion_checkpoint;
 mod queue;
 mod queue_lane;
+mod resources;
+mod schema;
 mod search;
+mod sessions;
 
+pub use capabilities::{
+    ContextStore, EventStore, LinkStore, ResourceStore, SearchProjectionStore, SessionStore,
+};
 pub(crate) use om::{OmActiveEntry, OmContinuationHints};
 pub(crate) use promotion_checkpoint::PromotionCheckpointPhase;
 
 #[derive(Clone)]
 pub struct SqliteStateStore {
-    conn: Arc<Mutex<Connection>>,
+    db_path: Arc<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,22 +61,15 @@ impl std::fmt::Debug for SqliteStateStore {
 
 impl SqliteStateStore {
     fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| AxiomError::mutex_poisoned("sqlite"))?;
+        let conn = self.open_connection()?;
         f(&conn)
     }
 
     fn with_tx<T>(&self, f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>) -> Result<T> {
-        let mut conn = self
-            .conn
-            .lock()
-            .map_err(|_| AxiomError::mutex_poisoned("sqlite"))?;
+        let mut conn = self.open_connection()?;
         let tx = conn.transaction()?;
         let value = f(&tx)?;
         tx.commit()?;
-        drop(conn);
         Ok(value)
     }
 
@@ -79,15 +80,26 @@ impl SqliteStateStore {
         {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(path)?;
-        conn.busy_timeout(Duration::from_millis(5_000))?;
         let store = Self {
-            conn: Arc::new(Mutex::new(conn)),
+            db_path: Arc::new(path.to_path_buf()),
         };
-        store.migrate()?;
+        store.ensure_schema()?;
         #[cfg(unix)]
         harden_sqlite_permissions(path)?;
         Ok(store)
+    }
+
+    fn open_connection(&self) -> Result<Connection> {
+        let conn = Connection::open(self.db_path.as_ref())?;
+        configure_connection(&conn)?;
+        #[cfg(unix)]
+        harden_sqlite_permissions(self.db_path.as_ref())?;
+        Ok(conn)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_connection(&self) -> Result<Connection> {
+        self.open_connection()
     }
 
     pub fn get_system_value(&self, key: &str) -> Result<Option<String>> {
@@ -314,6 +326,12 @@ fn escape_sql_like_pattern(raw: &str) -> String {
 
 fn usize_to_i64_saturating(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn configure_connection(conn: &Connection) -> Result<()> {
+    conn.busy_timeout(Duration::from_millis(5_000))?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    Ok(())
 }
 
 #[cfg(unix)]

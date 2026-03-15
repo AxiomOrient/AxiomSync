@@ -1,10 +1,16 @@
 mod benchmark;
 mod defaults;
 mod eval;
+mod event;
 mod filesystem;
+mod ingest_profile;
+mod kind;
+mod link;
+mod namespace;
 mod queue;
 mod reconcile;
 mod release;
+mod resource;
 mod search;
 mod session;
 mod trace;
@@ -28,14 +34,19 @@ pub use eval::{
     EvalGoldenDocument, EvalGoldenMergeReport, EvalLoopReport, EvalQualitySummary, EvalQueryCase,
     EvalRunOptions, EvalRunSelection,
 };
+pub use event::{AddEventRequest, EventArchiveReport, EventQuery, EventRecord};
 pub use filesystem::{
     AddResourceIngestOptions, AddResourceRequest, AddResourceResult, AddResourceWaitMode, Entry,
     GlobResult, MarkdownDocument, MarkdownSaveResult, TreeNode, TreeResult,
 };
+pub use ingest_profile::{IndexPolicy, IngestProfile, RetentionClass};
+pub use kind::Kind;
+pub use link::{LinkQuery, LinkRecord, LinkRequest};
+pub use namespace::NamespaceKey;
 pub use queue::{
-    OmQueueStatus, OmReflectionApplyMetrics, OmV2MigrationReport, OutboxEvent, QueueCheckpoint,
-    QueueCounts, QueueDeadLetterRate, QueueDiagnostics, QueueEventStatus, QueueLaneStatus,
-    QueueOverview, QueueStatus, ReplayReport,
+    OmQueueStatus, OmReflectionApplyMetrics, OutboxEvent, QueueCheckpoint, QueueCounts,
+    QueueDeadLetterRate, QueueDiagnostics, QueueEventStatus, QueueLaneStatus, QueueOverview,
+    QueueStatus, ReplayReport,
 };
 pub use reconcile::{ReconcileOptions, ReconcileReport, ReconcileRunStatus};
 pub use release::{
@@ -53,6 +64,9 @@ pub use release::{
     ReliabilitySearchProbe, SecurityAuditCheck, SecurityAuditGateDetails, SecurityAuditReport,
     SessionMemoryGateDetails,
 };
+pub use resource::{
+    RepoMountReport, RepoMountRequest, ResourceQuery, ResourceRecord, UpsertResource,
+};
 pub use search::{
     BackendStatus, ContextHit, EmbeddingBackendStatus, FindResult, HitBuckets, IndexRecord,
     MetadataFilter, QueryPlan, RelationLink, RelationSummary, RetrievalStep, RetrievalTrace,
@@ -62,7 +76,7 @@ pub use search::{
 pub use session::{
     CommitMode, CommitResult, CommitStats, ContextUsage, MemoryCandidate, MemoryCategory,
     MemoryPromotionFact, MemoryPromotionRequest, MemoryPromotionResult, Message,
-    PromotionApplyMode, SearchContext, SessionInfo, SessionMeta,
+    PromotionApplyMode, SearchContext, SessionInfo, SessionMeta, SessionRecord,
 };
 pub use trace::{
     RequestLogEntry, TraceIndexEntry, TraceMetricsReport, TraceMetricsSample,

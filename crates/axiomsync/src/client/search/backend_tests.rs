@@ -4,8 +4,8 @@ use std::path::Path;
 use tempfile::{TempDir, tempdir};
 
 use crate::models::{
-    ContextHit, FindResult, IndexRecord, QueryPlan, QueueEventStatus, RuntimeHint, RuntimeHintKind,
-    SearchBudget, SearchOptions, SearchRequest, classify_hit_buckets,
+    ContextHit, FindResult, IndexRecord, QueueEventStatus, RuntimeHint, RuntimeHintKind,
+    SearchBudget, SearchOptions, SearchRequest,
 };
 use crate::om::{OmObservationChunk, OmOriginType, OmRecord, OmScope, build_scope_key};
 use crate::state::{OmContinuationHints, OmReflectionApplyContext, OmReflectionApplyOutcome};
@@ -67,10 +67,10 @@ fn search_with_budget_propagates_budget_notes() {
         index.upsert(leaf.clone());
     }
     app.state
-        .upsert_search_document(&root)
+        .persist_search_document(&root)
         .expect("upsert root");
     app.state
-        .upsert_search_document(&leaf)
+        .persist_search_document(&leaf)
         .expect("upsert leaf");
 
     let result = app
@@ -116,7 +116,7 @@ fn memory_backend_reads_in_memory_index() {
         depth: 1,
     };
     app.state
-        .upsert_search_document(&record)
+        .persist_search_document(&record)
         .expect("upsert search document");
     {
         let mut index = app.index.write().expect("index write");
@@ -493,10 +493,10 @@ fn search_with_session_context_always_records_om_metrics_without_om_record() {
         index.upsert(leaf.clone());
     }
     app.state
-        .upsert_search_document(&root)
+        .persist_search_document(&root)
         .expect("upsert root");
     app.state
-        .upsert_search_document(&leaf)
+        .persist_search_document(&leaf)
         .expect("upsert leaf");
 
     let session = app.session(Some("s-om-metrics-empty"));
@@ -1479,7 +1479,7 @@ fn upsert_records(app: &AxiomSync, records: &[IndexRecord]) {
     }
     for record in records {
         app.state
-            .upsert_search_document(record)
+            .persist_search_document(record)
             .expect("upsert record");
     }
 }
@@ -1570,30 +1570,5 @@ fn hit(uri: &str, score: f32) -> ContextHit {
 }
 
 fn sample_find_result(hits: Vec<ContextHit>) -> FindResult {
-    let hit_buckets = classify_hit_buckets(&hits);
-    let memories = hit_buckets
-        .memories
-        .iter()
-        .filter_map(|&index| hits.get(index).cloned())
-        .collect::<Vec<_>>();
-    let resources = hit_buckets
-        .resources
-        .iter()
-        .filter_map(|&index| hits.get(index).cloned())
-        .collect::<Vec<_>>();
-    let skills = hit_buckets
-        .skills
-        .iter()
-        .filter_map(|&index| hits.get(index).cloned())
-        .collect::<Vec<_>>();
-    FindResult {
-        query_plan: QueryPlan::default(),
-        query_results: hits,
-        hit_buckets,
-        memories,
-        resources,
-        skills,
-        trace: None,
-        trace_uri: None,
-    }
+    FindResult::new(Default::default(), hits, None)
 }

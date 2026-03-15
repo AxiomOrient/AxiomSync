@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use axiomsync::AxiomSync;
+use axiomsync::models::{AddEventRequest, Kind, NamespaceKey};
+use axiomsync::{AxiomSync, AxiomUri};
 use serde::Serialize;
 
 #[derive(Clone, Copy)]
@@ -19,12 +20,16 @@ struct ScenarioSpec {
 struct ScenarioReport {
     scenario: String,
     corpus_files: usize,
+    event_batch_count: usize,
+    event_batch_ingest_ms: u128,
     cold_boot_ms: u128,
     warm_boot_ms: u128,
     full_reindex_ms: u128,
     first_search_ms: u128,
     steady_search_p50_ms: u128,
     steady_search_p95_ms: u128,
+    context_db_bytes: u64,
+    db_growth_bytes: u64,
     queue_replay_processed: usize,
     queue_replay_ms: u128,
     queue_replay_events_per_sec: f64,
@@ -109,9 +114,12 @@ fn run_scenario(spec: ScenarioSpec, root: &Path) -> Result<ScenarioReport> {
     write_corpus(&corpus_dir, spec.file_count, "baseline")?;
     write_corpus(&queue_dir, spec.queue_events, "queue")?;
     let queries = build_queries(spec.query_count);
+    let event_batch = build_events(spec.file_count)?;
+    let event_batch_count = event_batch.len();
 
     let app = AxiomSync::new(root)?;
     app.initialize()?;
+    let baseline_db_bytes = context_db_bytes(root)?;
     app.add_resource(
         corpus_dir.to_str().context("corpus dir utf8")?,
         Some(SEARCH_SCOPE_URI),
@@ -120,6 +128,12 @@ fn run_scenario(spec: ScenarioSpec, root: &Path) -> Result<ScenarioReport> {
         true,
         None,
     )?;
+    let event_batch_ingest_ms = timed_ms(|| {
+        let _ = app.add_events(event_batch)?;
+        Ok(())
+    })?;
+    let context_db_bytes = context_db_bytes(root)?;
+    let db_growth_bytes = context_db_bytes.saturating_sub(baseline_db_bytes);
     drop(app);
 
     let cold_boot_ms = timed_ms(|| {
@@ -191,12 +205,16 @@ fn run_scenario(spec: ScenarioSpec, root: &Path) -> Result<ScenarioReport> {
     Ok(ScenarioReport {
         scenario: spec.name.to_string(),
         corpus_files: spec.file_count,
+        event_batch_count,
+        event_batch_ingest_ms,
         cold_boot_ms,
         warm_boot_ms,
         full_reindex_ms,
         first_search_ms,
         steady_search_p50_ms: percentile(&steady_samples, 50),
         steady_search_p95_ms: percentile(&steady_samples, 95),
+        context_db_bytes,
+        db_growth_bytes,
         queue_replay_processed: replay.processed,
         queue_replay_ms,
         queue_replay_events_per_sec,
@@ -222,6 +240,45 @@ fn build_queries(count: usize) -> Vec<String> {
         .collect()
 }
 
+fn build_events(count: usize) -> Result<Vec<AddEventRequest>> {
+    let namespace = NamespaceKey::parse("baseline/runtime")?;
+    let incident_kind = Kind::new("incident")?;
+    (0..count)
+        .map(|idx| {
+            Ok(AddEventRequest {
+                event_id: format!("evt-{idx:03}"),
+                uri: AxiomUri::parse(&format!("axiom://events/baseline/runtime/{idx:03}"))?,
+                namespace: namespace.clone(),
+                kind: incident_kind.clone(),
+                event_time: 1_710_000_000 + idx as i64,
+                title: Some(format!("Baseline incident {idx:03}")),
+                summary_text: Some(format!(
+                    "baseline-token-{idx:03} event ingest measurement for runtime baseline"
+                )),
+                severity: Some("low".to_string()),
+                actor_uri: None,
+                subject_uri: None,
+                run_id: Some(format!("run-{idx:03}")),
+                session_id: None,
+                tags: vec!["baseline".to_string(), "incident".to_string()],
+                attrs: serde_json::json!({
+                    "scenario": "runtime_baseline",
+                    "ordinal": idx,
+                }),
+                object_uri: None,
+                content_hash: None,
+                created_at: Some(1_710_000_100 + idx as i64),
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+}
+
+fn context_db_bytes(root: &Path) -> Result<u64> {
+    Ok(fs::metadata(root.join("context.db"))
+        .with_context(|| format!("read context.db size under {}", root.display()))?
+        .len())
+}
+
 fn timed_ms<T>(f: impl FnOnce() -> Result<T>) -> Result<u128> {
     let started = Instant::now();
     let _ = f()?;
@@ -239,19 +296,23 @@ fn percentile(sorted: &[u128], pct: usize) -> u128 {
 
 fn render_markdown(report: &BaselineReport) -> String {
     let mut out = String::from("# Runtime Baseline\n\n");
-    out.push_str("| Scenario | Corpus | Cold boot ms | Warm boot ms | Reindex ms | First search ms | Steady p50 ms | Steady p95 ms | Queue replay eps |\n");
-    out.push_str("|---|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    out.push_str("| Scenario | Corpus | Event batch | Event ingest ms | Cold boot ms | Warm boot ms | Reindex ms | First search ms | Steady p50 ms | Steady p95 ms | DB bytes | DB growth bytes | Queue replay eps |\n");
+    out.push_str("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     for row in &report.reports {
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {:.2} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.2} |\n",
             row.scenario,
             row.corpus_files,
+            row.event_batch_count,
+            row.event_batch_ingest_ms,
             row.cold_boot_ms,
             row.warm_boot_ms,
             row.full_reindex_ms,
             row.first_search_ms,
             row.steady_search_p50_ms,
             row.steady_search_p95_ms,
+            row.context_db_bytes,
+            row.db_growth_bytes,
             row.queue_replay_events_per_sec,
         ));
     }

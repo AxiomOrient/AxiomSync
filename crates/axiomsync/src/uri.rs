@@ -12,6 +12,7 @@ pub enum Scope {
     User,
     Agent,
     Session,
+    Events,
     Temp,
     Queue,
 }
@@ -24,6 +25,7 @@ impl Scope {
             Self::User => "user",
             Self::Agent => "agent",
             Self::Session => "session",
+            Self::Events => "events",
             Self::Temp => "temp",
             Self::Queue => "queue",
         }
@@ -50,6 +52,7 @@ impl FromStr for Scope {
             "user" => Ok(Self::User),
             "agent" => Ok(Self::Agent),
             "session" => Ok(Self::Session),
+            "events" => Ok(Self::Events),
             "temp" => Ok(Self::Temp),
             "queue" => Ok(Self::Queue),
             _ => Err(AxiomError::InvalidScope(s.to_string())),
@@ -257,6 +260,13 @@ mod tests {
     fn reject_unknown_scope() {
         let err = AxiomUri::parse("axiom://unknown/path").expect_err("must fail");
         assert!(matches!(err, AxiomError::InvalidScope(_)));
+    }
+
+    #[test]
+    fn parse_events_scope_uri_round_trip() {
+        let uri = AxiomUri::parse("axiom://events/incidents/incident-123").expect("parse failed");
+        assert_eq!(uri.scope(), Scope::Events);
+        assert_eq!(uri.to_string(), "axiom://events/incidents/incident-123");
     }
 
     #[test]

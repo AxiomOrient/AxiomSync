@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::uri::AxiomUri;
 
@@ -50,18 +51,12 @@ pub struct ScoreComponents {
     pub recency: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct FindResult {
     pub query_plan: QueryPlan,
     pub query_results: Vec<ContextHit>,
     #[serde(default, skip_serializing_if = "HitBuckets::is_empty")]
     pub hit_buckets: HitBuckets,
-    #[serde(default)]
-    pub memories: Vec<ContextHit>,
-    #[serde(default)]
-    pub resources: Vec<ContextHit>,
-    #[serde(default)]
-    pub skills: Vec<ContextHit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace: Option<RetrievalTrace>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,15 +81,24 @@ impl HitBuckets {
 }
 
 impl FindResult {
-    pub fn rebuild_hit_buckets(&mut self) {
-        self.hit_buckets = classify_hit_buckets(&self.query_results);
-        self.sync_compat_views();
+    #[must_use]
+    pub fn new(
+        query_plan: QueryPlan,
+        query_results: Vec<ContextHit>,
+        trace: Option<RetrievalTrace>,
+    ) -> Self {
+        let hit_buckets = classify_hit_buckets(&query_results);
+        Self {
+            query_plan,
+            query_results,
+            hit_buckets,
+            trace,
+            trace_uri: None,
+        }
     }
 
-    pub fn sync_compat_views(&mut self) {
-        self.memories = collect_bucket_hits(&self.query_results, &self.hit_buckets.memories);
-        self.resources = collect_bucket_hits(&self.query_results, &self.hit_buckets.resources);
-        self.skills = collect_bucket_hits(&self.query_results, &self.hit_buckets.skills);
+    pub fn rebuild_hit_buckets(&mut self) {
+        self.hit_buckets = classify_hit_buckets(&self.query_results);
     }
 
     pub fn memories(&self) -> impl Iterator<Item = &ContextHit> {
@@ -107,6 +111,44 @@ impl FindResult {
 
     pub fn skills(&self) -> impl Iterator<Item = &ContextHit> {
         bucket_hits(&self.query_results, &self.hit_buckets.skills)
+    }
+}
+
+impl Serialize for FindResult {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let memories = collect_bucket_hits(&self.query_results, &self.hit_buckets.memories);
+        let resources = collect_bucket_hits(&self.query_results, &self.hit_buckets.resources);
+        let skills = collect_bucket_hits(&self.query_results, &self.hit_buckets.skills);
+        let mut field_count = 5;
+        if !self.hit_buckets.is_empty() {
+            field_count += 1;
+        }
+        if self.trace.is_some() {
+            field_count += 1;
+        }
+        if self.trace_uri.is_some() {
+            field_count += 1;
+        }
+
+        let mut state = serializer.serialize_struct("FindResult", field_count)?;
+        state.serialize_field("query_plan", &self.query_plan)?;
+        state.serialize_field("query_results", &self.query_results)?;
+        if !self.hit_buckets.is_empty() {
+            state.serialize_field("hit_buckets", &self.hit_buckets)?;
+        }
+        state.serialize_field("memories", &memories)?;
+        state.serialize_field("resources", &resources)?;
+        state.serialize_field("skills", &skills)?;
+        if let Some(trace) = &self.trace {
+            state.serialize_field("trace", trace)?;
+        }
+        if let Some(trace_uri) = &self.trace_uri {
+            state.serialize_field("trace_uri", trace_uri)?;
+        }
+        state.end()
     }
 }
 
@@ -143,6 +185,14 @@ pub struct SearchFilter {
     pub tags: Vec<String>,
     #[serde(default)]
     pub mime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace_prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +290,14 @@ pub struct TypedQueryPlan {
     pub query: String,
     pub scopes: Vec<String>,
     pub priority: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace_prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,8 +361,7 @@ pub struct BackendStatus {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContextHit, FindResult, QueryPlan, ScoreComponents, SearchRequest, TypedQueryPlan,
-        classify_hit_buckets,
+        ContextHit, FindResult, QueryPlan, ScoreComponents, TypedQueryPlan, classify_hit_buckets,
     };
 
     #[test]
@@ -318,12 +375,20 @@ mod tests {
                     query: "oauth".to_string(),
                     scopes: vec!["resources".to_string()],
                     priority: 1,
+                    namespace_prefix: None,
+                    resource_kind: None,
+                    start_time: None,
+                    end_time: None,
                 },
                 TypedQueryPlan {
                     kind: "session_recent".to_string(),
                     query: "oauth hint".to_string(),
                     scopes: vec!["session".to_string()],
                     priority: 2,
+                    namespace_prefix: None,
+                    resource_kind: None,
+                    start_time: None,
+                    end_time: None,
                 },
             ],
             notes: vec!["backend:memory".to_string(), "budget_nodes:10".to_string()],
@@ -352,19 +417,6 @@ mod tests {
                 "notes": ["backend:memory", "budget_nodes:10"]
             })
         );
-    }
-
-    #[test]
-    fn runtime_hint_serde_backward_compat() {
-        let payload = serde_json::json!({
-            "query": "oauth",
-            "target_uri": "axiom://resources",
-            "session": "s-1",
-            "limit": 5
-        });
-        let decoded: SearchRequest =
-            serde_json::from_value(payload).expect("deserialize search request");
-        assert!(decoded.runtime_hints.is_empty());
     }
 
     fn hit(uri: &str) -> ContextHit {
@@ -401,18 +453,7 @@ mod tests {
             hit("axiom://user/memories/preferences/pref.md"),
             hit("axiom://agent/skills/rust.md"),
         ];
-        let hit_buckets = classify_hit_buckets(&query_results);
-        let mut result = FindResult {
-            query_plan: QueryPlan::default(),
-            hit_buckets,
-            query_results,
-            memories: Vec::new(),
-            resources: Vec::new(),
-            skills: Vec::new(),
-            trace: None,
-            trace_uri: None,
-        };
-        result.sync_compat_views();
+        let result = FindResult::new(QueryPlan::default(), query_results, None);
         let memories = result
             .memories()
             .map(|item| item.uri.clone())
@@ -434,27 +475,33 @@ mod tests {
     }
 
     #[test]
-    fn find_result_compat_views_are_derived_from_hit_buckets() {
+    fn find_result_new_classifies_hit_buckets() {
         let query_results = vec![
             hit("axiom://resources/docs/a.md"),
             hit("axiom://user/memories/preferences/pref.md"),
             hit("axiom://agent/skills/rust.md"),
         ];
-        let hit_buckets = classify_hit_buckets(&query_results);
-        let mut result = FindResult {
-            query_plan: QueryPlan::default(),
-            query_results,
-            hit_buckets,
-            memories: Vec::new(),
-            resources: Vec::new(),
-            skills: Vec::new(),
-            trace: None,
-            trace_uri: None,
-        };
+        let result = FindResult::new(QueryPlan::default(), query_results, None);
+        assert_eq!(result.hit_buckets.memories, vec![1]);
+        assert_eq!(result.hit_buckets.resources, vec![0]);
+        assert_eq!(result.hit_buckets.skills, vec![2]);
+    }
 
-        result.sync_compat_views();
-        assert_eq!(result.memories.len(), 1);
-        assert_eq!(result.resources.len(), 1);
-        assert_eq!(result.skills.len(), 1);
+    #[test]
+    fn find_result_serialization_includes_compat_views() {
+        let result = FindResult::new(
+            QueryPlan::default(),
+            vec![
+                hit("axiom://resources/docs/a.md"),
+                hit("axiom://user/memories/preferences/pref.md"),
+                hit("axiom://agent/skills/rust.md"),
+            ],
+            None,
+        );
+
+        let encoded = serde_json::to_value(&result).expect("serialize find result");
+        assert_eq!(encoded["memories"].as_array().map(Vec::len), Some(1));
+        assert_eq!(encoded["resources"].as_array().map(Vec::len), Some(1));
+        assert_eq!(encoded["skills"].as_array().map(Vec::len), Some(1));
     }
 }

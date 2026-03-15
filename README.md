@@ -30,7 +30,8 @@ cargo run -p axiomsync -- session commit
 - Retrieval runtime: `memory_only`
 - Persisted retrieval state: `search_docs` + `search_docs_fts`
 - Canonical result shape: `FindResult.query_results` + `hit_buckets`
-- Compatibility result shape: `memories/resources/skills`
+- Compatibility JSON views: serialized `memories`, `resources`, `skills`
+- Derived bucket views: `FindResult.memories()`, `resources()`, `skills()`
 - Session/OM state: explicit and durable
 
 ## Documentation Map
@@ -38,8 +39,9 @@ cargo run -p axiomsync -- session commit
 - [docs/API_CONTRACT.md](./docs/API_CONTRACT.md): stable contract
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): runtime structure
 - [docs/RETRIEVAL_STACK.md](./docs/RETRIEVAL_STACK.md): retrieval path
+- [docs/RETRIEVAL_PLANNER_RULES.md](./docs/RETRIEVAL_PLANNER_RULES.md): planner scope rules and root-cause notes
+- [docs/RELEASE_CHECKLIST.md](./docs/RELEASE_CHECKLIST.md): release owner checklist
 - [docs/OWNERSHIP_MAP.md](./docs/OWNERSHIP_MAP.md): change routing
-- [plans/README.md](./plans/README.md): roadmap, task tracker, and rollout rationale
 
 ## Quality And Release
 ```bash
@@ -51,6 +53,5 @@ bash scripts/release_pack_strict_gate.sh --workspace-dir "$(pwd)"
 - Canonical URI protocol stays `axiom://`
 - Runtime startup is a hard cutover to `context.db`
 - Legacy DB filename discovery or migration is not supported
-- Known in-place compatibility repair stays inside `context.db` only
 - Retrieval backend remains `memory_only`; `sqlite` retrieval mode is rejected
 - Vendored pure-OM boundary remains explicit under `axiomsync::om`

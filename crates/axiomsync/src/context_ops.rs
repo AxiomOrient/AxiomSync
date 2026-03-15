@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -41,29 +40,32 @@ pub fn classify_context(uri: &AxiomUri) -> String {
     "resource".to_string()
 }
 
+const EXTENSION_TAGS: &[(&str, &str)] = &[("rs", "rust"), ("md", "markdown"), ("json", "json")];
+
+const CONTENT_KEYWORD_TAGS: &[&str] = &["auth", "oauth", "session", "memory", "skill", "api"];
+
 pub fn infer_tags(name: &str, content: &str) -> Vec<String> {
-    let mut tags = HashSet::new();
+    let mut tags: Vec<&str> = Vec::new();
 
-    if has_extension(name, "rs") {
-        tags.insert("rust".to_string());
-    }
-    if has_extension(name, "md") {
-        tags.insert("markdown".to_string());
-    }
-    if has_extension(name, "json") {
-        tags.insert("json".to_string());
-    }
-
-    let lower_content = content.to_lowercase();
-    for token in ["auth", "oauth", "session", "memory", "skill", "api"] {
-        if lower_content.contains(token) {
-            tags.insert(token.to_string());
+    for &(ext, tag) in EXTENSION_TAGS {
+        if has_extension(name, ext) {
+            tags.push(tag);
         }
     }
 
-    let mut out: Vec<_> = tags.into_iter().collect();
-    out.sort();
-    out
+    let bytes = content.as_bytes();
+    for &token in CONTENT_KEYWORD_TAGS {
+        if bytes
+            .windows(token.len())
+            .any(|w| w.eq_ignore_ascii_case(token.as_bytes()))
+        {
+            tags.push(token);
+        }
+    }
+
+    tags.sort_unstable();
+    tags.dedup();
+    tags.iter().map(|s| (*s).to_owned()).collect()
 }
 
 pub fn validate_filter(filter: Option<&MetadataFilter>) -> Result<()> {
@@ -71,7 +73,14 @@ pub fn validate_filter(filter: Option<&MetadataFilter>) -> Result<()> {
         return Ok(());
     };
 
-    let allowed = ["tags", "mime"];
+    let allowed = [
+        "tags",
+        "mime",
+        "namespace_prefix",
+        "kind",
+        "start_time",
+        "end_time",
+    ];
     for key in filter.fields.keys() {
         if !allowed.contains(&key.as_str()) {
             return Err(AxiomError::Validation(format!(

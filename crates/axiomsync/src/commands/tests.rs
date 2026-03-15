@@ -6,9 +6,9 @@ use tempfile::tempdir;
 use super::validation::command_needs_runtime;
 use crate::cli::{
     AddArgs, AddWaitModeArg, BenchmarkArgs, BenchmarkCommand, Commands, DocumentArgs,
-    DocumentCommand, DocumentMode, EvalArgs, EvalCommand, FindArgs, OntologyArgs, OntologyCommand,
-    QueueArgs, QueueCommand, ReconcileArgs, RelationArgs, RelationCommand, TraceArgs, TraceCommand,
-    WebArgs,
+    DocumentCommand, DocumentMode, EvalArgs, EvalCommand, EventArgs, EventCommand, FindArgs,
+    LinkArgs, LinkCommand, OntologyArgs, OntologyCommand, QueueArgs, QueueCommand, ReconcileArgs,
+    RelationArgs, RelationCommand, RepoArgs, RepoCommand, TraceArgs, TraceCommand, WebArgs,
 };
 use axiomsync::AxiomSync;
 use axiomsync::models::QueueEventStatus;
@@ -188,6 +188,10 @@ fn search_runs_runtime_prepare_for_memory_backend() {
         limit: Some(5),
         tags: Vec::new(),
         mime: None,
+        namespace: None,
+        kind: None,
+        start_time: None,
+        end_time: None,
         hints: Vec::new(),
         hint_file: None,
         request_json: None,
@@ -217,6 +221,10 @@ fn search_preflight_requires_query_or_request_json() {
         limit: None,
         tags: Vec::new(),
         mime: None,
+        namespace: None,
+        kind: None,
+        start_time: None,
+        end_time: None,
         hints: Vec::new(),
         hint_file: None,
         request_json: None,
@@ -250,6 +258,10 @@ fn search_accepts_request_json_without_positional_query() {
         limit: None,
         tags: Vec::new(),
         mime: None,
+        namespace: None,
+        kind: None,
+        start_time: None,
+        end_time: None,
         hints: Vec::new(),
         hint_file: None,
         request_json: Some(request_file),
@@ -274,6 +286,10 @@ fn search_rejects_invalid_hint_syntax() {
         limit: Some(5),
         tags: Vec::new(),
         mime: None,
+        namespace: None,
+        kind: None,
+        start_time: None,
+        end_time: None,
         hints: vec!["bad-hint-format".to_string()],
         hint_file: None,
         request_json: None,
@@ -457,6 +473,308 @@ fn relation_link_requires_at_least_two_uris_before_bootstrap() {
 
     assert!(format!("{err:#}").contains("at least two --uri"));
     assert!(!temp.path().join("resources").exists());
+}
+
+#[test]
+fn repo_mount_command_registers_resource_record() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path().join("runtime")).expect("app");
+    let repo_dir = temp.path().join("repo");
+    fs::create_dir_all(&repo_dir).expect("repo dir");
+    fs::write(repo_dir.join("README.md"), "# Demo\n").expect("write repo");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Repo(RepoArgs {
+            command: RepoCommand::Mount {
+                source_path: repo_dir.to_string_lossy().to_string(),
+                target_uri: "axiom://resources/acme/repos/demo".to_string(),
+                namespace: "acme/platform".to_string(),
+                kind: "repository".to_string(),
+                title: Some("Demo Repo".to_string()),
+                tags: vec!["repo".to_string()],
+                wait: false,
+            },
+        }),
+    )
+    .expect("repo mount");
+
+    let resource = app
+        .state
+        .get_resource(
+            &axiomsync::AxiomUri::parse("axiom://resources/acme/repos/demo").expect("uri"),
+        )
+        .expect("get resource")
+        .expect("resource");
+    assert_eq!(resource.namespace.as_path(), "acme/platform");
+}
+
+#[test]
+fn event_add_command_persists_event() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Event(EventArgs {
+            command: EventCommand::Add {
+                event_id: "evt-1".to_string(),
+                uri: "axiom://events/acme/incidents/1".to_string(),
+                namespace: "acme/platform".to_string(),
+                kind: "incident".to_string(),
+                event_time: 1_710_000_000,
+                title: Some("OAuth outage".to_string()),
+                summary: Some("oauth token failures".to_string()),
+                severity: None,
+                run_id: None,
+                session_id: None,
+                tags: vec!["oauth".to_string()],
+            },
+        }),
+    )
+    .expect("event add");
+
+    let events = app
+        .state
+        .query_events(axiomsync::models::EventQuery {
+            namespace_prefix: Some("acme".parse().expect("namespace")),
+            kind: Some("incident".parse().expect("kind")),
+            start_time: None,
+            end_time: None,
+            limit: Some(10),
+            include_tombstoned: false,
+        })
+        .expect("query events");
+    assert_eq!(events.len(), 1);
+}
+
+#[test]
+fn event_import_command_accepts_json_object_payload() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app");
+    let import_path = temp.path().join("event.json");
+    fs::write(
+        &import_path,
+        r#"{
+          "uri": "axiom://events/acme/incidents/1",
+          "event_time": 1710000000,
+          "title": "OAuth outage",
+          "summary": "oauth token failures",
+          "severity": "high",
+          "env": "prod"
+        }"#,
+    )
+    .expect("write import");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Event(EventArgs {
+            command: EventCommand::Import {
+                file: import_path,
+                namespace: "acme/platform".to_string(),
+                kind: "incident".to_string(),
+            },
+        }),
+    )
+    .expect("event import json");
+
+    let events = app
+        .state
+        .query_events(axiomsync::models::EventQuery {
+            namespace_prefix: Some("acme".parse().expect("namespace")),
+            kind: Some("incident".parse().expect("kind")),
+            start_time: None,
+            end_time: None,
+            limit: Some(10),
+            include_tombstoned: false,
+        })
+        .expect("query events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].summary_text.as_deref(),
+        Some("oauth token failures")
+    );
+    assert_eq!(events[0].attrs["env"], "prod");
+}
+
+#[test]
+fn event_import_command_accepts_json_array_payload() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app");
+    let import_path = temp.path().join("events.json");
+    fs::write(
+        &import_path,
+        r#"[
+          {
+            "event_id": "evt-1",
+            "uri": "axiom://events/acme/incidents/1",
+            "event_time": 1710000000,
+            "title": "OAuth outage"
+          },
+          {
+            "event_id": "evt-2",
+            "uri": "axiom://events/acme/incidents/2",
+            "event_time": 1710000100,
+            "title": "OAuth recovered"
+          }
+        ]"#,
+    )
+    .expect("write import");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Event(EventArgs {
+            command: EventCommand::Import {
+                file: import_path,
+                namespace: "acme/platform".to_string(),
+                kind: "incident".to_string(),
+            },
+        }),
+    )
+    .expect("event import array");
+
+    let events = app
+        .state
+        .query_events(axiomsync::models::EventQuery {
+            namespace_prefix: Some("acme".parse().expect("namespace")),
+            kind: Some("incident".parse().expect("kind")),
+            start_time: None,
+            end_time: None,
+            limit: Some(10),
+            include_tombstoned: false,
+        })
+        .expect("query events");
+    assert_eq!(events.len(), 2);
+}
+
+#[test]
+fn event_import_command_preserves_explicit_attrs_object() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app");
+    let import_path = temp.path().join("event-with-attrs.json");
+    fs::write(
+        &import_path,
+        r#"{
+          "uri": "axiom://events/acme/incidents/1",
+          "event_time": 1710000000,
+          "attrs": {
+            "env": "prod",
+            "component": "auth"
+          }
+        }"#,
+    )
+    .expect("write import");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Event(EventArgs {
+            command: EventCommand::Import {
+                file: import_path,
+                namespace: "acme/platform".to_string(),
+                kind: "incident".to_string(),
+            },
+        }),
+    )
+    .expect("event import attrs");
+
+    let events = app
+        .state
+        .query_events(axiomsync::models::EventQuery {
+            namespace_prefix: Some("acme".parse().expect("namespace")),
+            kind: Some("incident".parse().expect("kind")),
+            start_time: None,
+            end_time: None,
+            limit: Some(10),
+            include_tombstoned: false,
+        })
+        .expect("query events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].attrs["env"], "prod");
+    assert_eq!(events[0].attrs["component"], "auth");
+    assert!(events[0].attrs.get("attrs").is_none());
+}
+
+#[test]
+fn event_import_command_accepts_jsonl_payload() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app");
+    let import_path = temp.path().join("events.jsonl");
+    fs::write(
+        &import_path,
+        r#"{"event_id":"evt-1","uri":"axiom://events/acme/incidents/1","event_time":1710000000}
+{"event_id":"evt-2","uri":"axiom://events/acme/incidents/2","event_time":1710000100,"attrs":{"env":"prod"}}"#,
+    )
+    .expect("write import");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Event(EventArgs {
+            command: EventCommand::Import {
+                file: import_path,
+                namespace: "acme/platform".to_string(),
+                kind: "incident".to_string(),
+            },
+        }),
+    )
+    .expect("event import jsonl");
+
+    let events = app
+        .state
+        .query_events(axiomsync::models::EventQuery {
+            namespace_prefix: Some("acme".parse().expect("namespace")),
+            kind: Some("incident".parse().expect("kind")),
+            start_time: None,
+            end_time: None,
+            limit: Some(10),
+            include_tombstoned: false,
+        })
+        .expect("query events");
+    assert_eq!(events.len(), 2);
+    let imported = events
+        .iter()
+        .find(|event| event.event_id == "evt-2")
+        .expect("evt-2");
+    assert_eq!(imported.attrs["env"], "prod");
+}
+
+#[test]
+fn link_add_command_persists_global_link_record() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Link(LinkArgs {
+            command: LinkCommand::Add {
+                link_id: "lnk-1".to_string(),
+                namespace: "acme/platform".to_string(),
+                from_uri: "axiom://events/acme/incidents/1".to_string(),
+                relation: "resolved_by".to_string(),
+                to_uri: "axiom://resources/acme/runbooks/auth".to_string(),
+                weight: 0.8,
+            },
+        }),
+    )
+    .expect("link add");
+
+    let links = app
+        .state
+        .query_links(axiomsync::models::LinkQuery {
+            namespace_prefix: Some("acme".parse().expect("namespace")),
+            from_uri: None,
+            to_uri: None,
+            relation: Some("resolved_by".to_string()),
+            limit: Some(10),
+        })
+        .expect("query links");
+    assert_eq!(links.len(), 1);
 }
 
 #[test]

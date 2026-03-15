@@ -112,6 +112,46 @@ pub(super) fn build_metadata_filter(
     Ok(Some(MetadataFilter { fields }))
 }
 
+pub(super) fn build_metadata_filter_v3(
+    tags: &[String],
+    mime: Option<&str>,
+    namespace_prefix: Option<&str>,
+    kind: Option<&str>,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+) -> Result<Option<MetadataFilter>> {
+    let mut filter = build_metadata_filter(tags, mime)?.unwrap_or_else(|| MetadataFilter {
+        fields: std::collections::HashMap::new(),
+    });
+    let extra: [(&str, Option<serde_json::Value>); 4] = [
+        (
+            "namespace_prefix",
+            namespace_prefix
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| serde_json::json!(v)),
+        ),
+        (
+            "kind",
+            kind.map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| serde_json::json!(v)),
+        ),
+        ("start_time", start_time.map(|v| serde_json::json!(v))),
+        ("end_time", end_time.map(|v| serde_json::json!(v))),
+    ];
+    filter.fields.extend(
+        extra
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|v| (key.to_string(), v))),
+    );
+    if filter.fields.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(filter))
+    }
+}
+
 pub(super) fn parse_search_request_file(path: &Path) -> Result<SearchRequest> {
     let raw = fs::read_to_string(path)?;
     let request = serde_json::from_str::<SearchRequest>(&raw).map_err(|err| {

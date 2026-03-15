@@ -2,7 +2,8 @@ use anyhow::Result;
 use axiomsync::AxiomSync;
 
 use crate::cli::{
-    BenchmarkCommand, Commands, OntologyCommand, RelationCommand, ReleaseCommand, SearchArgs,
+    BenchmarkCommand, Commands, LinkCommand, OntologyCommand, RelationCommand, ReleaseCommand,
+    SearchArgs,
 };
 
 use super::ontology::validate_ontology_action_input_source_selection;
@@ -80,6 +81,7 @@ pub(super) fn validate_command_preflight(command: &Commands) -> Result<()> {
         Commands::Document(args) => validate_document_command(&args.command),
         Commands::Ontology(args) => validate_ontology_command(&args.command),
         Commands::Relation(args) => validate_relation_command(&args.command),
+        Commands::Link(args) => validate_link_command(&args.command),
         _ => Ok(()),
     }
 }
@@ -176,6 +178,18 @@ fn validate_relation_command(command: &RelationCommand) -> Result<()> {
             Ok(())
         }
         RelationCommand::List { .. } | RelationCommand::Unlink { .. } => Ok(()),
+    }
+}
+
+fn validate_link_command(command: &LinkCommand) -> Result<()> {
+    match command {
+        LinkCommand::Add { relation, .. } => {
+            if relation.trim().is_empty() {
+                anyhow::bail!("link add requires non-empty --relation");
+            }
+            Ok(())
+        }
+        LinkCommand::List { .. } => Ok(()),
     }
 }
 

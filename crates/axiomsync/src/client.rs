@@ -17,6 +17,7 @@ use crate::uri::AxiomUri;
 
 mod benchmark;
 mod eval;
+mod facade_v3;
 mod indexing;
 mod markdown_editor;
 mod mirror_outbox;

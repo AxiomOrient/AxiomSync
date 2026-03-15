@@ -21,6 +21,16 @@ pub(super) fn metadata_filter_to_search_filter(
             .fields
             .get("mime")
             .and_then(|v| v.as_str().map(ToString::to_string)),
+        namespace_prefix: filter
+            .fields
+            .get("namespace_prefix")
+            .and_then(|v| v.as_str().map(ToString::to_string)),
+        kind: filter
+            .fields
+            .get("kind")
+            .and_then(|v| v.as_str().map(ToString::to_string)),
+        start_time: filter.fields.get("start_time").and_then(|v| v.as_i64()),
+        end_time: filter.fields.get("end_time").and_then(|v| v.as_i64()),
     })
 }
 
@@ -95,7 +105,7 @@ pub(super) fn annotate_typed_edge_query_plan_visibility(result: &mut FindResult,
 #[cfg(test)]
 mod tests {
     use super::annotate_typed_edge_query_plan_visibility;
-    use crate::models::{ContextHit, FindResult, HitBuckets, QueryPlan, RelationSummary};
+    use crate::models::{ContextHit, FindResult, QueryPlan, RelationSummary};
 
     fn hit_with_relation(relation_type: Option<&str>) -> ContextHit {
         ContextHit {
@@ -118,35 +128,25 @@ mod tests {
 
     #[test]
     fn typed_edge_query_plan_visibility_is_disabled_by_flag() {
-        let mut result = FindResult {
-            query_plan: QueryPlan::default(),
-            query_results: vec![hit_with_relation(Some("depends_on"))],
-            hit_buckets: HitBuckets::default(),
-            memories: Vec::new(),
-            resources: Vec::new(),
-            skills: Vec::new(),
-            trace: None,
-            trace_uri: None,
-        };
+        let mut result = FindResult::new(
+            QueryPlan::default(),
+            vec![hit_with_relation(Some("depends_on"))],
+            None,
+        );
         annotate_typed_edge_query_plan_visibility(&mut result, false);
         assert!(result.query_plan.notes.is_empty());
     }
 
     #[test]
     fn typed_edge_query_plan_visibility_reports_typed_link_count() {
-        let mut result = FindResult {
-            query_plan: QueryPlan::default(),
-            query_results: vec![
+        let mut result = FindResult::new(
+            QueryPlan::default(),
+            vec![
                 hit_with_relation(Some("depends_on")),
                 hit_with_relation(None),
             ],
-            hit_buckets: HitBuckets::default(),
-            memories: Vec::new(),
-            resources: Vec::new(),
-            skills: Vec::new(),
-            trace: None,
-            trace_uri: None,
-        };
+            None,
+        );
         annotate_typed_edge_query_plan_visibility(&mut result, true);
         assert!(
             result
