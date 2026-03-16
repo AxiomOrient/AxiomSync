@@ -1,4 +1,4 @@
-# AxiomSync Architecture
+# Runtime Architecture
 
 핵심 구조: `axiom://` URI, 단일 `context.db`, `memory_only` 검색 런타임, 명시적인 세션/OM 상태, v3 도메인 객체(Resources, Events, Links).
 
@@ -8,7 +8,7 @@
 
 ## Layers
 - Interface: CLI parses commands and delegates to runtime
-- Facade: `AxiomSync` coordinates filesystem, state, retrieval, session, release; v3 API (`facade_v3.rs`)
+- Facade: `AxiomSync` coordinates filesystem, state, retrieval, session, release; thin orchestration API (`facade.rs`)
 - Storage: `LocalContextFs` + `SqliteStateStore`
 - Retrieval: `search_docs` + `search_docs_fts` persisted state, `memory_only` runtime query path
 - Session and OM: explicit session state + vendored OM engine under `src/om/engine`
@@ -57,4 +57,4 @@
 
 ## Known Behavioral Notes
 - `mount_repo` 후 전역 reindex가 실행되면, root resource URI의 search_docs 항목에서 `namespace`/`kind` 컬럼이 디렉터리 인덱서에 의해 덮어써질 수 있다. `resources` 테이블의 원본 데이터는 보존된다.
-- `export_event_archive`로 ephemeral 이벤트를 압축하면, 이벤트는 search_docs에서 제거되지만 `events` 테이블에는 남아 `query_events`로 조회 가능하다 (attrs_json이 archive 참조로 교체됨).
+- `plan_event_archive`로 대상 이벤트를 먼저 확정하고 `execute_event_archive`로 ephemeral 이벤트를 압축하면, 이벤트는 search_docs에서 제거되지만 `events` 테이블에는 남아 `query_events`로 조회 가능하다 (attrs_json이 archive 참조로 교체됨).

@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use axiomsync::models::{
     DependencyAuditStatus, ReleaseGateDecision, ReleaseGateDetails, ReleaseGateId,
-    ReleaseGatePackReport, ReleaseSecurityAuditMode,
+    ReleaseGatePackReport, ReleaseSecurityAuditMode, ReleaseVerifyReport,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -13,6 +13,7 @@ struct ReleaseContractFixture {
     release_gate_decision_contract_integrity: ReleaseGateDecision,
     release_gate_decision_security_audit: ReleaseGateDecision,
     release_gate_pack_report: ReleaseGatePackReport,
+    release_verify_report: ReleaseVerifyReport,
 }
 
 fn fixture_path() -> PathBuf {
@@ -86,6 +87,14 @@ fn release_contract_fixture_roundtrip_preserves_string_enum_contracts() {
     assert_eq!(pack_json, fixture_section(&raw, "release_gate_pack_report"));
     assert_eq!(pack_json["status"], "pass");
     assert_eq!(pack_json["unresolved_blockers"], 0);
+
+    let verify_json =
+        serde_json::to_value(&fixture.release_verify_report).expect("serialize release verify");
+    assert_eq!(verify_json, fixture_section(&raw, "release_verify_report"));
+    assert!(verify_json["storage"]["context_schema_version"].is_string());
+    assert!(verify_json["storage"]["search_docs_fts_schema_version"].is_string());
+    assert!(verify_json["storage"]["release_contract_version"].is_string());
+    assert!(verify_json["retrieval"]["fts_ready"].is_boolean());
 }
 
 #[test]

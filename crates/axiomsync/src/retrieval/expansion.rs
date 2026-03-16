@@ -15,6 +15,9 @@ use super::budget::ResolvedBudget;
 use super::config::DrrConfig;
 use super::planner::{PlannedQuery, uri_in_scopes};
 use super::scoring::{make_hit, sort_hits_by_score_desc_uri_asc};
+use super::trace::{
+    TraceBuildInput, TraceExecutionContext, build_retrieval_trace, build_trace_evidence,
+};
 
 const GLOBAL_RANK_FLOOR_DEFAULT: usize = 128;
 const GLOBAL_RANK_FLOOR_IDENTIFIER_QUERY: usize = 256;
@@ -299,7 +302,7 @@ fn run_identifier_query_fast_path(input: IdentifierFastPathInput<'_>) -> Option<
             score: item.score,
         })
         .collect::<Vec<_>>();
-    let trace = RetrievalTrace {
+    let trace = build_retrieval_trace(TraceBuildInput {
         trace_id,
         request_type: options.request_type.clone(),
         query: query_owned,
@@ -316,7 +319,23 @@ fn run_identifier_query_fast_path(input: IdentifierFastPathInput<'_>) -> Option<
             relation_enriched_hits: 0,
             relation_enriched_links: 0,
         },
-    };
+        planner_evidence: build_trace_evidence(
+            planned
+                .scopes
+                .iter()
+                .map(|scope| scope.as_str().to_string())
+                .collect(),
+            planned
+                .scopes
+                .first()
+                .map(|scope| scope.as_str().to_string())
+                .unwrap_or_else(|| "resources".to_string()),
+            planned.kind.clone(),
+            planned.kind.clone(),
+            false,
+        ),
+        execution_context: TraceExecutionContext::default(),
+    });
     Some(SingleRunResult { hits, trace })
 }
 
@@ -685,7 +704,16 @@ fn finalize_single_query_run(
             score: hit.score,
         })
         .collect::<Vec<_>>();
-    let trace = RetrievalTrace {
+    let reasoning = if target.is_some() {
+        "target_uri".to_string()
+    } else {
+        "single_query_finalize".to_string()
+    };
+    let primary_scope = target
+        .as_ref()
+        .map(|uri| uri.scope().as_str().to_string())
+        .unwrap_or_else(|| "resources".to_string());
+    let trace = build_retrieval_trace(TraceBuildInput {
         trace_id,
         request_type: options.request_type.clone(),
         query,
@@ -702,7 +730,15 @@ fn finalize_single_query_run(
             relation_enriched_hits: 0,
             relation_enriched_links: 0,
         },
-    };
+        planner_evidence: build_trace_evidence(
+            vec![primary_scope.clone()],
+            primary_scope,
+            reasoning.clone(),
+            reasoning,
+            false,
+        ),
+        execution_context: TraceExecutionContext::default(),
+    });
     SingleRunResult { hits, trace }
 }
 

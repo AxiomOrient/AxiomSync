@@ -154,5 +154,50 @@
       }
     ],
     "report_uri": "axiom://queue/release/packs/pack-1.json"
+  },
+  "release_verify_report": {
+    "verified_at": "2026-01-01T00:00:00Z",
+    "storage": {
+      "context_schema_version": "v3",
+      "search_docs_fts_schema_version": "fts5-v1",
+      "index_profile_stamp": "stack:drr-memory-v1;embed:semantic-lite@v1:64",
+      "release_contract_version": "v1",
+      "search_document_count": 12,
+      "event_count": 3,
+      "link_count": 2,
+      "latest_migration_runs": [
+        {
+          "run_id": "migration-1",
+          "operation": "ensure_schema",
+          "started_at": "2026-01-01T00:00:00Z",
+          "finished_at": "2026-01-01T00:00:01Z",
+          "status": "success",
+          "details": {
+            "backup_path": "/tmp/context-1.db"
+          }
+        }
+      ],
+      "latest_repair_runs": [
+        {
+          "run_id": "repair-1",
+          "repair_type": "full_reindex",
+          "started_at": "2026-01-01T00:01:00Z",
+          "finished_at": "2026-01-01T00:01:05Z",
+          "status": "success",
+          "details": {
+            "index_profile_stamp": "stack:drr-memory-v1;embed:semantic-lite@v1:64"
+          }
+        }
+      ]
+    },
+    "retrieval": {
+      "retrieval_backend": "memory",
+      "retrieval_backend_policy": "memory_only",
+      "local_records": 12,
+      "indexed_documents": 12,
+      "trace_count": 4,
+      "restore_source": "state_restore",
+      "fts_ready": true
+    }
   }
 }

@@ -5,7 +5,7 @@ Local-first context runtime and operator CLI for agentic systems.
 AxiomSync는 `axiom://` URI, `context.db`, 메모리 검색 런타임, 세션/OM 상태를 하나로 묶는 로컬 런타임입니다. 이 저장소는 런타임과 CLI만 소유합니다.
 
 ## Release Line
-- Current repository release line: `v1.2.0`
+- Current repository release line: `v1.3.0`
 - Canonical local store: `<root>/context.db`
 - Retrieval policy: `memory_only`
 - Persistence policy: SQLite only
@@ -35,13 +35,14 @@ cargo run -p axiomsync -- session commit
 - Session/OM state: explicit and durable
 
 ## Documentation Map
-- [docs/README.md](./docs/README.md): documentation entrypoint
+- [docs/INDEX.md](./docs/INDEX.md): documentation entrypoint
+- [docs/BLUEPRINT.md](./docs/BLUEPRINT.md): product target state
+- [docs/IMPLEMENTATION_SPEC.md](./docs/IMPLEMENTATION_SPEC.md): implementation completion contract
 - [docs/API_CONTRACT.md](./docs/API_CONTRACT.md): stable contract
-- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): runtime structure
-- [docs/RETRIEVAL_STACK.md](./docs/RETRIEVAL_STACK.md): retrieval path
-- [docs/RETRIEVAL_PLANNER_RULES.md](./docs/RETRIEVAL_PLANNER_RULES.md): planner scope rules and root-cause notes
-- [docs/RELEASE_CHECKLIST.md](./docs/RELEASE_CHECKLIST.md): release owner checklist
-- [docs/OWNERSHIP_MAP.md](./docs/OWNERSHIP_MAP.md): change routing
+- [docs/RUNTIME_ARCHITECTURE.md](./docs/RUNTIME_ARCHITECTURE.md): runtime structure
+- [docs/RETRIEVAL_ARCHITECTURE.md](./docs/RETRIEVAL_ARCHITECTURE.md): retrieval path
+- [docs/RELEASE_RUNBOOK.md](./docs/RELEASE_RUNBOOK.md): release owner checklist
+- [docs/CODE_OWNERSHIP.md](./docs/CODE_OWNERSHIP.md): change routing
 
 ## Quality And Release
 ```bash

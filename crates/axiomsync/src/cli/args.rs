@@ -84,6 +84,8 @@ pub struct FindArgs {
     pub budget_nodes: Option<usize>,
     #[arg(long)]
     pub budget_depth: Option<usize>,
+    #[arg(long, default_value_t = false)]
+    pub compat_json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -126,6 +128,8 @@ pub struct SearchArgs {
     pub budget_nodes: Option<usize>,
     #[arg(long)]
     pub budget_depth: Option<usize>,
+    #[arg(long, default_value_t = false)]
+    pub compat_json: bool,
 }
 #[derive(Debug, Args)]
 pub struct ReconcileArgs {

@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.0 - 2026-03-16
+
+- finalized release readiness gates with passing quality and strict release pack validation
+- promoted archive, event, link, and repo flows behind thin `facade` delegates and removed `facade_v3`
+- added canonical operator commands for `doctor`, `migrate`, and `release verify`
+- completed retrieval trace evidence coverage for `mixed_intent`, `restore_source`, and `fts_fallback_used`
+- added clean-root process contracts and repository markdown user-flow regression coverage
+- reduced script and document surface to the active runtime, retrieval, release, and ownership set
+- documented the explicit application-service refactor roadmap, test strategy, and execution task ledger
+
 ## v1.2.0 - 2026-03-14
 
 - clarified runtime and documentation boundaries around `context.db`, `memory_only` retrieval, and ownership routing

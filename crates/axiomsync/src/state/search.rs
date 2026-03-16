@@ -37,15 +37,63 @@ impl SqliteStateStore {
                 LIMIT ?2
                 ",
             )?;
-            let rows = stmt.query_map(params![query, usize_to_i64_saturating(limit)], |row| {
-                row.get::<_, String>(0)
-            })?;
+            let rows = stmt.query_map(
+                params![query, super::usize_to_i64_saturating(limit)],
+                |row| row.get::<_, String>(0),
+            )?;
 
             let mut uris = Vec::new();
             for row in rows {
                 uris.push(row?);
             }
             Ok(uris)
+        })
+    }
+
+    pub fn search_documents_fts_with_records(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<IndexRecord>> {
+        let query = query.trim();
+        if query.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r"
+                SELECT
+                  d.uri,
+                  d.parent_uri,
+                  d.is_leaf,
+                  d.context_type,
+                  d.name,
+                  d.abstract_text,
+                  d.content,
+                  d.updated_at,
+                  d.depth,
+                  COALESCE(
+                    (SELECT group_concat(tag, ' ') FROM search_doc_tags t WHERE t.doc_id = d.id),
+                    d.tags_text,
+                    ''
+                  ) AS tags_text
+                FROM search_docs_fts
+                JOIN search_docs d ON d.id = search_docs_fts.rowid
+                WHERE search_docs_fts MATCH ?1
+                ORDER BY bm25(search_docs_fts) ASC, d.uri ASC
+                LIMIT ?2
+                ",
+            )?;
+            let rows = stmt.query_map(
+                params![query, super::usize_to_i64_saturating(limit)],
+                map_row_to_index_record,
+            )?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
         })
     }
 
@@ -93,9 +141,9 @@ impl SqliteStateStore {
             sql.push_str(
                 " ORDER BY bm25(search_docs_fts) ASC, d.event_time DESC, d.uri ASC LIMIT ?",
             );
-            params.push(rusqlite::types::Value::Integer(usize_to_i64_saturating(
-                limit,
-            )));
+            params.push(rusqlite::types::Value::Integer(
+                super::usize_to_i64_saturating(limit),
+            ));
 
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
@@ -124,44 +172,14 @@ impl SqliteStateStore {
                   d.content,
                   d.updated_at,
                   d.depth,
-                  COALESCE(
-                    (
-                        SELECT group_concat(tag, ' ')
-                        FROM search_doc_tags t
-                        WHERE t.doc_id = d.id
-                    ),
-                    d.tags_text,
-                    ''
-                  ) AS tags_text
+                  COALESCE(group_concat(t.tag, ' '), d.tags_text, '') AS tags_text
                 FROM search_docs d
+                LEFT JOIN search_doc_tags t ON t.doc_id = d.id
+                GROUP BY d.id
                 ORDER BY d.depth ASC, d.uri ASC
                 ",
             )?;
-            let rows = stmt.query_map([], |row| {
-                let uri = row.get::<_, String>(0)?;
-                let updated_raw = row.get::<_, String>(7)?;
-                let updated_at = parse_required_rfc3339(7, &updated_raw)?;
-                let tags = row
-                    .get::<_, String>(9)?
-                    .split_whitespace()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>();
-
-                Ok(IndexRecord {
-                    id: blake3::hash(uri.as_bytes()).to_hex().to_string(),
-                    uri,
-                    parent_uri: row.get(1)?,
-                    is_leaf: row.get::<_, i64>(2)? != 0,
-                    context_type: row.get(3)?,
-                    name: row.get(4)?,
-                    abstract_text: row.get(5)?,
-                    content: row.get(6)?,
-                    tags,
-                    updated_at,
-                    depth: i64_to_usize_saturating(row.get::<_, i64>(8)?),
-                })
-            })?;
-
+            let rows = stmt.query_map([], map_row_to_index_record)?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
@@ -248,11 +266,7 @@ impl SqliteStateStore {
                       d.updated_at,
                       d.depth,
                       COALESCE(
-                        (
-                            SELECT group_concat(tag, ' ')
-                            FROM search_doc_tags t
-                            WHERE t.doc_id = d.id
-                        ),
+                        (SELECT group_concat(tag, ' ') FROM search_doc_tags t WHERE t.doc_id = d.id),
                         d.tags_text,
                         ''
                       ) AS tags_text
@@ -260,29 +274,7 @@ impl SqliteStateStore {
                     WHERE d.uri = ?1
                     ",
                     rusqlite::params![uri],
-                    |row| {
-                        let uri = row.get::<_, String>(0)?;
-                        let updated_raw = row.get::<_, String>(7)?;
-                        let updated_at = parse_required_rfc3339(7, &updated_raw)?;
-                        let tags = row
-                            .get::<_, String>(9)?
-                            .split_whitespace()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>();
-                        Ok(IndexRecord {
-                            id: blake3::hash(uri.as_bytes()).to_hex().to_string(),
-                            uri,
-                            parent_uri: row.get(1)?,
-                            is_leaf: row.get::<_, i64>(2)? != 0,
-                            context_type: row.get(3)?,
-                            name: row.get(4)?,
-                            abstract_text: row.get(5)?,
-                            content: row.get(6)?,
-                            tags,
-                            updated_at,
-                            depth: i64_to_usize_saturating(row.get::<_, i64>(8)?),
-                        })
-                    },
+                    map_row_to_index_record,
                 )
                 .optional()?;
             Ok(result)
@@ -296,10 +288,7 @@ impl SqliteStateStore {
         if uris.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
-        let placeholders = (1..=uris.len())
-            .map(|i| format!("?{i}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let placeholders = build_in_placeholders(uris.len());
         let sql = format!(
             r"
             SELECT
@@ -316,29 +305,7 @@ impl SqliteStateStore {
         self.with_conn(|conn| {
             let params = rusqlite::params_from_iter(uris.iter().map(String::as_str));
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(params, |row| {
-                let uri = row.get::<_, String>(0)?;
-                let updated_raw = row.get::<_, String>(7)?;
-                let updated_at = parse_required_rfc3339(7, &updated_raw)?;
-                let tags = row
-                    .get::<_, String>(9)?
-                    .split_whitespace()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>();
-                Ok(IndexRecord {
-                    id: blake3::hash(uri.as_bytes()).to_hex().to_string(),
-                    uri,
-                    parent_uri: row.get(1)?,
-                    is_leaf: row.get::<_, i64>(2)? != 0,
-                    context_type: row.get(3)?,
-                    name: row.get(4)?,
-                    abstract_text: row.get(5)?,
-                    content: row.get(6)?,
-                    tags,
-                    updated_at,
-                    depth: i64_to_usize_saturating(row.get::<_, i64>(8)?),
-                })
-            })?;
+            let rows = stmt.query_map(params, map_row_to_index_record)?;
             let mut out = std::collections::HashMap::new();
             for row in rows {
                 let record = row?;
@@ -366,6 +333,29 @@ impl SqliteStateStore {
                 tx.execute("DELETE FROM search_docs WHERE id = ?1", params![doc_id])?;
             }
 
+            Ok(())
+        })
+    }
+
+    pub fn remove_search_documents_batch(&self, uris: &[String]) -> Result<()> {
+        if uris.is_empty() {
+            return Ok(());
+        }
+        let placeholders = build_in_placeholders(uris.len());
+        self.with_tx(|tx| {
+            let p = rusqlite::params_from_iter(uris.iter().map(String::as_str));
+            tx.execute(
+                &format!(
+                    "DELETE FROM search_doc_tags WHERE doc_id IN \
+                     (SELECT id FROM search_docs WHERE uri IN ({placeholders}))"
+                ),
+                p,
+            )?;
+            let p = rusqlite::params_from_iter(uris.iter().map(String::as_str));
+            tx.execute(
+                &format!("DELETE FROM search_docs WHERE uri IN ({placeholders})"),
+                p,
+            )?;
             Ok(())
         })
     }
@@ -434,7 +424,7 @@ impl SqliteStateStore {
                     tags_text,
                     meta.mime.as_deref(),
                     record.updated_at.to_rfc3339(),
-                    usize_to_i64_saturating(record.depth),
+                    super::usize_to_i64_saturating(record.depth),
                     meta.namespace.as_deref(),
                     meta.kind.as_deref(),
                     meta.event_time,
@@ -460,6 +450,37 @@ impl SqliteStateStore {
     }
 }
 
+fn build_in_placeholders(count: usize) -> String {
+    (1..=count)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn map_row_to_index_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexRecord> {
+    let uri = row.get::<_, String>(0)?;
+    let updated_raw = row.get::<_, String>(7)?;
+    let updated_at = parse_required_rfc3339(7, &updated_raw)?;
+    let tags = row
+        .get::<_, String>(9)?
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    Ok(IndexRecord {
+        id: blake3::hash(uri.as_bytes()).to_hex().to_string(),
+        uri,
+        parent_uri: row.get(1)?,
+        is_leaf: row.get::<_, i64>(2)? != 0,
+        context_type: row.get(3)?,
+        name: row.get(4)?,
+        abstract_text: row.get(5)?,
+        content: row.get(6)?,
+        tags,
+        updated_at,
+        depth: i64_to_usize_saturating(row.get::<_, i64>(8)?),
+    })
+}
+
 fn parse_required_rfc3339(idx: usize, raw: &str) -> rusqlite::Result<chrono::DateTime<Utc>> {
     chrono::DateTime::parse_from_rfc3339(raw)
         .map(|x| x.with_timezone(&Utc))
@@ -468,10 +489,6 @@ fn parse_required_rfc3339(idx: usize, raw: &str) -> rusqlite::Result<chrono::Dat
 
 const fn bool_to_i64(value: bool) -> i64 {
     if value { 1 } else { 0 }
-}
-
-fn usize_to_i64_saturating(value: usize) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 fn i64_to_usize_saturating(value: i64) -> usize {

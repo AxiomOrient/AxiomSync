@@ -63,6 +63,21 @@ pub struct FindResult {
     pub trace_uri: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FindResultCompatView {
+    pub query_plan: QueryPlan,
+    pub query_results: Vec<ContextHit>,
+    #[serde(default, skip_serializing_if = "HitBuckets::is_empty")]
+    pub hit_buckets: HitBuckets,
+    pub memories: Vec<ContextHit>,
+    pub resources: Vec<ContextHit>,
+    pub skills: Vec<ContextHit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace: Option<RetrievalTrace>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_uri: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct HitBuckets {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -112,6 +127,23 @@ impl FindResult {
     pub fn skills(&self) -> impl Iterator<Item = &ContextHit> {
         bucket_hits(&self.query_results, &self.hit_buckets.skills)
     }
+
+    #[must_use]
+    pub fn compat_view(self) -> FindResultCompatView {
+        let memories = collect_bucket_hits(&self.query_results, &self.hit_buckets.memories);
+        let resources = collect_bucket_hits(&self.query_results, &self.hit_buckets.resources);
+        let skills = collect_bucket_hits(&self.query_results, &self.hit_buckets.skills);
+        FindResultCompatView {
+            query_plan: self.query_plan,
+            query_results: self.query_results,
+            hit_buckets: self.hit_buckets,
+            memories,
+            resources,
+            skills,
+            trace: self.trace,
+            trace_uri: self.trace_uri,
+        }
+    }
 }
 
 impl Serialize for FindResult {
@@ -119,10 +151,7 @@ impl Serialize for FindResult {
     where
         S: Serializer,
     {
-        let memories = collect_bucket_hits(&self.query_results, &self.hit_buckets.memories);
-        let resources = collect_bucket_hits(&self.query_results, &self.hit_buckets.resources);
-        let skills = collect_bucket_hits(&self.query_results, &self.hit_buckets.skills);
-        let mut field_count = 5;
+        let mut field_count = 2;
         if !self.hit_buckets.is_empty() {
             field_count += 1;
         }
@@ -139,9 +168,6 @@ impl Serialize for FindResult {
         if !self.hit_buckets.is_empty() {
             state.serialize_field("hit_buckets", &self.hit_buckets)?;
         }
-        state.serialize_field("memories", &memories)?;
-        state.serialize_field("resources", &resources)?;
-        state.serialize_field("skills", &skills)?;
         if let Some(trace) = &self.trace {
             state.serialize_field("trace", trace)?;
         }
@@ -228,6 +254,29 @@ pub struct RetrievalTrace {
     pub final_topk: Vec<TracePoint>,
     pub stop_reason: String,
     pub metrics: TraceStats,
+    #[serde(default)]
+    pub scope_decision: ScopeDecisionTrace,
+    #[serde(default)]
+    pub filter_routing_reason: String,
+    #[serde(default = "default_restore_source")]
+    pub restore_source: String,
+    #[serde(default)]
+    pub fts_fallback_used: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScopeDecisionTrace {
+    pub selected_scopes: Vec<String>,
+    pub primary_scope: String,
+    pub reasoning: String,
+    #[serde(default)]
+    pub mixed_intent: bool,
+}
+
+pub const RESTORE_SOURCE_UNKNOWN: &str = "runtime_unknown";
+
+fn default_restore_source() -> String {
+    RESTORE_SOURCE_UNKNOWN.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -488,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn find_result_serialization_includes_compat_views() {
+    fn find_result_serialization_defaults_to_canonical_contract() {
         let result = FindResult::new(
             QueryPlan::default(),
             vec![
@@ -500,6 +549,24 @@ mod tests {
         );
 
         let encoded = serde_json::to_value(&result).expect("serialize find result");
+        assert!(encoded.get("memories").is_none());
+        assert!(encoded.get("resources").is_none());
+        assert!(encoded.get("skills").is_none());
+    }
+
+    #[test]
+    fn find_result_compat_view_includes_legacy_bucket_arrays() {
+        let result = FindResult::new(
+            QueryPlan::default(),
+            vec![
+                hit("axiom://resources/docs/a.md"),
+                hit("axiom://user/memories/preferences/pref.md"),
+                hit("axiom://agent/skills/rust.md"),
+            ],
+            None,
+        );
+
+        let encoded = serde_json::to_value(result.compat_view()).expect("serialize compat view");
         assert_eq!(encoded["memories"].as_array().map(Vec::len), Some(1));
         assert_eq!(encoded["resources"].as_array().map(Vec::len), Some(1));
         assert_eq!(encoded["skills"].as_array().map(Vec::len), Some(1));

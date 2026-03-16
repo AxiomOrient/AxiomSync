@@ -15,8 +15,8 @@ mod validation;
 mod web;
 
 use self::handlers::{
-    handle_benchmark, handle_eval, handle_event, handle_link, handle_relation, handle_release,
-    handle_repo, handle_security, handle_session, handle_trace,
+    handle_benchmark, handle_doctor, handle_eval, handle_event, handle_link, handle_migrate,
+    handle_relation, handle_release, handle_repo, handle_security, handle_session, handle_trace,
 };
 use self::ontology::handle_ontology_command;
 use self::queue::{run_queue_daemon, run_queue_worker};
@@ -155,7 +155,11 @@ fn run_validated(app: &AxiomSync, root: &Path, command: Commands) -> Result<()> 
                 filter,
                 budget,
             )?;
-            print_json(&result)?;
+            if args.compat_json {
+                print_json(&result.compat_view())?;
+            } else {
+                print_json(&result)?;
+            }
         }
         Commands::Search(args) => {
             let budget = parse_search_budget(args.budget_ms, args.budget_nodes, args.budget_depth);
@@ -219,7 +223,17 @@ fn run_validated(app: &AxiomSync, root: &Path, command: Commands) -> Result<()> 
             }
 
             let result = app.search_with_request(request)?;
-            print_json(&result)?;
+            if args.compat_json {
+                print_json(&result.compat_view())?;
+            } else {
+                print_json(&result)?;
+            }
+        }
+        Commands::Doctor(args) => {
+            handle_doctor(app, args.command)?;
+        }
+        Commands::Migrate(args) => {
+            handle_migrate(app, args.command)?;
         }
         Commands::Repo(args) => {
             handle_repo(app, args.command)?;

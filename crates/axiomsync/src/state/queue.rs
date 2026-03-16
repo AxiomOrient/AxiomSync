@@ -90,7 +90,12 @@ impl SqliteStateStore {
             )?;
 
             let rows = stmt.query_map(
-                params![status_raw, usize_to_i64_saturating(limit), now, !is_new],
+                params![
+                    status_raw,
+                    super::usize_to_i64_saturating(limit),
+                    now,
+                    !is_new
+                ],
                 outbox_event_from_row,
             )?;
 
@@ -290,7 +295,7 @@ impl SqliteStateStore {
                 params![
                     run_id,
                     Utc::now().to_rfc3339(),
-                    usize_to_i64_saturating(drift_count),
+                    super::usize_to_i64_saturating(drift_count),
                     status.as_str()
                 ],
             )?;
@@ -551,8 +556,4 @@ fn i64_to_u64_saturating(value: i64) -> u64 {
     } else {
         u64::try_from(value).unwrap_or(u64::MAX)
     }
-}
-
-fn usize_to_i64_saturating(value: usize) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
 }

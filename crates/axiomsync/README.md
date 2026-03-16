@@ -55,6 +55,6 @@ cargo test -p axiomsync
 - [`TEST_INTENT.md`](./TEST_INTENT.md)
 
 ## Related Docs
-- [`../../docs/RETRIEVAL_STACK.md`](../../docs/RETRIEVAL_STACK.md)
+- [`../../docs/RETRIEVAL_ARCHITECTURE.md`](../../docs/RETRIEVAL_ARCHITECTURE.md)
 - [`../../docs/API_CONTRACT.md`](../../docs/API_CONTRACT.md)
-- [`../../docs/OWNERSHIP_MAP.md`](../../docs/OWNERSHIP_MAP.md)
+- [`../../docs/CODE_OWNERSHIP.md`](../../docs/CODE_OWNERSHIP.md)

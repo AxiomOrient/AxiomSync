@@ -844,33 +844,6 @@ fn promotion_concurrent_claim_has_single_cas_winner() {
 }
 
 #[test]
-#[ignore = "manual benchmark gate; run explicitly for perf baseline verification"]
-fn promotion_and_commit_latency_regression_within_budget() {
-    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("resolve repo root");
-    let script_path = repo_root.join("scripts/perf_regression_gate.sh");
-    let status = std::process::Command::new("bash")
-        .arg(&script_path)
-        .args([
-            "--window-size",
-            "1",
-            "--required-passes",
-            "1",
-            "--min-cases",
-            "12",
-        ])
-        .status()
-        .expect("run performance gate script");
-    assert!(
-        status.success(),
-        "performance gate command failed: {}",
-        script_path.display()
-    );
-}
-
-#[test]
 fn promotion_stale_applying_reconcile_replays_deterministically() {
     let temp = tempdir().expect("tempdir");
     let db_path = temp.path().join("state.db");

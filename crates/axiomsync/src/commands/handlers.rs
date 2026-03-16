@@ -1,17 +1,18 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use axiomsync::AxiomSync;
 use axiomsync::client::BenchmarkFixtureCreateOptions;
 use axiomsync::models::{
-    AddEventRequest, BenchmarkGateOptions, BenchmarkRunOptions, EvalRunOptions, Kind, LinkRequest,
-    NamespaceKey, ReleaseGateBenchmarkGatePlan, ReleaseGateBenchmarkRunPlan, ReleaseGateEvalPlan,
-    ReleaseGateOperabilityPlan, ReleaseGatePackOptions, ReleaseGateReplayPlan,
-    ReleaseSecurityAuditMode, RepoMountRequest,
+    AddEventRequest, BenchmarkGateOptions, BenchmarkRunOptions, EvalRunOptions, EventArchivePlan,
+    EventQuery, Kind, LinkRequest, NamespaceKey, ReleaseGateBenchmarkGatePlan,
+    ReleaseGateBenchmarkRunPlan, ReleaseGateEvalPlan, ReleaseGateOperabilityPlan,
+    ReleaseGatePackOptions, ReleaseGateReplayPlan, ReleaseSecurityAuditMode, RepoMountRequest,
 };
 
 use crate::cli::{
-    BenchmarkCommand, BenchmarkFixtureCommand, EvalCommand, EvalGoldenCommand, EventCommand,
-    LinkCommand, RelationCommand, ReleaseCommand, ReleaseSecurityAuditModeArg, RepoCommand,
-    SecurityAuditModeArg, SecurityCommand, SessionCommand, TraceCommand,
+    BenchmarkCommand, BenchmarkFixtureCommand, DoctorCommand, EvalCommand, EvalGoldenCommand,
+    EventArchiveCommand, EventCommand, LinkCommand, MigrateCommand, RelationCommand,
+    ReleaseCommand, ReleaseSecurityAuditModeArg, RepoCommand, SecurityAuditModeArg,
+    SecurityCommand, SessionCommand, TraceCommand,
 };
 
 use super::print_json;
@@ -257,6 +258,77 @@ pub(super) fn handle_event(app: &AxiomSync, command: EventCommand) -> Result<()>
                 "count": events.len(),
                 "events": events,
             }))?;
+        }
+        EventCommand::Archive { command } => match command {
+            EventArchiveCommand::Plan {
+                archive_id,
+                namespace,
+                kind,
+                start_time,
+                end_time,
+                limit,
+                archive_reason,
+                archived_by,
+            } => {
+                let plan = app.plan_event_archive(
+                    &archive_id,
+                    EventQuery {
+                        namespace_prefix: namespace
+                            .as_deref()
+                            .map(NamespaceKey::parse)
+                            .transpose()?,
+                        kind: kind.as_deref().map(Kind::new).transpose()?,
+                        start_time,
+                        end_time,
+                        limit,
+                        include_tombstoned: false,
+                    },
+                    archive_reason,
+                    archived_by,
+                )?;
+                print_json(&plan)?;
+            }
+            EventArchiveCommand::Execute { plan_file } => {
+                let raw = std::fs::read_to_string(&plan_file).with_context(|| {
+                    format!("failed to read plan file '{}'", plan_file.display())
+                })?;
+                let plan = serde_json::from_str::<EventArchivePlan>(&raw).with_context(|| {
+                    format!(
+                        "failed to parse EventArchivePlan from '{}'",
+                        plan_file.display()
+                    )
+                })?;
+                let report = app.execute_event_archive(plan)?;
+                print_json(&report)?;
+            }
+        },
+    }
+    Ok(())
+}
+
+pub(super) fn handle_doctor(app: &AxiomSync, command: DoctorCommand) -> Result<()> {
+    match command {
+        DoctorCommand::Storage { json } => {
+            require_json_flag(json, "doctor storage")?;
+            print_json(&app.doctor_storage()?)?
+        }
+        DoctorCommand::Retrieval { json } => {
+            require_json_flag(json, "doctor retrieval")?;
+            print_json(&app.doctor_retrieval()?)?
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn handle_migrate(app: &AxiomSync, command: MigrateCommand) -> Result<()> {
+    match command {
+        MigrateCommand::Inspect { json } => {
+            require_json_flag(json, "migrate inspect")?;
+            print_json(&app.migrate_inspect()?)?
+        }
+        MigrateCommand::Apply { backup_dir, json } => {
+            require_json_flag(json, "migrate apply")?;
+            print_json(&app.migrate_apply(backup_dir.as_deref())?)?
         }
     }
     Ok(())
@@ -594,6 +666,14 @@ pub(super) fn handle_security(app: &AxiomSync, command: SecurityCommand) -> Resu
 
 pub(super) fn handle_release(app: &AxiomSync, command: ReleaseCommand) -> Result<()> {
     match command {
+        ReleaseCommand::Verify { enforce, json } => {
+            require_json_flag(json, "release verify")?;
+            let report = app.release_verify()?;
+            print_json(&report)?;
+            if enforce && !report.is_healthy() {
+                anyhow::bail!("release verify failed");
+            }
+        }
         ReleaseCommand::Pack {
             workspace_dir,
             replay_limit,
@@ -654,6 +734,13 @@ pub(super) fn handle_release(app: &AxiomSync, command: ReleaseCommand) -> Result
                 anyhow::bail!("release gate pack failed");
             }
         }
+    }
+    Ok(())
+}
+
+fn require_json_flag(enabled: bool, command: &str) -> Result<()> {
+    if !enabled {
+        anyhow::bail!("{command} requires --json");
     }
     Ok(())
 }

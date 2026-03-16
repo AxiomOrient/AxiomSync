@@ -15,6 +15,12 @@ pub struct ReleaseArgs {
 }
 #[derive(Debug, Subcommand)]
 pub enum ReleaseCommand {
+    Verify {
+        #[arg(long, default_value_t = false)]
+        enforce: bool,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     Pack {
         #[arg(long)]
         workspace_dir: Option<String>,

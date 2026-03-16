@@ -340,7 +340,7 @@ fn add_event_externalizes_large_raw_payload() {
 }
 
 #[test]
-fn export_event_archive_applies_retention_profile_and_writes_jsonl_bundle() {
+fn execute_event_archive_applies_retention_profile_and_writes_jsonl_bundle() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomSync::new(temp.path()).expect("app");
     app.initialize().expect("init");
@@ -387,8 +387,8 @@ fn export_event_archive_applies_retention_profile_and_writes_jsonl_bundle() {
     ])
     .expect("add log events");
 
-    let report = app
-        .export_event_archive(
+    let plan = app
+        .plan_event_archive(
             "oauth-log-archive",
             crate::models::EventQuery {
                 namespace_prefix: Some(NamespaceKey::parse("acme").expect("namespace")),
@@ -398,11 +398,21 @@ fn export_event_archive_applies_retention_profile_and_writes_jsonl_bundle() {
                 limit: Some(10),
                 include_tombstoned: false,
             },
+            Some("ephemeral log compaction".to_string()),
+            Some("test-suite".to_string()),
         )
-        .expect("export event archive");
+        .expect("plan event archive");
+    let report = app
+        .execute_event_archive(plan)
+        .expect("execute event archive");
 
     assert_eq!(report.event_count, 2);
     assert_eq!(report.retention, crate::models::RetentionClass::Ephemeral);
+    assert_eq!(
+        report.archive_reason.as_deref(),
+        Some("ephemeral log compaction")
+    );
+    assert_eq!(report.archived_by.as_deref(), Some("test-suite"));
     let payload = app
         .fs
         .read(&report.object_uri)
@@ -445,6 +455,79 @@ fn export_event_archive_applies_retention_profile_and_writes_jsonl_bundle() {
         !docs
             .iter()
             .any(|doc| doc.uri == "axiom://events/acme/logs/2")
+    );
+}
+
+#[test]
+fn execute_event_archive_rejects_when_planned_event_set_drifted() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app");
+    app.initialize().expect("init");
+
+    app.add_event(AddEventRequest {
+        event_id: "log-1".to_string(),
+        uri: AxiomUri::parse("axiom://events/acme/logs/1").expect("uri"),
+        namespace: NamespaceKey::parse("acme/platform").expect("namespace"),
+        kind: Kind::new("log").expect("kind"),
+        event_time: 1_710_000_200,
+        title: Some("Auth worker log".to_string()),
+        summary_text: Some("oauth retry loop detected".to_string()),
+        severity: None,
+        actor_uri: None,
+        subject_uri: None,
+        run_id: None,
+        session_id: None,
+        tags: vec!["oauth".to_string()],
+        attrs: serde_json::json!({}),
+        object_uri: None,
+        content_hash: None,
+        created_at: Some(1_710_000_201),
+    })
+    .expect("add event");
+
+    let plan = app
+        .plan_event_archive(
+            "oauth-log-archive",
+            crate::models::EventQuery {
+                namespace_prefix: Some(NamespaceKey::parse("acme").expect("namespace")),
+                kind: Some(Kind::new("log").expect("kind")),
+                start_time: Some(1_710_000_000),
+                end_time: Some(1_710_000_300),
+                limit: Some(10),
+                include_tombstoned: false,
+            },
+            None,
+            None,
+        )
+        .expect("plan event archive");
+
+    app.add_event(AddEventRequest {
+        event_id: "log-2".to_string(),
+        uri: AxiomUri::parse("axiom://events/acme/logs/2").expect("uri"),
+        namespace: NamespaceKey::parse("acme/platform").expect("namespace"),
+        kind: Kind::new("log").expect("kind"),
+        event_time: 1_710_000_210,
+        title: Some("Late auth worker log".to_string()),
+        summary_text: Some("unexpected extra event".to_string()),
+        severity: None,
+        actor_uri: None,
+        subject_uri: None,
+        run_id: None,
+        session_id: None,
+        tags: vec!["oauth".to_string()],
+        attrs: serde_json::json!({}),
+        object_uri: None,
+        content_hash: None,
+        created_at: Some(1_710_000_211),
+    })
+    .expect("add drift event");
+
+    let err = app
+        .execute_event_archive(plan)
+        .expect_err("drifted archive plan must fail");
+    assert!(
+        err.to_string()
+            .contains("different event set than the approved plan")
     );
 }
 
@@ -681,8 +764,8 @@ stuck token exchange jobs until refresh token success rates stabilize.
             .any(|hit| hit.uri == "axiom://events/acme/incidents/oauth-refresh-2026-03-15")
     );
 
-    let archive = app
-        .export_event_archive(
+    let archive_plan = app
+        .plan_event_archive(
             "oauth-hot-log-2026-03-15",
             crate::models::EventQuery {
                 namespace_prefix: Some(NamespaceKey::parse("acme/identity").expect("namespace")),
@@ -692,7 +775,12 @@ stuck token exchange jobs until refresh token success rates stabilize.
                 limit: Some(10),
                 include_tombstoned: false,
             },
+            Some("compact hot logs".to_string()),
+            Some("incident-suite".to_string()),
         )
+        .expect("plan log archive");
+    let archive = app
+        .execute_event_archive(archive_plan)
         .expect("archive log events");
     assert_eq!(archive.event_count, 1);
     assert_eq!(archive.retention, crate::models::RetentionClass::Ephemeral);
@@ -748,7 +836,7 @@ stuck token exchange jobs until refresh token success rates stabilize.
 }
 
 #[test]
-fn export_event_archive_rejects_mixed_retention_classes() {
+fn plan_event_archive_rejects_mixed_retention_classes() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomSync::new(temp.path()).expect("app");
     app.initialize().expect("init");
@@ -796,7 +884,7 @@ fn export_event_archive_rejects_mixed_retention_classes() {
     .expect("add events");
 
     let err = app
-        .export_event_archive(
+        .plan_event_archive(
             "mixed-retention",
             crate::models::EventQuery {
                 namespace_prefix: Some(NamespaceKey::parse("acme").expect("namespace")),
@@ -806,6 +894,8 @@ fn export_event_archive_rejects_mixed_retention_classes() {
                 limit: Some(10),
                 include_tombstoned: false,
             },
+            None,
+            None,
         )
         .expect_err("mixed retention must fail");
     assert!(format!("{err:#}").contains("same retention class"));

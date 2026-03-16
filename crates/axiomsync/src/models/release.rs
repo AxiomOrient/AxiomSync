@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{QueueDiagnostics, ReleaseSecurityAuditMode, ReplayReport};
 
+pub const RUN_STATUS_FAILED: &str = "failed";
+pub const RUN_STATUS_SUCCESS: &str = "success";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseCheckDocument {
     pub version: u32,
@@ -259,6 +262,101 @@ pub struct OntologyContractProbeResult {
     pub schema: OntologySchemaVersionProbe,
     pub cardinality: OntologySchemaCardinality,
     pub invariant_checks: OntologyInvariantCheckSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrationRunRecord {
+    pub run_id: String,
+    pub operation: String,
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairRunRecord {
+    pub run_id: String,
+    pub repair_type: String,
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageDoctorReport {
+    pub context_schema_version: Option<String>,
+    pub search_docs_fts_schema_version: Option<String>,
+    pub index_profile_stamp: Option<String>,
+    pub release_contract_version: Option<String>,
+    pub search_document_count: usize,
+    pub event_count: usize,
+    pub link_count: usize,
+    pub latest_migration_runs: Vec<MigrationRunRecord>,
+    pub latest_repair_runs: Vec<RepairRunRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalDoctorReport {
+    pub retrieval_backend: String,
+    pub retrieval_backend_policy: String,
+    pub local_records: usize,
+    pub indexed_documents: usize,
+    pub trace_count: usize,
+    pub restore_source: Option<String>,
+    pub fts_ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrationInspectReport {
+    pub context_schema_version: Option<String>,
+    pub search_docs_fts_schema_version: Option<String>,
+    pub release_contract_version: Option<String>,
+    pub latest_migration_runs: Vec<MigrationRunRecord>,
+    pub latest_repair_runs: Vec<RepairRunRecord>,
+    pub pending_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrationApplyReport {
+    pub backup_path: Option<String>,
+    pub inspect_before: MigrationInspectReport,
+    pub inspect_after: MigrationInspectReport,
+    pub applied_run: MigrationRunRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseVerifyReport {
+    pub verified_at: String,
+    pub storage: StorageDoctorReport,
+    pub retrieval: RetrievalDoctorReport,
+}
+
+impl ReleaseVerifyReport {
+    #[must_use]
+    pub fn is_healthy(&self) -> bool {
+        let has_failed_migrations = self
+            .storage
+            .latest_migration_runs
+            .iter()
+            .any(|run| run.status.eq_ignore_ascii_case(RUN_STATUS_FAILED));
+        let has_failed_repairs = self
+            .storage
+            .latest_repair_runs
+            .iter()
+            .any(|run| run.status.eq_ignore_ascii_case(RUN_STATUS_FAILED));
+        self.storage.context_schema_version.is_some()
+            && self.storage.search_docs_fts_schema_version.is_some()
+            && self.storage.release_contract_version.is_some()
+            && self.retrieval.fts_ready
+            && !has_failed_migrations
+            && !has_failed_repairs
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

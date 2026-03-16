@@ -1,12 +1,19 @@
 use std::collections::HashSet;
 
-use crate::models::{Kind, SearchFilter, SearchOptions};
+use crate::models::{SearchFilter, SearchOptions};
 use crate::uri::{AxiomUri, Scope};
+
+#[derive(Debug, Clone, Default)]
+pub struct PlannerTraceEvidence {
+    pub scope_decision: crate::models::ScopeDecisionTrace,
+    pub filter_routing_reason: String,
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct PlannedQuery {
     pub kind: String,
     pub query: String,
+    query_lower: String,
     pub scopes: Vec<Scope>,
     pub priority: u8,
     pub namespace_prefix: Option<String>,
@@ -29,9 +36,11 @@ impl PlannedQuery {
         priority: u8,
         options: &SearchOptions,
     ) -> Self {
+        let query_lower = query.to_lowercase();
         Self {
             kind: kind.to_string(),
             query,
+            query_lower,
             scopes: normalize_scopes(scopes),
             priority,
             namespace_prefix: options
@@ -49,7 +58,8 @@ impl PlannedQuery {
 }
 
 pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
-    let intent = query_intent(&options.query);
+    let q_lower = options.query.to_lowercase();
+    let intent = query_intent_lower(&q_lower);
     let base_scopes = intent_scopes(intent, options.target_uri.as_ref(), options.filter.as_ref());
     let has_session_context = options.session.is_some();
     let mut planned = vec![PlannedQuery::new(
@@ -109,7 +119,7 @@ pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
                 "session_focus",
                 options.query.clone(),
                 vec![Scope::Session],
-                session_focus_priority(intent, &options.query),
+                session_focus_priority(intent, &q_lower),
                 options,
             ));
         }
@@ -136,20 +146,59 @@ pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
     dedup_and_limit_queries(planned, 5)
 }
 
-fn query_intent(query: &str) -> QueryIntent {
-    let q = query.to_lowercase();
-    QueryIntent {
-        wants_skill: q.contains("skill"),
-        wants_memory: q.contains("memory") || q.contains("preference") || q.contains("prefer"),
+pub(super) fn planner_trace_evidence(
+    options: &SearchOptions,
+    planned_queries: &[PlannedQuery],
+) -> PlannerTraceEvidence {
+    let selected_scopes = collect_scope_names(planned_queries);
+    let primary_scope = selected_scopes
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "resources".to_string());
+    let reasoning = if options.target_uri.is_some() {
+        "target_uri".to_string()
+    } else if let Some(reason) = filter_routing_reason(options.filter.as_ref()) {
+        reason.to_string()
+    } else if options.session.is_some() && options.target_uri.is_none() {
+        "session_context".to_string()
+    } else {
+        "query_intent".to_string()
+    };
+
+    let filter_reason = filter_routing_reason(options.filter.as_ref())
+        .map(str::to_string)
+        .unwrap_or_else(|| reasoning.clone());
+    PlannerTraceEvidence {
+        scope_decision: crate::models::ScopeDecisionTrace {
+            selected_scopes,
+            primary_scope,
+            reasoning,
+            mixed_intent: planned_queries.len() > 1,
+        },
+        filter_routing_reason: filter_reason,
     }
 }
 
-fn session_focus_priority(intent: QueryIntent, query: &str) -> u8 {
-    let q = query.to_lowercase();
-    let explicit_session_intent = q.contains("recent")
-        || q.contains("conversation")
-        || q.contains("chat")
-        || q.contains("session");
+#[cfg(test)]
+fn query_intent(query: &str) -> QueryIntent {
+    query_intent_lower(&query.to_lowercase())
+}
+
+fn query_intent_lower(q_lower: &str) -> QueryIntent {
+    QueryIntent {
+        wants_skill: q_lower.contains("skill"),
+        wants_memory: q_lower.contains("memory")
+            || q_lower.contains("preference")
+            || q_lower.contains("prefer"),
+    }
+}
+
+// `query` must already be lowercased
+fn session_focus_priority(intent: QueryIntent, query_lower: &str) -> u8 {
+    let explicit_session_intent = query_lower.contains("recent")
+        || query_lower.contains("conversation")
+        || query_lower.contains("chat")
+        || query_lower.contains("session");
     let precision_guard = explicit_session_intent && !intent.wants_skill;
     if precision_guard { 1 } else { 2 }
 }
@@ -191,17 +240,32 @@ fn filter_scope(filter: Option<&SearchFilter>) -> Option<Scope> {
     None
 }
 
+fn filter_routing_reason(filter: Option<&SearchFilter>) -> Option<&'static str> {
+    let filter = filter?;
+    if filter.start_time.is_some() || filter.end_time.is_some() {
+        return Some("event_time_filter");
+    }
+    let kind = filter.kind.as_deref()?;
+    if is_event_kind(kind) {
+        return Some("event_kind_filter");
+    }
+    if is_resource_kind(kind) {
+        return Some("resource_kind_filter");
+    }
+    Some("metadata_filter")
+}
+
 fn is_event_kind(kind: &str) -> bool {
     matches!(
-        Kind::new(kind.to_string()).ok().as_ref().map(Kind::as_str),
-        Some("incident" | "run" | "deploy" | "log" | "trace")
+        kind.trim().to_lowercase().as_str(),
+        "incident" | "run" | "deploy" | "log" | "trace"
     )
 }
 
 fn is_resource_kind(kind: &str) -> bool {
     matches!(
-        Kind::new(kind.to_string()).ok().as_ref().map(Kind::as_str),
-        Some("contract" | "adr" | "runbook" | "repository")
+        kind.trim().to_lowercase().as_str(),
+        "contract" | "adr" | "runbook" | "repository"
     )
 }
 
@@ -216,7 +280,7 @@ fn dedup_and_limit_queries(mut planned: Vec<PlannedQuery>, max_len: usize) -> Ve
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for item in planned {
-        let key = (item.query.to_lowercase(), scope_signature(&item.scopes));
+        let key = (item.query_lower.clone(), scope_signature(&item.scopes));
         if !seen.insert(key) {
             continue;
         }

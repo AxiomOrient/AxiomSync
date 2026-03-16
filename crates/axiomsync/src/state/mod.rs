@@ -7,7 +7,7 @@ use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::Result;
-use crate::models::TraceIndexEntry;
+use crate::models::{MigrationRunRecord, RepairRunRecord, TraceIndexEntry};
 
 mod capabilities;
 mod db;
@@ -18,7 +18,7 @@ mod promotion_checkpoint;
 mod queue;
 mod queue_lane;
 mod resources;
-mod schema;
+pub(crate) mod schema;
 mod search;
 mod sessions;
 
@@ -235,6 +235,168 @@ impl SqliteStateStore {
         })
     }
 
+    fn count_table(&self, table: &'static str) -> Result<usize> {
+        self.with_conn(|conn| {
+            let count = conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get::<_, i64>(0)
+            })?;
+            Ok(usize::try_from(count).unwrap_or(usize::MAX))
+        })
+    }
+
+    pub fn search_document_count(&self) -> Result<usize> {
+        self.count_table("search_docs")
+    }
+
+    pub fn event_count(&self) -> Result<usize> {
+        self.count_table("events")
+    }
+
+    pub fn link_count(&self) -> Result<usize> {
+        self.count_table("links")
+    }
+
+    pub fn trace_count(&self) -> Result<usize> {
+        self.count_table("trace_index")
+    }
+
+    pub fn fts_ready(&self) -> Result<bool> {
+        self.with_conn(|conn| {
+            let ready = conn
+                .query_row(
+                    "SELECT value FROM system_kv WHERE key = 'search_docs_fts_schema_version'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            Ok(ready.is_some())
+        })
+    }
+
+    pub fn record_migration_run(&self, run: &MigrationRunRecord) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                r"
+                INSERT INTO schema_migration_runs(run_id, operation, started_at, finished_at, status, details_json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ON CONFLICT(run_id) DO UPDATE SET
+                  operation = excluded.operation,
+                  started_at = excluded.started_at,
+                  finished_at = excluded.finished_at,
+                  status = excluded.status,
+                  details_json = excluded.details_json
+                ",
+                params![
+                    run.run_id,
+                    run.operation,
+                    run.started_at,
+                    run.finished_at,
+                    run.status,
+                    run.details.as_ref().map(serde_json::to_string).transpose()?,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn list_migration_runs(&self, limit: usize) -> Result<Vec<MigrationRunRecord>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r"
+                SELECT run_id, operation, started_at, finished_at, status, details_json
+                FROM schema_migration_runs
+                ORDER BY started_at DESC, run_id DESC
+                LIMIT ?1
+                ",
+            )?;
+            let rows = stmt.query_map(params![usize_to_i64_saturating(limit)], |row| {
+                let details = row
+                    .get::<_, Option<String>>(5)?
+                    .map(|raw| serde_json::from_str(&raw))
+                    .transpose()
+                    .map_err(|err| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            5,
+                            rusqlite::types::Type::Text,
+                            Box::new(err),
+                        )
+                    })?;
+                Ok(MigrationRunRecord {
+                    run_id: row.get(0)?,
+                    operation: row.get(1)?,
+                    started_at: row.get(2)?,
+                    finished_at: row.get(3)?,
+                    status: row.get(4)?,
+                    details,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(Into::into)
+        })
+    }
+
+    pub fn record_repair_run(&self, run: &RepairRunRecord) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                r"
+                INSERT INTO repair_runs(run_id, repair_type, started_at, finished_at, status, details_json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ON CONFLICT(run_id) DO UPDATE SET
+                  repair_type = excluded.repair_type,
+                  started_at = excluded.started_at,
+                  finished_at = excluded.finished_at,
+                  status = excluded.status,
+                  details_json = excluded.details_json
+                ",
+                params![
+                    run.run_id,
+                    run.repair_type,
+                    run.started_at,
+                    run.finished_at,
+                    run.status,
+                    run.details.as_ref().map(serde_json::to_string).transpose()?,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn list_repair_runs(&self, limit: usize) -> Result<Vec<RepairRunRecord>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r"
+                SELECT run_id, repair_type, started_at, finished_at, status, details_json
+                FROM repair_runs
+                ORDER BY started_at DESC, run_id DESC
+                LIMIT ?1
+                ",
+            )?;
+            let rows = stmt.query_map(params![usize_to_i64_saturating(limit)], |row| {
+                let details = row
+                    .get::<_, Option<String>>(5)?
+                    .map(|raw| serde_json::from_str(&raw))
+                    .transpose()
+                    .map_err(|err| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            5,
+                            rusqlite::types::Type::Text,
+                            Box::new(err),
+                        )
+                    })?;
+                Ok(RepairRunRecord {
+                    run_id: row.get(0)?,
+                    repair_type: row.get(1)?,
+                    started_at: row.get(2)?,
+                    finished_at: row.get(3)?,
+                    status: row.get(4)?,
+                    details,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(Into::into)
+        })
+    }
+
     pub fn upsert_trace_index(&self, entry: &TraceIndexEntry) -> Result<()> {
         self.with_conn(|conn| {
             conn.execute(
@@ -324,7 +486,7 @@ fn escape_sql_like_pattern(raw: &str) -> String {
         .replace('_', "\\_")
 }
 
-fn usize_to_i64_saturating(value: usize) -> i64 {
+pub(super) fn usize_to_i64_saturating(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 

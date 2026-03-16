@@ -20,6 +20,9 @@
 - 런타임은 legacy DB 파일명을 탐색하거나 자동 마이그레이션하지 않는다.
 - Persistence backend는 SQLite로 고정한다.
 - Schema version은 `system_kv.context_schema_version = 'v3'`으로 추적한다.
+- FTS projection version은 `system_kv.search_docs_fts_schema_version` 으로 추적한다.
+- release contract version은 `system_kv.release_contract_version` 으로 추적한다.
+- migration / repair 실행 이력은 `schema_migration_runs`, `repair_runs` 테이블에 기록된다.
 
 ## Retrieval Contract
 - Public query surface:
@@ -31,8 +34,10 @@
 - 기본 검색 스코프는 `resources`다. `events` 스코프는 `target_uri` 명시 또는 쿼리 필터를 통해 접근해야 한다.
 - `search_docs_fts` bootstrap completeness 는 `system_kv.search_docs_fts_schema_version` marker 로 추적할 수 있고, marker 가 없으면 rebuild 가 재시도된다.
 - `FindResult.query_results` 와 `hit_buckets` 가 canonical retrieval result shape 다.
-- JSON surface 는 호환성 때문에 `memories`, `resources`, `skills` 배열을 계속 직렬화한다.
+- 기본 JSON surface 는 canonical only 다.
+- `--compat-json` 사용 시에만 `memories`, `resources`, `skills` 호환 배열이 직렬화된다.
 - `FindResult.memories()`, `resources()`, `skills()` 와 직렬화 호환 배열은 canonical source 가 아니라 `query_results + hit_buckets` 에서 파생된다.
+- trace JSON 은 `scope_decision`, `filter_routing_reason`, `restore_source`, `fts_fallback_used` 필드를 포함한다.
 
 ## Filesystem And Resource Contract
 - `initialize()`
@@ -52,10 +57,18 @@
   - `relation` 필드는 ascii 알파뉴메릭과 `-`, `_`만 허용하며 소문자로 정규화된다.
 - `mount_repo(RepoMountRequest) -> RepoMountReport`
   - 소스 디렉터리를 resources 스코프에 복사하고, ResourceRecord를 생성한다.
-- `export_event_archive(archive_id, EventQuery) -> EventArchiveReport`
-  - 조회된 이벤트를 JSONL 아카이브 파일로 내보낸다.
-  - `RetentionClass::Ephemeral`인 경우 이벤트는 search_docs에서 제거되고 attrs_json이 archive 참조로 교체된다.
+- `plan_event_archive(archive_id, EventQuery, archive_reason?, archived_by?) -> EventArchivePlan`
+- `execute_event_archive(EventArchivePlan) -> EventArchiveReport`
+  - destructive archive 는 plan -> execute 2단계로만 노출된다.
+  - `RetentionClass::Ephemeral`인 경우 execute 시점에 이벤트는 search_docs에서 제거되고 attrs_json이 archive 참조로 교체된다.
   - 조회 결과가 비어 있거나 retention class가 혼재하면 실패한다.
+
+## Operator Command Contract
+- `axiomsync doctor storage --json`
+- `axiomsync doctor retrieval --json`
+- `axiomsync migrate inspect --json`
+- `axiomsync migrate apply --backup-dir <dir> --json`
+- `axiomsync release verify --json`
 
 ## Session And Memory Contract
 - `session(session_id?)`
@@ -98,6 +111,6 @@
 - Historical rollout logs
 
 ## References
-- [Architecture](./ARCHITECTURE.md)
-- [Retrieval Stack](./RETRIEVAL_STACK.md)
-- [Release Checklist](./RELEASE_CHECKLIST.md)
+- [Runtime Architecture](./RUNTIME_ARCHITECTURE.md)
+- [Retrieval Architecture](./RETRIEVAL_ARCHITECTURE.md)
+- [Release Runbook](./RELEASE_RUNBOOK.md)

@@ -10,16 +10,16 @@ use crate::error::{AxiomError, Result};
 use crate::jsonl::{jsonl_all_lines_invalid, parse_jsonl_tolerant};
 use crate::models::{
     BackendStatus, CommitMode, CommitResult, EmbeddingBackendStatus, MemoryPromotionRequest,
-    MemoryPromotionResult, QueueDiagnostics, QueueOverview, RequestLogEntry, SessionInfo,
-    SessionMeta,
+    MemoryPromotionResult, QueueDiagnostics, QueueOverview, RUN_STATUS_SUCCESS, RepairRunRecord,
+    RequestLogEntry, SessionInfo, SessionMeta,
 };
 use crate::queue_policy::default_scope_set;
 use crate::session::Session;
+use crate::state::schema::{INDEX_PROFILE_STAMP_KEY, RUNTIME_RESTORE_SOURCE_KEY};
 use crate::uri::{AxiomUri, Scope};
 
 use super::AxiomSync;
 
-const INDEX_PROFILE_STAMP_KEY: &str = "index_profile_stamp";
 const SEARCH_STACK_VERSION: &str = "drr-memory-v1";
 impl AxiomSync {
     pub fn session(&self, session_id: Option<&str>) -> Session {
@@ -36,8 +36,7 @@ impl AxiomSync {
             .index
             .read()
             .map_err(|_| AxiomError::lock_poisoned("index"))?
-            .all_records()
-            .len();
+            .record_count();
 
         let embed = crate::embedding::embedding_profile();
 
@@ -201,6 +200,7 @@ impl AxiomSync {
     }
 
     pub fn reindex_all(&self) -> Result<()> {
+        let started_at = Utc::now().to_rfc3339();
         self.state.clear_search_index()?;
         self.state.clear_index_state()?;
         {
@@ -224,6 +224,18 @@ impl AxiomSync {
 
         self.state
             .set_system_value(INDEX_PROFILE_STAMP_KEY, &self.current_index_profile_stamp())?;
+        self.state
+            .set_system_value(RUNTIME_RESTORE_SOURCE_KEY, "full_reindex")?;
+        self.state.record_repair_run(&RepairRunRecord {
+            run_id: format!("repair-{}", uuid::Uuid::new_v4().simple()),
+            repair_type: "full_reindex".to_string(),
+            started_at,
+            finished_at: Some(Utc::now().to_rfc3339()),
+            status: RUN_STATUS_SUCCESS.to_string(),
+            details: Some(serde_json::json!({
+                "index_profile_stamp": self.current_index_profile_stamp(),
+            })),
+        })?;
         Ok(())
     }
 
@@ -246,6 +258,11 @@ impl AxiomSync {
         // searchable document restoration only.
         if restored_search_documents == 0 {
             self.reindex_all()?;
+        } else {
+            self.state
+                .set_system_value(INDEX_PROFILE_STAMP_KEY, &current_stamp)?;
+            self.state
+                .set_system_value(RUNTIME_RESTORE_SOURCE_KEY, "state_restore")?;
         }
         Ok(())
     }

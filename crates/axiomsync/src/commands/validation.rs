@@ -46,6 +46,7 @@ pub(super) const fn command_needs_runtime(command: &Commands) -> bool {
         | Commands::Find(_)
         | Commands::Search(_)
         | Commands::Backend
+        | Commands::Doctor(_)
         | Commands::Release(_) => true,
         Commands::Trace(args) => matches!(args.command, crate::cli::TraceCommand::Replay { .. }),
         Commands::Eval(args) => matches!(args.command, crate::cli::EvalCommand::Run { .. }),
@@ -134,6 +135,7 @@ fn validate_benchmark_command(command: &BenchmarkCommand) -> Result<()> {
 
 fn validate_release_command(command: &ReleaseCommand) -> Result<()> {
     match command {
+        ReleaseCommand::Verify { .. } => Ok(()),
         ReleaseCommand::Pack {
             benchmark_window_size,
             benchmark_required_passes,

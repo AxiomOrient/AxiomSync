@@ -5,10 +5,11 @@ use tempfile::tempdir;
 
 use super::validation::command_needs_runtime;
 use crate::cli::{
-    AddArgs, AddWaitModeArg, BenchmarkArgs, BenchmarkCommand, Commands, DocumentArgs,
-    DocumentCommand, DocumentMode, EvalArgs, EvalCommand, EventArgs, EventCommand, FindArgs,
-    LinkArgs, LinkCommand, OntologyArgs, OntologyCommand, QueueArgs, QueueCommand, ReconcileArgs,
-    RelationArgs, RelationCommand, RepoArgs, RepoCommand, TraceArgs, TraceCommand, WebArgs,
+    AddArgs, AddWaitModeArg, BenchmarkArgs, BenchmarkCommand, Commands, DoctorArgs, DoctorCommand,
+    DocumentArgs, DocumentCommand, DocumentMode, EvalArgs, EvalCommand, EventArgs, EventCommand,
+    FindArgs, LinkArgs, LinkCommand, MigrateArgs, MigrateCommand, OntologyArgs, OntologyCommand,
+    QueueArgs, QueueCommand, ReconcileArgs, RelationArgs, RelationCommand, RepoArgs, RepoCommand,
+    TraceArgs, TraceCommand, WebArgs,
 };
 use axiomsync::AxiomSync;
 use axiomsync::models::QueueEventStatus;
@@ -125,6 +126,7 @@ fn find_requires_runtime_prepare() {
         budget_ms: None,
         budget_nodes: None,
         budget_depth: None,
+        compat_json: false,
     });
     assert!(command_needs_runtime(&command));
 }
@@ -200,6 +202,7 @@ fn search_runs_runtime_prepare_for_memory_backend() {
         budget_ms: None,
         budget_nodes: None,
         budget_depth: None,
+        compat_json: false,
     });
     run(&app, temp.path(), command).expect("search");
 
@@ -233,6 +236,7 @@ fn search_preflight_requires_query_or_request_json() {
         budget_ms: None,
         budget_nodes: None,
         budget_depth: None,
+        compat_json: false,
     });
     let err = run(&app, temp.path(), command).expect_err("must reject empty query");
     assert!(
@@ -270,6 +274,7 @@ fn search_accepts_request_json_without_positional_query() {
         budget_ms: None,
         budget_nodes: None,
         budget_depth: None,
+        compat_json: false,
     });
     run(&app, temp.path(), command).expect("search from request json");
 }
@@ -298,6 +303,7 @@ fn search_rejects_invalid_hint_syntax() {
         budget_ms: None,
         budget_nodes: None,
         budget_depth: None,
+        compat_json: false,
     });
     let err = run(&app, temp.path(), command).expect_err("invalid hint must fail");
     assert!(format!("{err:#}").contains("invalid --hint value"));
@@ -551,6 +557,90 @@ fn event_add_command_persists_event() {
 }
 
 #[test]
+fn event_archive_plan_and_execute_commands_roundtrip() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app");
+
+    run(&app, temp.path(), Commands::Init).expect("init");
+    run(
+        &app,
+        temp.path(),
+        Commands::Event(EventArgs {
+            command: EventCommand::Add {
+                event_id: "evt-log-1".to_string(),
+                uri: "axiom://events/acme/logs/1".to_string(),
+                namespace: "acme/platform".to_string(),
+                kind: "log".to_string(),
+                event_time: 1_710_000_000,
+                title: Some("Auth log".to_string()),
+                summary: Some("retry loop".to_string()),
+                severity: None,
+                run_id: None,
+                session_id: None,
+                tags: vec!["oauth".to_string()],
+            },
+        }),
+    )
+    .expect("event add");
+
+    let plan_path = temp.path().join("archive-plan.json");
+    let plan = app
+        .plan_event_archive(
+            "auth-log-archive",
+            axiomsync::models::EventQuery {
+                namespace_prefix: Some("acme".parse().expect("namespace")),
+                kind: Some("log".parse().expect("kind")),
+                start_time: Some(1_709_999_999),
+                end_time: Some(1_710_000_100),
+                limit: Some(10),
+                include_tombstoned: false,
+            },
+            Some("test archive".to_string()),
+            Some("commands-test".to_string()),
+        )
+        .expect("plan");
+    fs::write(
+        &plan_path,
+        serde_json::to_vec_pretty(&plan).expect("serialize plan"),
+    )
+    .expect("write plan");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Event(EventArgs {
+            command: EventCommand::Archive {
+                command: crate::cli::EventArchiveCommand::Execute {
+                    plan_file: plan_path,
+                },
+            },
+        }),
+    )
+    .expect("event archive execute");
+
+    let archived = app
+        .state
+        .query_events(axiomsync::models::EventQuery {
+            namespace_prefix: Some("acme".parse().expect("namespace")),
+            kind: Some("log".parse().expect("kind")),
+            start_time: Some(1_709_999_999),
+            end_time: Some(1_710_000_100),
+            limit: Some(10),
+            include_tombstoned: false,
+        })
+        .expect("query events");
+    assert_eq!(archived.len(), 1);
+    assert_eq!(
+        archived[0]
+            .attrs
+            .get("archived")
+            .and_then(|value| value.get("archive_id"))
+            .and_then(|value| value.as_str()),
+        Some("auth-log-archive")
+    );
+}
+
+#[test]
 fn event_import_command_accepts_json_object_payload() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomSync::new(temp.path()).expect("app");
@@ -778,6 +868,82 @@ fn link_add_command_persists_global_link_record() {
 }
 
 #[test]
+fn doctor_and_release_verify_commands_emit_json_reports() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app");
+
+    run(&app, temp.path(), Commands::Init).expect("init");
+    run(
+        &app,
+        temp.path(),
+        Commands::Doctor(DoctorArgs {
+            command: DoctorCommand::Storage { json: true },
+        }),
+    )
+    .expect("doctor storage");
+    run(
+        &app,
+        temp.path(),
+        Commands::Migrate(MigrateArgs {
+            command: MigrateCommand::Inspect { json: true },
+        }),
+    )
+    .expect("migrate inspect");
+    run(
+        &app,
+        temp.path(),
+        Commands::Release(crate::cli::ReleaseArgs {
+            command: crate::cli::ReleaseCommand::Verify {
+                enforce: false,
+                json: true,
+            },
+        }),
+    )
+    .expect("release verify");
+
+    let storage = app.doctor_storage().expect("doctor storage report");
+    assert!(storage.context_schema_version.is_some());
+    assert!(storage.search_docs_fts_schema_version.is_some());
+    assert!(storage.release_contract_version.is_some());
+}
+
+#[test]
+fn doctor_and_migrate_commands_require_json_flag() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app");
+
+    run(&app, temp.path(), Commands::Init).expect("init");
+
+    let doctor_err = run(
+        &app,
+        temp.path(),
+        Commands::Doctor(DoctorArgs {
+            command: DoctorCommand::Storage { json: false },
+        }),
+    )
+    .expect_err("doctor without json must fail");
+    assert!(
+        doctor_err
+            .to_string()
+            .contains("doctor storage requires --json")
+    );
+
+    let migrate_err = run(
+        &app,
+        temp.path(),
+        Commands::Migrate(MigrateArgs {
+            command: MigrateCommand::Inspect { json: false },
+        }),
+    )
+    .expect_err("migrate without json must fail");
+    assert!(
+        migrate_err
+            .to_string()
+            .contains("migrate inspect requires --json")
+    );
+}
+
+#[test]
 fn init_bootstraps_required_scope_directories() {
     // Given a fresh root.
     // When running `init`.
@@ -808,6 +974,7 @@ fn find_runs_runtime_prepare_and_generates_root_tiers() {
         budget_ms: None,
         budget_nodes: None,
         budget_depth: None,
+        compat_json: false,
     });
     run(&app, temp.path(), command).expect("find");
 

@@ -13,7 +13,6 @@
 ## Common Commands
 ```bash
 cargo run -p axiomsync -- --help
-process-compose --log-file logs/process-compose.log -f process-compose.yaml up
 bash scripts/quality_gates.sh
 ```
 
@@ -21,4 +20,4 @@ bash scripts/quality_gates.sh
 - Start with [../README.md](../README.md)
 - Runtime boundary: [`axiomsync`](./axiomsync/README.md)
 - Runtime and CLI boundary: [`axiomsync`](./axiomsync/README.md)
-- Contracts and architecture: [../docs/README.md](../docs/README.md)
+- Contracts and architecture: [../docs/INDEX.md](../docs/INDEX.md)

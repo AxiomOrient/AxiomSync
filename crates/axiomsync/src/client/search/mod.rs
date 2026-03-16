@@ -19,8 +19,10 @@ use crate::om::{
     materialize_search_visible_snapshot, resolve_canonical_thread_id,
 };
 use crate::om_bridge::OmHintReadStateV1;
+use crate::retrieval::trace::{TRACE_RESTORE_SOURCE_UNKNOWN, build_trace_execution_context};
 use crate::session::resolve_om_scope_binding_for_session_with_config;
 use crate::state::OmActiveEntry;
+use crate::state::schema::RUNTIME_RESTORE_SOURCE_KEY;
 use crate::uri::AxiomUri;
 
 use super::AxiomSync;
@@ -32,8 +34,9 @@ mod snapshot;
 mod telemetry;
 
 use result::{
-    annotate_trace_relation_metrics, annotate_typed_edge_query_plan_visibility, budget_to_json,
-    metadata_filter_to_search_filter, normalize_budget,
+    annotate_trace_execution_context, annotate_trace_relation_metrics,
+    annotate_typed_edge_query_plan_visibility, budget_to_json, metadata_filter_to_search_filter,
+    normalize_budget,
 };
 use snapshot::{
     build_snapshot_activated_entries, build_snapshot_buffered_entries,
@@ -210,10 +213,18 @@ impl AxiomSync {
                 request_type: "find",
             });
 
-            let mut result = self.run_retrieval_memory_only(&options)?;
+            let execution = self.run_retrieval_memory_only_with_metadata(&options)?;
+            let mut result = execution.result;
             self.enrich_find_result_relations(&mut result, 5, typed_edge_enrichment)?;
             annotate_trace_relation_metrics(&mut result);
             annotate_typed_edge_query_plan_visibility(&mut result, typed_edge_enrichment);
+            annotate_trace_execution_context(
+                &mut result,
+                &build_trace_execution_context(
+                    self.current_restore_source()?,
+                    execution.metadata.fts_fallback_used,
+                ),
+            );
             self.persist_trace_result(&mut result)?;
             Ok(result)
         })();
@@ -499,11 +510,19 @@ impl AxiomSync {
                 request_type: "search",
             });
 
-            let mut result = self.run_retrieval_memory_only(&options)?;
+            let execution = self.run_retrieval_memory_only_with_metadata(&options)?;
+            let mut result = execution.result;
             self.enrich_find_result_relations(&mut result, 5, typed_edge_enrichment)?;
             annotate_trace_relation_metrics(&mut result);
             annotate_typed_edge_query_plan_visibility(&mut result, typed_edge_enrichment);
             annotate_om_query_plan_visibility(&mut result, &om_metrics, hint_policy);
+            annotate_trace_execution_context(
+                &mut result,
+                &build_trace_execution_context(
+                    self.current_restore_source()?,
+                    execution.metadata.fts_fallback_used,
+                ),
+            );
             self.persist_trace_result(&mut result)?;
             Ok(result)
         })();
@@ -645,6 +664,13 @@ impl AxiomSync {
             &record,
             preferred_thread_id.as_deref(),
         )?))
+    }
+
+    fn current_restore_source(&self) -> Result<String> {
+        Ok(self
+            .state
+            .get_system_value(RUNTIME_RESTORE_SOURCE_KEY)?
+            .unwrap_or_else(|| TRACE_RESTORE_SOURCE_UNKNOWN.to_string()))
     }
 
     fn fetch_session_om_hint_snapshot_with_enabled(

@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
 use axiomsync::error::AxiomError;
-use axiomsync::models::QueueStatus;
+use axiomsync::models::{FindResult, FindResultCompatView, QueueStatus};
 use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
@@ -12,6 +12,8 @@ const FIXED_TRACE_ID: &str = "00000000-0000-0000-0000-000000000000";
 #[serde(deny_unknown_fields)]
 struct CoreContractFixture {
     queue_status: QueueStatus,
+    canonical_find_result: FindResult,
+    compat_find_result: FindResultCompatView,
     error_payload_invalid_uri: Value,
 }
 
@@ -78,4 +80,46 @@ fn error_payload_fixture_matches_invalid_uri_contract() {
         "details must be omitted when empty"
     );
     assert_eq!(serialized, fixture.error_payload_invalid_uri);
+}
+
+#[test]
+fn canonical_find_result_fixture_matches_contract_shape() {
+    let fixture = load_fixture();
+    let raw = load_fixture_raw_value();
+    let raw_section = fixture_section(&raw, "canonical_find_result");
+
+    let serialized =
+        serde_json::to_value(&fixture.canonical_find_result).expect("serialize canonical find");
+    assert!(raw_section.get("query_plan").is_some());
+    assert!(raw_section.get("query_results").is_some());
+    assert!(raw_section.get("hit_buckets").is_some());
+    assert!(raw_section.get("memories").is_none());
+    assert!(raw_section.get("resources").is_none());
+    assert!(raw_section.get("skills").is_none());
+    assert!(serialized.get("memories").is_none());
+    assert!(serialized.get("resources").is_none());
+    assert!(serialized.get("skills").is_none());
+    assert!(serialized.get("query_plan").is_some());
+    assert!(serialized.get("query_results").is_some());
+    assert!(serialized.get("hit_buckets").is_some());
+}
+
+#[test]
+fn compat_find_result_fixture_preserves_legacy_arrays() {
+    let fixture = load_fixture();
+    let raw = load_fixture_raw_value();
+    let raw_section = fixture_section(&raw, "compat_find_result");
+
+    let serialized =
+        serde_json::to_value(&fixture.compat_find_result).expect("serialize compat find");
+    assert!(raw_section["memories"].is_array());
+    assert!(raw_section["resources"].is_array());
+    assert!(raw_section["skills"].is_array());
+    assert!(raw_section.get("query_plan").is_some());
+    assert!(raw_section.get("query_results").is_some());
+    assert!(serialized["memories"].is_array());
+    assert!(serialized["resources"].is_array());
+    assert!(serialized["skills"].is_array());
+    assert!(serialized.get("query_plan").is_some());
+    assert!(serialized.get("query_results").is_some());
 }

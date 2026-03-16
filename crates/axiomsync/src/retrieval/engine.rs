@@ -6,19 +6,21 @@ use uuid::Uuid;
 
 use crate::index::InMemoryIndex;
 use crate::models::{
-    ContextHit, FindResult, QueryPlan, RetrievalStep, RetrievalTrace, SearchOptions, TracePoint,
-    TraceStats,
+    ContextHit, FindResult, QueryPlan, RetrievalStep, SearchOptions, TracePoint, TraceStats,
 };
 
 use super::budget::{ResolvedBudget, resolve_budget};
 use super::config::DrrConfig;
 use super::expansion::run_single_query;
-use super::planner::{PlannedQuery, collect_scope_names, is_om_hint, plan_queries};
+use super::planner::{
+    PlannedQuery, collect_scope_names, is_om_hint, plan_queries, planner_trace_evidence,
+};
 use super::scoring::{
     fanout_priority_weight, merge_hits, merge_trace_points, scale_hit_scores,
     scale_trace_point_scores, sort_hits_by_score_desc_uri_asc, sorted_trace_points,
     tokenize_keywords, typed_query_plans,
 };
+use super::trace::{TraceBuildInput, TraceExecutionContext, build_retrieval_trace};
 
 #[derive(Debug, Clone)]
 pub struct DrrEngine {
@@ -37,6 +39,7 @@ impl DrrEngine {
         let start = Instant::now();
         let trace_id = Uuid::new_v4().to_string();
         let planned_queries = plan_queries(options);
+        let trace_evidence = planner_trace_evidence(options, &planned_queries);
         let request_budget = resolve_budget(&self.config, options.budget.as_ref());
         let fanout = execute_planned_queries(
             &self.config,
@@ -61,7 +64,7 @@ impl DrrEngine {
         let start_points = sorted_trace_points(fanout.merged_start_points);
         let stop_reason = build_stop_reason(&fanout.stop_reasons);
 
-        let trace = RetrievalTrace {
+        let trace = build_retrieval_trace(TraceBuildInput {
             trace_id,
             request_type: options.request_type.clone(),
             query: options.query.clone(),
@@ -78,7 +81,9 @@ impl DrrEngine {
                 relation_enriched_hits: 0,
                 relation_enriched_links: 0,
             },
-        };
+            planner_evidence: trace_evidence,
+            execution_context: TraceExecutionContext::default(),
+        });
 
         let notes = build_query_notes(options, request_budget, planned_queries.len());
         FindResult::new(

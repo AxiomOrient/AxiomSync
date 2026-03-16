@@ -4,10 +4,12 @@ use clap::{Parser, Subcommand};
 
 mod args;
 mod benchmark;
+mod doctor;
 mod document;
 mod eval;
 mod event;
 mod link;
+mod migrate;
 mod ontology;
 mod parsers;
 mod queue;
@@ -26,10 +28,12 @@ pub use args::{
     ReconcileArgs, RemoveArgs, SearchArgs, UriArg, WebArgs,
 };
 pub use benchmark::{BenchmarkArgs, BenchmarkCommand, BenchmarkFixtureCommand};
+pub use doctor::{DoctorArgs, DoctorCommand};
 pub use document::{DocumentArgs, DocumentCommand, DocumentMode};
 pub use eval::{EvalArgs, EvalCommand, EvalGoldenCommand};
-pub use event::{EventArgs, EventCommand};
+pub use event::{EventArchiveCommand, EventArgs, EventCommand};
 pub use link::{LinkArgs, LinkCommand};
+pub use migrate::{MigrateArgs, MigrateCommand};
 pub use ontology::{OntologyArgs, OntologyCommand};
 pub use queue::{QueueArgs, QueueCommand};
 pub use relation::{RelationArgs, RelationCommand};
@@ -66,6 +70,8 @@ pub enum Commands {
     Document(DocumentArgs),
     Find(FindArgs),
     Search(SearchArgs),
+    Doctor(DoctorArgs),
+    Migrate(MigrateArgs),
     Repo(RepoArgs),
     Event(EventArgs),
     Link(LinkArgs),

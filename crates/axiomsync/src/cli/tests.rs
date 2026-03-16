@@ -798,6 +798,70 @@ fn search_parses_score_and_min_match_options() {
 }
 
 #[test]
+fn search_parses_compat_json_flag() {
+    let cli =
+        Cli::try_parse_from(["axiomsync", "search", "oauth", "--compat-json"]).expect("parse");
+
+    match cli.command {
+        Commands::Search(SearchArgs { compat_json, .. }) => {
+            assert!(compat_json);
+        }
+        _ => panic!("expected search command"),
+    }
+}
+
+#[test]
+fn doctor_storage_parses() {
+    let cli = Cli::try_parse_from(["axiomsync", "doctor", "storage"]).expect("parse");
+    match cli.command {
+        Commands::Doctor(DoctorArgs {
+            command: DoctorCommand::Storage { json },
+        }) => {
+            assert!(!json);
+        }
+        _ => panic!("expected doctor storage command"),
+    }
+}
+
+#[test]
+fn migrate_apply_parses_backup_dir() {
+    let cli = Cli::try_parse_from([
+        "axiomsync",
+        "migrate",
+        "apply",
+        "--backup-dir",
+        "/tmp/backup",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Migrate(MigrateArgs {
+            command: MigrateCommand::Apply { backup_dir, json },
+        }) => {
+            assert_eq!(
+                backup_dir.as_deref().and_then(|p| p.to_str()),
+                Some("/tmp/backup")
+            );
+            assert!(!json);
+        }
+        _ => panic!("expected migrate apply command"),
+    }
+}
+
+#[test]
+fn release_verify_parses_enforce() {
+    let cli = Cli::try_parse_from(["axiomsync", "release", "verify", "--enforce"]).expect("parse");
+    match cli.command {
+        Commands::Release(ReleaseArgs {
+            command: ReleaseCommand::Verify { enforce, json },
+        }) => {
+            assert!(enforce);
+            assert!(!json);
+        }
+        _ => panic!("expected release verify command"),
+    }
+}
+
+#[test]
 fn search_parses_filter_and_runtime_hint_flags() {
     let cli = Cli::try_parse_from([
         "axiomsync",

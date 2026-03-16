@@ -8,7 +8,7 @@ use super::planner::PlannedQuery;
 
 const MAX_SNIPPET_CHARS: usize = 240;
 
-pub(super) fn make_hit(
+pub(crate) fn make_hit(
     record: &crate::models::IndexRecord,
     score: f32,
     query: &str,

@@ -34,7 +34,7 @@ pub use eval::{
     EvalGoldenDocument, EvalGoldenMergeReport, EvalLoopReport, EvalQualitySummary, EvalQueryCase,
     EvalRunOptions, EvalRunSelection,
 };
-pub use event::{AddEventRequest, EventArchiveReport, EventQuery, EventRecord};
+pub use event::{AddEventRequest, EventArchivePlan, EventArchiveReport, EventQuery, EventRecord};
 pub use filesystem::{
     AddResourceIngestOptions, AddResourceRequest, AddResourceResult, AddResourceWaitMode, Entry,
     GlobResult, MarkdownDocument, MarkdownSaveResult, TreeNode, TreeResult,
@@ -53,25 +53,28 @@ pub use release::{
     BenchmarkGateDetails, BlockerRollupGateDetails, BuildQualityGateDetails, CommandProbeResult,
     ContractIntegrityGateDetails, DependencyAuditStatus, DependencyAuditSummary,
     DependencyInventorySummary, EpisodicSemverPolicy, EpisodicSemverProbeResult,
-    EvalQualityGateDetails, EvidenceStatus, OntologyContractPolicy, OntologyContractProbeResult,
+    EvalQualityGateDetails, EvidenceStatus, MigrationApplyReport, MigrationInspectReport,
+    MigrationRunRecord, OntologyContractPolicy, OntologyContractProbeResult,
     OntologyInvariantCheckSummary, OntologySchemaCardinality, OntologySchemaVersionProbe,
     OperabilityCoverage, OperabilityEvidenceCheck, OperabilityEvidenceReport,
-    OperabilityGateDetails, OperabilitySampleWindow, ReleaseCheckDocument,
-    ReleaseCheckEmbeddingMetadata, ReleaseCheckRunSummary, ReleaseCheckThresholds,
-    ReleaseGateDecision, ReleaseGateDetails, ReleaseGateId, ReleaseGatePackReport,
-    ReleaseGateStatus, ReliabilityEvidenceCheck, ReliabilityEvidenceReport, ReliabilityGateDetails,
-    ReliabilityQueueDelta, ReliabilityReplayPlan, ReliabilityReplayProgress,
-    ReliabilitySearchProbe, SecurityAuditCheck, SecurityAuditGateDetails, SecurityAuditReport,
-    SessionMemoryGateDetails,
+    OperabilityGateDetails, OperabilitySampleWindow, RUN_STATUS_FAILED, RUN_STATUS_SUCCESS,
+    ReleaseCheckDocument, ReleaseCheckEmbeddingMetadata, ReleaseCheckRunSummary,
+    ReleaseCheckThresholds, ReleaseGateDecision, ReleaseGateDetails, ReleaseGateId,
+    ReleaseGatePackReport, ReleaseGateStatus, ReleaseVerifyReport, ReliabilityEvidenceCheck,
+    ReliabilityEvidenceReport, ReliabilityGateDetails, ReliabilityQueueDelta,
+    ReliabilityReplayPlan, ReliabilityReplayProgress, ReliabilitySearchProbe, RepairRunRecord,
+    RetrievalDoctorReport, SecurityAuditCheck, SecurityAuditGateDetails, SecurityAuditReport,
+    SessionMemoryGateDetails, StorageDoctorReport,
 };
 pub use resource::{
     RepoMountReport, RepoMountRequest, ResourceQuery, ResourceRecord, UpsertResource,
 };
 pub use search::{
-    BackendStatus, ContextHit, EmbeddingBackendStatus, FindResult, HitBuckets, IndexRecord,
-    MetadataFilter, QueryPlan, RelationLink, RelationSummary, RetrievalStep, RetrievalTrace,
-    RuntimeHint, RuntimeHintKind, ScoreComponents, SearchBudget, SearchFilter, SearchOptions,
-    SearchRequest, TracePoint, TraceStats, TypedQueryPlan, classify_hit_buckets,
+    BackendStatus, ContextHit, EmbeddingBackendStatus, FindResult, FindResultCompatView,
+    HitBuckets, IndexRecord, MetadataFilter, QueryPlan, RESTORE_SOURCE_UNKNOWN, RelationLink,
+    RelationSummary, RetrievalStep, RetrievalTrace, RuntimeHint, RuntimeHintKind,
+    ScopeDecisionTrace, ScoreComponents, SearchBudget, SearchFilter, SearchOptions, SearchRequest,
+    TracePoint, TraceStats, TypedQueryPlan, classify_hit_buckets,
 };
 pub use session::{
     CommitMode, CommitResult, CommitStats, ContextUsage, MemoryCandidate, MemoryCategory,

@@ -1,4 +1,4 @@
-# Release Checklist
+# Release Runbook
 
 이 문서는 릴리스 오너가 지금 저장소에서 실제로 따라야 하는 최소 절차만 적습니다.
 
@@ -11,11 +11,19 @@
 ## Required Gates
 ```bash
 bash scripts/quality_gates.sh
+axiomsync doctor storage --json
+axiomsync doctor retrieval --json
+axiomsync migrate inspect --json
+axiomsync release verify --json
 bash scripts/release_pack_strict_gate.sh --workspace-dir "$(pwd)"
 ```
 
 ## Release Decision Rules
-- `quality_gates.sh` 는 포맷, clippy, workspace tests, dependency audit, mirror notice smoke 를 통과해야 한다.
+- `quality_gates.sh` 는 prohibited token scan, 포맷, clippy, workspace tests, dependency audit 를 통과해야 한다.
+- `doctor storage --json` 은 schema / fts / release contract version 이 모두 채워져야 한다.
+- `doctor retrieval --json` 은 runtime index 상태와 FTS readiness 를 노출해야 한다.
+- `migrate inspect --json` 은 pending action 이 비어 있거나 허용 가능한 수준인지 확인해야 한다.
+- `release verify --json` 은 schema/index/fts/version 상태를 모두 포함해야 한다.
 - `release_pack_strict_gate.sh` 는 `release pack --enforce` 를 실행하고 JSON 보고서의 `.passed == true` 여야 한다.
 - 둘 중 하나라도 실패하면 출시하지 않는다.
 
@@ -26,9 +34,11 @@ bash scripts/release_pack_strict_gate.sh --workspace-dir "$(pwd)"
 
 ## Retrieval-Specific Checks In This Release Line
 - `FindResult.query_results + hit_buckets` 가 canonical result shape 인지 확인한다.
-- JSON 응답에 `memories`, `resources`, `skills` 호환 배열이 계속 직렬화되는지 확인한다.
+- 기본 JSON 응답에는 `memories`, `resources`, `skills` 호환 배열이 없어야 한다.
+- `--compat-json` 사용 시에만 호환 배열이 직렬화되는지 확인한다.
 - repo mount 이후 파일 인덱싱 결과가 namespace 필터에서 보이는지 확인한다.
 - `repo mount` 기본 동작이 인덱싱 완료까지 기다리는지 확인한다.
+- trace JSON 에 `scope_decision`, `filter_routing_reason`, `restore_source`, `fts_fallback_used` 가 포함되는지 확인한다.
 
 ## Do Not Ignore
 - legacy DB 파일명 탐색이나 자동 마이그레이션은 지원하지 않는다.

@@ -6,10 +6,14 @@ use crate::models::{QueueEventStatus, ReconcileRunStatus};
 
 use super::SqliteStateStore;
 
-const SEARCH_DOCS_FTS_SCHEMA_VERSION_KEY: &str = "search_docs_fts_schema_version";
-const SEARCH_DOCS_FTS_SCHEMA_VERSION: &str = "fts5-v1";
-const CONTEXT_SCHEMA_VERSION_KEY: &str = "context_schema_version";
-const CONTEXT_SCHEMA_VERSION: &str = "v3";
+pub(crate) const SEARCH_DOCS_FTS_SCHEMA_VERSION_KEY: &str = "search_docs_fts_schema_version";
+pub(crate) const SEARCH_DOCS_FTS_SCHEMA_VERSION: &str = "fts5-v1";
+pub(crate) const CONTEXT_SCHEMA_VERSION_KEY: &str = "context_schema_version";
+pub(crate) const CONTEXT_SCHEMA_VERSION: &str = "v3";
+pub(crate) const RELEASE_CONTRACT_VERSION_KEY: &str = "release_contract_version";
+pub(crate) const RELEASE_CONTRACT_VERSION: &str = "v1";
+pub(crate) const INDEX_PROFILE_STAMP_KEY: &str = "index_profile_stamp";
+pub(crate) const RUNTIME_RESTORE_SOURCE_KEY: &str = "runtime_restore_source";
 
 const STATE_SCHEMA_SQL: &str = r"
     PRAGMA journal_mode = WAL;
@@ -64,6 +68,24 @@ const STATE_SCHEMA_SQL: &str = r"
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS schema_migration_runs (
+        run_id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        status TEXT NOT NULL,
+        details_json TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS repair_runs (
+        run_id TEXT PRIMARY KEY,
+        repair_type TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        status TEXT NOT NULL,
+        details_json TEXT
     );
 
     CREATE TABLE IF NOT EXISTS search_docs (
@@ -303,6 +325,7 @@ impl SqliteStateStore {
         )?;
         ensure_context_schema(&conn)?;
         ensure_search_docs_fts_bootstrapped(&conn)?;
+        ensure_release_contract_version(&conn)?;
         Ok(())
     }
 }
@@ -381,19 +404,10 @@ fn ensure_search_docs_fts_bootstrapped(conn: &Connection) -> Result<()> {
         "INSERT INTO search_docs_fts(search_docs_fts) VALUES ('rebuild')",
         [],
     )?;
-    conn.execute(
-        r"
-        INSERT INTO system_kv(key, value, updated_at)
-        VALUES (?1, ?2, ?3)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-        ",
-        params![
-            SEARCH_DOCS_FTS_SCHEMA_VERSION_KEY,
-            SEARCH_DOCS_FTS_SCHEMA_VERSION,
-            Utc::now().to_rfc3339(),
-        ],
+    set_kv_on_conn(
+        conn,
+        SEARCH_DOCS_FTS_SCHEMA_VERSION_KEY,
+        SEARCH_DOCS_FTS_SCHEMA_VERSION,
     )?;
     Ok(())
 }
@@ -479,6 +493,15 @@ fn ensure_context_schema(conn: &Connection) -> Result<()> {
         ",
     )?;
 
+    set_kv_on_conn(conn, CONTEXT_SCHEMA_VERSION_KEY, CONTEXT_SCHEMA_VERSION)?;
+    Ok(())
+}
+
+fn ensure_release_contract_version(conn: &Connection) -> Result<()> {
+    set_kv_on_conn(conn, RELEASE_CONTRACT_VERSION_KEY, RELEASE_CONTRACT_VERSION)
+}
+
+fn set_kv_on_conn(conn: &Connection, key: &str, value: &str) -> Result<()> {
     conn.execute(
         r"
         INSERT INTO system_kv(key, value, updated_at)
@@ -487,11 +510,7 @@ fn ensure_context_schema(conn: &Connection) -> Result<()> {
           value = excluded.value,
           updated_at = excluded.updated_at
         ",
-        params![
-            CONTEXT_SCHEMA_VERSION_KEY,
-            CONTEXT_SCHEMA_VERSION,
-            Utc::now().to_rfc3339(),
-        ],
+        params![key, value, Utc::now().to_rfc3339()],
     )?;
     Ok(())
 }

@@ -5,3 +5,4 @@ mod evidence_service;
 mod pack_service;
 mod reliability_service;
 mod security_service;
+mod verify_service;

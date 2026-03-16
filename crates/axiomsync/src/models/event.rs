@@ -67,11 +67,34 @@ pub struct EventQuery {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventArchiveReport {
+    pub archive_plan_id: String,
     pub archive_id: String,
     pub event_count: usize,
     pub namespace_prefix: Option<NamespaceKey>,
     pub kind: Option<Kind>,
     pub retention: RetentionClass,
     pub object_uri: AxiomUri,
+    pub archive_reason: Option<String>,
+    pub archived_by: Option<String>,
+    pub archive_generated_at: i64,
     pub exported_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventArchivePlan {
+    pub archive_plan_id: String,
+    pub archive_id: String,
+    pub event_count: usize,
+    pub namespace_prefix: Option<NamespaceKey>,
+    pub kind: Option<Kind>,
+    pub retention: RetentionClass,
+    pub object_uri: AxiomUri,
+    pub query: EventQuery,
+    #[serde(default)]
+    pub event_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_by: Option<String>,
+    pub archive_generated_at: i64,
 }

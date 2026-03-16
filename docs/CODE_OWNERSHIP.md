@@ -1,4 +1,4 @@
-# Ownership Map
+# Code Ownership
 
 문제를 어디서 시작할지 빠르게 정하는 문서입니다.
 
@@ -10,7 +10,11 @@
 
 ## Core Runtime
 - `src/client.rs`
-- `src/client/facade_v3.rs`
+- `src/client/facade.rs`
+- `src/client/event.rs`
+- `src/client/link.rs`
+- `src/client/repo.rs`
+- `src/client/archive.rs`
 - `src/fs.rs`
 - `src/uri.rs`
 - `src/ingest/*`
@@ -53,7 +57,6 @@
 - `src/security_audit.rs`
 - `scripts/quality_gates.sh`
 - `scripts/release_pack_strict_gate.sh`
-- `scripts/perf_regression_gate.sh`
 - 책임: CLI, benchmark/eval, trace, audit, release gate
 
 ## Vendored OM
@@ -94,7 +97,7 @@
 |---|---|---|
 | URI / filesystem / state correctness | core runtime | shared model/config |
 | search quality / restore / reindex / performance | core runtime | ops/lab for benchmark evidence |
-| v3 event/link/resource ingestion | core runtime (`facade_v3.rs`, `state/events.rs` 등) | shared model/config for model shape |
+| v3 event/link/resource ingestion | core runtime (`facade.rs`, `event.rs`, `state/events.rs` 등) | shared model/config for model shape |
 | benchmark / eval / trace / release evidence | ops/lab | core runtime if hot path root cause exists |
 | OM contract / transform semantics | vendored OM | core runtime only for integration seams |
 | cross-cutting config or model shape | shared model/config | owning runtime or ops boundary |

@@ -185,6 +185,11 @@ impl InMemoryIndex {
     }
 
     #[must_use]
+    pub fn record_count(&self) -> usize {
+        self.records.len()
+    }
+
+    #[must_use]
     pub fn all_records(&self) -> Vec<IndexRecord> {
         let mut out: Vec<_> = self.records.values().cloned().collect();
         out.sort_by(|a, b| a.uri.cmp(&b.uri));
@@ -243,6 +248,12 @@ impl InMemoryIndex {
         filter::record_matches_filter(record, filter, |normalized_filter| {
             self.has_matching_leaf_descendant(&record.uri, normalized_filter)
         })
+    }
+
+    #[must_use]
+    pub fn leaf_record_matches_filter(record: &IndexRecord, filter: Option<&SearchFilter>) -> bool {
+        filter::normalize_filter(filter)
+            .is_none_or(|normalized_filter| filter::leaf_matches_filter(record, &normalized_filter))
     }
 
     #[must_use]

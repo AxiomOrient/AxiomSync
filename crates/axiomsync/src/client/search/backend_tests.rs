@@ -124,7 +124,7 @@ fn memory_backend_reads_in_memory_index() {
     }
 
     let result = app
-        .run_retrieval_memory_only(&SearchOptions {
+        .run_retrieval_memory_only_with_metadata(&SearchOptions {
             query: "sqlite".to_string(),
             target_uri: Some(
                 crate::uri::AxiomUri::parse("axiom://resources").expect("target parse"),
@@ -138,7 +138,8 @@ fn memory_backend_reads_in_memory_index() {
             filter: None,
             request_type: "search".to_string(),
         })
-        .expect("memory retrieval");
+        .expect("memory retrieval")
+        .result;
 
     assert!(
         result
@@ -166,8 +167,9 @@ fn memory_backend_returns_hits_for_in_memory_records() {
     );
 
     let result = app
-        .run_retrieval_memory_only(&search_options("memory"))
-        .expect("memory retrieval");
+        .run_retrieval_memory_only_with_metadata(&search_options("memory"))
+        .expect("memory retrieval")
+        .result;
     assert!(!result.query_results.is_empty());
 }
 
@@ -189,8 +191,9 @@ fn memory_backend_policy_note_is_explicit() {
     );
 
     let result = app
-        .run_retrieval_memory_only(&search_options("fallback"))
-        .expect("memory retrieval");
+        .run_retrieval_memory_only_with_metadata(&search_options("fallback"))
+        .expect("memory retrieval")
+        .result;
     assert!(
         result
             .query_results
@@ -200,6 +203,99 @@ fn memory_backend_policy_note_is_explicit() {
     let notes = &result.query_plan.notes;
     assert!(notes.iter().any(|x| x == "backend_policy:memory_only"));
     assert!(notes.iter().any(|x| x == "backend:memory"));
+}
+
+#[test]
+fn find_uses_fts_fallback_when_state_has_hits_but_memory_index_drifted() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app");
+    app.initialize().expect("init");
+
+    let record = IndexRecord {
+        id: "sqlite-drift-only".to_string(),
+        uri: "axiom://resources/sqlite-drift-only.md".to_string(),
+        parent_uri: Some("axiom://resources".to_string()),
+        is_leaf: true,
+        context_type: "resource".to_string(),
+        name: "sqlite-drift-only.md".to_string(),
+        abstract_text: "sqlite drift fallback".to_string(),
+        content: "oauth sqlite fallback evidence".to_string(),
+        tags: vec!["sqlite".to_string(), "doc_class:runbook".to_string()],
+        updated_at: Utc::now(),
+        depth: 1,
+    };
+    app.state
+        .persist_search_document(&record)
+        .expect("persist search doc");
+
+    let result = app
+        .find(
+            "oauth sqlite fallback",
+            Some("axiom://resources"),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("find");
+
+    assert!(
+        result
+            .query_results
+            .iter()
+            .any(|hit| hit.uri == "axiom://resources/sqlite-drift-only.md")
+    );
+    assert!(result.trace.as_ref().expect("trace").fts_fallback_used);
+    assert!(
+        result
+            .query_plan
+            .notes
+            .iter()
+            .any(|note| note == "fts_fallback:1")
+    );
+}
+
+#[test]
+fn search_trace_marks_mixed_intent_when_session_context_expands_plan() {
+    let (_temp, app) = setup_test_app();
+    upsert_records(
+        &app,
+        &[
+            resources_root_record("root-mixed-intent"),
+            resources_leaf_record(
+                "leaf-mixed-intent",
+                "mixed-intent.md",
+                "session oauth note",
+                "session memory and resource retrieval overlap",
+                &["session", "oauth"],
+            ),
+        ],
+    );
+
+    let session = app.session(Some("s-mixed-intent"));
+    session.load().expect("session load");
+    session
+        .add_message("user", "remember the oauth runbook from this session")
+        .expect("session message");
+
+    let result = app
+        .search(
+            "oauth runbook",
+            None,
+            Some("s-mixed-intent"),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("search");
+
+    assert!(
+        result
+            .trace
+            .as_ref()
+            .expect("trace")
+            .scope_decision
+            .mixed_intent
+    );
 }
 
 #[test]

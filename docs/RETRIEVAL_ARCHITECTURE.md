@@ -1,4 +1,4 @@
-# Retrieval Stack
+# Retrieval Architecture
 
 이 문서는 검색 경로의 source of truth 를 짧게 고정합니다.
 
@@ -56,14 +56,35 @@
 - `SearchFilter.kind=incident|run|deploy|log|trace` 이면 planner 는 `events` 를 primary scope 로 잡는다.
 - `SearchFilter.kind=contract|adr|runbook|repository` 이면 planner 는 `resources` 를 primary scope 로 잡는다.
 - `SearchFilter.kind` / `SearchFilter.namespace_prefix` / `SearchFilter.start_time` / `SearchFilter.end_time` 필터는 in-memory index의 tag 기반 필터링과 SQLite FTS filtered query 모두에서 적용된다.
-- 상세 규칙과 최근 회귀 분석은 [RETRIEVAL_PLANNER_RULES.md](./RETRIEVAL_PLANNER_RULES.md) 를 따른다.
+- 상세 규칙과 최근 회귀 분석은 이 문서의 `Planner Rules` 섹션을 따른다.
 
 ## Compatibility Surface
 - `FindResult.query_results` 가 canonical ordered hit list 다.
 - `FindResult.hit_buckets` 가 hit category 의 canonical index map 이다.
-- JSON 응답은 호환성을 위해 `memories`, `resources`, `skills` 배열도 계속 직렬화한다.
+- 기본 JSON 응답은 canonical only 다.
+- `--compat-json` 사용 시에만 `memories`, `resources`, `skills` 호환 배열이 직렬화된다.
 - `FindResult.memories()`, `resources()`, `skills()` 는 derived iterator view 다.
 - derived view 와 JSON compatibility 배열은 독립 source of truth 가 아니라 `query_results + hit_buckets` 에서 파생된다.
+
+## Planner Rules
+planner 는 아래 순서로 primary scope 를 정한다.
+
+1. `target_uri`
+2. `SearchFilter`
+3. query intent
+4. default fallback
+
+현재 filter routing 규칙은 아래와 같다.
+
+- `start_time` 또는 `end_time` 이 있으면 `events`
+- `kind=incident|run|deploy|log|trace` 이면 `events`
+- `kind=contract|adr|runbook|repository` 이면 `resources`
+- 그 외 kind 는 planner 가 scope 를 강제하지 않고 intent fallback 으로 내린다
+
+제약:
+
+- `namespace_prefix` 만으로는 아직 scope 를 강제하지 않는다.
+- event/resource 혼합 의도 질의는 아직 weighted multi-scope planning 으로 풀지 않고 단일 primary scope 를 사용한다.
 
 ## Legacy Boundary
 - 런타임은 legacy DB 파일명 탐색이나 별도 저장소 cutover 를 지원하지 않는다.
@@ -76,5 +97,7 @@
 - runtime lexical comparison: `cargo test -q -p axiomsync client::tests::core_editor_retrieval::fts5_prototype_matches_runtime_top_hit_for_exact_lexical_query`
 - v3 resource projection: `cargo test -q -p axiomsync state::search::tests::resource_projection_persists_v3_metadata_columns`
 - v3 event filtered FTS: `cargo test -q -p axiomsync state::search::tests::event_projection_supports_filtered_fts_queries`
-- serialized compatibility arrays: `cargo test -q -p axiomsync models::search::tests::find_result_serialization_includes_compat_views`
+- planner filter routing: `cargo test -q -p axiomsync retrieval::planner::tests::event_filter_without_target_switches_primary_scope_to_events`
+- canonical/compat contract: `cargo test -q -p axiomsync models::search::tests::find_result_serialization_defaults_to_canonical_contract`
+- compat presenter: `cargo test -q -p axiomsync models::search::tests::find_result_compat_view_includes_legacy_bucket_arrays`
 - repo file namespace inheritance: `cargo test -q -p axiomsync client::indexing::tests::index_file_entry_inherits_namespace_tag_from_nearest_resource`

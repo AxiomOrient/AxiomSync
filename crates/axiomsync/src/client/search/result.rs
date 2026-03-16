@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use crate::models::{FindResult, MetadataFilter, SearchBudget, SearchFilter, TracePoint};
+use crate::retrieval::trace::{TraceExecutionContext, apply_trace_execution_context};
 
 pub(super) fn metadata_filter_to_search_filter(
     filter: Option<MetadataFilter>,
@@ -100,6 +101,16 @@ pub(super) fn annotate_typed_edge_query_plan_visibility(result: &mut FindResult,
         .filter(|relation| relation.relation_type.is_some())
         .count();
     append_query_plan_note(result, &format!("typed_edge_links:{typed_edges}"));
+}
+
+pub(super) fn annotate_trace_execution_context(
+    result: &mut FindResult,
+    context: &TraceExecutionContext,
+) {
+    let Some(trace) = result.trace.as_mut() else {
+        return;
+    };
+    apply_trace_execution_context(trace, context);
 }
 
 #[cfg(test)]
