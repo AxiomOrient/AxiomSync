@@ -4,17 +4,20 @@
 Close the remaining correctness and release-trust blockers that still prevent external or production release of AxiomSync. This plan replaces the completed application-service refactor plan with a release-hardening plan whose only goal is to make the current single-crate runtime safe to ship.
 
 ## Why This Plan Exists
-The large structural cleanup is mostly complete: the workspace boundary is now `crates/axiomsync`, the application-service split is in place, and the runtime/doctor/migrate/release surfaces are materially cleaner. What remains is not cosmetic follow-up. The remaining issues are correctness, contract-enforcement, and release-gate fidelity defects that can still produce wrong behavior or misleading operator confidence.
+The large structural cleanup is mostly complete: the workspace boundary is now `crates/axiomsync`, the application-service split is in place, and the runtime/doctor/migrate/release surfaces are materially cleaner.
 
-This plan treats the following as hard blockers for external release:
-1. `mount_repo` still derives `content_hash` from the `source_path` string instead of a stable repository tree digest.
-2. `LinkService` does not enforce the published `relation` identifier contract.
-3. `ArchiveService` still uses unnecessary `unsafe String::from_utf8_unchecked`.
-4. `scripts/release_pack_strict_gate.sh` is not actually strict because it defaults to a debug binary and permissive benchmark thresholds.
-5. `mount_repo` root-resource search projection can still be overwritten by global reindex, and the docs still carry this as a known behavioral note.
+The original five hard blockers (RH-01 through RH-05) have been closed:
+1. ~~`mount_repo` derives `content_hash` from the `source_path` string~~ — replaced with `compute_repo_tree_digest` (RH-01, done).
+2. ~~`LinkService` does not enforce the published `relation` identifier contract~~ — `validate_relation` enforced at service boundary (RH-03, done).
+3. ~~`ArchiveService` uses unnecessary `unsafe String::from_utf8_unchecked`~~ — replaced with safe UTF-8 conversion (RH-04, done).
+4. ~~`scripts/release_pack_strict_gate.sh` is not actually strict~~ — binary path and benchmark defaults aligned with CLI contract (RH-05, done).
+5. ~~`mount_repo` root-resource search projection can be overwritten by global reindex~~ — `reindex_all` re-applies ResourceRecord projections (RH-02, done).
+
+One additional blocker was identified during post-fix review and is addressed in RH-09:
+6. `compute_repo_tree_digest` does not exclude VCS metadata directories (`.git/`, `.hg/`, `.svn/`), AxiomSync runtime state (`.axiomsync/`), or build artifact directories (`target/`, `node_modules/`). This means repo identity can change when Git internal state changes (e.g. after a commit or fetch), making `content_hash` unstable for identical working-tree content.
 
 ## Planning Goal
-Deliver a bounded hardening pass that removes the five remaining blockers, aligns code/tests/docs/release scripts to the same contract, and produces evidence strong enough to re-evaluate external release readiness.
+Deliver a bounded hardening pass that removes all six blockers, aligns code/tests/docs/release scripts to the same contract, and produces evidence strong enough to re-evaluate external release readiness.
 
 ## Scope
 

@@ -1,3 +1,5 @@
+use std::ffi::OsStr;
+use std::io::Read;
 use std::path::Path;
 
 use chrono::Utc;
@@ -165,47 +167,99 @@ impl AxiomSync {
     }
 }
 
+/// Directories excluded from the repository tree digest.
+///
+/// VCS metadata, AxiomSync runtime state, and common build artifact directories are not
+/// stable repository content. Excluding them ensures `content_hash` reflects only the
+/// authored working-tree files, making repo identity stable across Git operations and
+/// local build state changes.
+const IGNORED_DIR_NAMES: &[&str] = &[
+    ".git",
+    ".axiomsync",
+    "target",
+    "node_modules",
+    ".hg",
+    ".svn",
+];
+
+/// Tier-generated files excluded from the repository tree digest.
+const EXCLUDED_FILE_NAMES: &[&str] = &[".abstract.md", ".overview.md"];
+
+/// Pure predicate: returns true if `name` is an ignored directory name.
+fn is_ignored_name(name: &OsStr) -> bool {
+    IGNORED_DIR_NAMES.iter().any(|&s| name == s)
+}
+
+/// Returns true if this directory entry should be pruned from the tree walk.
+fn is_ignored_dir(entry: &walkdir::DirEntry) -> bool {
+    entry.file_type().is_dir() && is_ignored_name(entry.file_name())
+}
+
 /// Computes a stable blake3 digest of the repository tree rooted at `source_path`.
 ///
 /// The digest is derived from the sorted set of (relative path, file content) pairs,
 /// making it stable for identical content regardless of absolute path and deterministic
-/// across mounts with the same files. Tier-generated files (`.abstract.md`, `.overview.md`)
-/// are excluded because they are derived artifacts and not stable repository content.
+/// across mounts with the same files.
+///
+/// Excluded from the digest:
+/// - VCS metadata directories (`.git/`, `.hg/`, `.svn/`)
+/// - AxiomSync runtime state (`.axiomsync/`)
+/// - Build artifact directories (`target/`, `node_modules/`)
+/// - Tier-generated files (`.abstract.md`, `.overview.md`)
 fn compute_repo_tree_digest(source_path: &Path) -> Result<String> {
-    // Pass 1: collect (rel_path, abs_path) pairs and sort by rel_path.
-    // Only paths are kept in memory; file contents are streamed in pass 2.
-    let mut entries: Vec<(String, std::path::PathBuf)> = Vec::new();
+    // Pass 1: collect (rel_path, abs_path, file_len) triples sorted by rel_path.
+    // file_len is taken from WalkDir's cached DirEntry metadata to avoid a
+    // redundant fstat per file in Pass 2.
+    let mut entries: Vec<(String, std::path::PathBuf, u64)> = Vec::new();
 
-    for entry in WalkDir::new(source_path).follow_links(false) {
+    for entry in WalkDir::new(source_path)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !is_ignored_dir(e))
+    {
         let entry =
             entry.map_err(|e| AxiomError::Validation(format!("repo tree walk error: {e}")))?;
         if !entry.file_type().is_file() {
             continue;
         }
-        let name = entry.file_name().to_string_lossy();
-        if name == ".abstract.md" || name == ".overview.md" {
+        let name = entry.file_name();
+        if EXCLUDED_FILE_NAMES.iter().any(|&s| name == s) {
             continue;
         }
+        let file_len = entry
+            .metadata()
+            .map_err(|e| AxiomError::Internal(format!("repo tree digest metadata error: {e}")))?
+            .len();
         let rel_path = entry
             .path()
             .strip_prefix(source_path)
             .map_err(|e| AxiomError::Internal(format!("repo tree digest path error: {e}")))?
             .to_string_lossy()
             .into_owned();
-        entries.push((rel_path, entry.path().to_owned()));
+        entries.push((rel_path, entry.path().to_owned(), file_len));
     }
 
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
     // Pass 2: stream each file through the hasher in sorted path order.
+    // Read directly into a single stack buffer; no BufReader needed with a 64 KiB buffer.
     let mut hasher = blake3::Hasher::new();
-    for (rel_path, abs_path) in &entries {
-        let content = std::fs::read(abs_path)
-            .map_err(|e| AxiomError::Internal(format!("repo tree digest read error: {e}")))?;
+    let mut buf = [0u8; 65536];
+    for (rel_path, abs_path, file_len) in &entries {
+        let mut file = std::fs::File::open(abs_path)
+            .map_err(|e| AxiomError::Internal(format!("repo tree digest open error: {e}")))?;
         hasher.update(rel_path.as_bytes());
         hasher.update(b"\x00");
-        hasher.update(&(content.len() as u64).to_le_bytes());
-        hasher.update(&content);
+        hasher.update(&file_len.to_le_bytes());
+        loop {
+            let n = file
+                .read(&mut buf)
+                .map_err(|e| AxiomError::Internal(format!("repo tree digest read error: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
     }
     Ok(hasher.finalize().to_hex().to_string())
 }
@@ -284,6 +338,50 @@ mod tests {
         assert_ne!(
             tree_digest, path_string_hash,
             "tree digest must differ from path-string hash"
+        );
+    }
+
+    #[test]
+    fn repo_tree_digest_excludes_git_metadata() {
+        let temp = tempdir().expect("tempdir");
+        let repo_a = temp.path().join("repo-a");
+        let repo_b = temp.path().join("repo-b");
+        fs::create_dir_all(&repo_a).expect("mkdir a");
+        fs::create_dir_all(&repo_b).expect("mkdir b");
+        fs::write(repo_a.join("README.md"), "# Same").expect("write a");
+        fs::write(repo_b.join("README.md"), "# Same").expect("write b");
+
+        // repo_b has a .git/ directory with internal state — must not affect the digest.
+        let git_dir = repo_b.join(".git");
+        fs::create_dir_all(&git_dir).expect("mkdir .git");
+        fs::write(git_dir.join("HEAD"), "ref: refs/heads/main").expect("write HEAD");
+        fs::write(git_dir.join("ORIG_HEAD"), "abc123").expect("write ORIG_HEAD");
+
+        let hash_a = compute_repo_tree_digest(&repo_a).expect("digest a");
+        let hash_b = compute_repo_tree_digest(&repo_b).expect("digest b");
+        assert_eq!(hash_a, hash_b, ".git/ contents must not affect the digest");
+    }
+
+    #[test]
+    fn repo_tree_digest_excludes_axiomsync_state() {
+        let temp = tempdir().expect("tempdir");
+        let repo_a = temp.path().join("repo-a");
+        let repo_b = temp.path().join("repo-b");
+        fs::create_dir_all(&repo_a).expect("mkdir a");
+        fs::create_dir_all(&repo_b).expect("mkdir b");
+        fs::write(repo_a.join("doc.md"), "content").expect("write a");
+        fs::write(repo_b.join("doc.md"), "content").expect("write b");
+
+        // repo_b has an .axiomsync/ runtime state directory — must not affect the digest.
+        let state_dir = repo_b.join(".axiomsync");
+        fs::create_dir_all(&state_dir).expect("mkdir .axiomsync");
+        fs::write(state_dir.join("context.db"), "runtime state").expect("write db");
+
+        let hash_a = compute_repo_tree_digest(&repo_a).expect("digest a");
+        let hash_b = compute_repo_tree_digest(&repo_b).expect("digest b");
+        assert_eq!(
+            hash_a, hash_b,
+            ".axiomsync/ contents must not affect the digest"
         );
     }
 }
