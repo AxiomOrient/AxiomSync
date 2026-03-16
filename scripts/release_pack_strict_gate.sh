@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 ROOT_DIR=""
 ROOT_CREATED=false
-WORKSPACE_DIR="$(pwd)"
-BIN="${AXIOMME_BIN:-$(pwd)/target/debug/axiomme-cli}"
+WORKSPACE_DIR="${REPO_ROOT}"
+DEFAULT_BIN=""
+BIN="${AXIOMSYNC_BIN:-}"
+BIN_OVERRIDDEN=false
 OUTPUT_PATH=""
 
 REPLAY_LIMIT=20
@@ -27,9 +32,9 @@ Usage:
   scripts/release_pack_strict_gate.sh [options]
 
 Options:
-  --root <path>                    AxiomMe root directory (default: temporary)
+  --root <path>                    AxiomSync root directory (default: temporary)
   --workspace-dir <path>           Workspace directory (default: current directory)
-  --axiomme-bin <path>             CLI binary path (default: target/debug/axiomme-cli)
+  --axiomsync-bin <path>           CLI binary path (default: target/debug/axiomsync)
   --output <path>                  Write release pack report JSON to file
   --replay-limit <n>               Replay limit (default: 20)
   --replay-max-cycles <n>          Replay max cycles (default: 2)
@@ -57,8 +62,9 @@ while [[ $# -gt 0 ]]; do
       WORKSPACE_DIR="${2:-}"
       shift 2
       ;;
-    --axiomme-bin)
+    --axiomsync-bin)
       BIN="${2:-}"
+      BIN_OVERRIDDEN=true
       shift 2
       ;;
     --output)
@@ -139,14 +145,46 @@ if [[ ! -d "$WORKSPACE_DIR" ]]; then
   exit 1
 fi
 
-if [[ -z "${AXIOMME_BIN:-}" ]]; then
-  cargo build -p axiomme-cli >/dev/null
-elif [[ ! -x "$BIN" ]]; then
-  cargo build -p axiomme-cli >/dev/null
+WORKSPACE_DIR="$(cd "$WORKSPACE_DIR" && pwd)"
+DEFAULT_BIN="${WORKSPACE_DIR}/target/debug/axiomsync"
+
+if [[ -n "${AXIOMSYNC_BIN:-}" ]]; then
+  BIN_OVERRIDDEN=true
+else
+  BIN="${DEFAULT_BIN}"
+fi
+
+resolve_bin_path() {
+  if [[ -x "$BIN" ]]; then
+    return 0
+  fi
+  if command -v "$BIN" >/dev/null 2>&1; then
+    BIN="$(command -v "$BIN")"
+    return 0
+  fi
+  return 1
+}
+
+if [[ "$BIN_OVERRIDDEN" != "true" ]]; then
+  (
+    cd "$WORKSPACE_DIR"
+    cargo build -p axiomsync >/dev/null
+  )
+  BIN="${DEFAULT_BIN}"
+fi
+
+if ! resolve_bin_path; then
+  echo "axiomsync CLI binary not found/executable: ${BIN}" >&2
+  if [[ "$BIN_OVERRIDDEN" == "true" ]]; then
+    echo "hint: fix --axiomsync-bin or AXIOMSYNC_BIN" >&2
+  else
+    echo "hint: build failed or binary path is invalid: ${DEFAULT_BIN}" >&2
+  fi
+  exit 1
 fi
 
 if [[ -z "$ROOT_DIR" ]]; then
-  ROOT_DIR="$(mktemp -d /tmp/axiomme-release-gate-XXXXXX)"
+  ROOT_DIR="$(mktemp -d /tmp/axiomsync-release-gate-XXXXXX)"
   ROOT_CREATED=true
 fi
 
@@ -157,25 +195,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$BIN" --root "$ROOT_DIR" init >/dev/null
+(
+  cd "$WORKSPACE_DIR"
+  "$BIN" --root "$ROOT_DIR" init >/dev/null
+)
 
-report_json="$("$BIN" --root "$ROOT_DIR" release pack \
-  --workspace-dir "$WORKSPACE_DIR" \
-  --replay-limit "$REPLAY_LIMIT" \
-  --replay-max-cycles "$REPLAY_MAX_CYCLES" \
-  --trace-limit "$TRACE_LIMIT" \
-  --request-limit "$REQUEST_LIMIT" \
-  --eval-trace-limit "$EVAL_TRACE_LIMIT" \
-  --eval-query-limit "$EVAL_QUERY_LIMIT" \
-  --eval-search-limit "$EVAL_SEARCH_LIMIT" \
-  --benchmark-query-limit "$BENCHMARK_QUERY_LIMIT" \
-  --benchmark-search-limit "$BENCHMARK_SEARCH_LIMIT" \
-  --benchmark-threshold-p95-ms "$BENCHMARK_THRESHOLD_P95_MS" \
-  --benchmark-min-top1-accuracy "$BENCHMARK_MIN_TOP1_ACCURACY" \
-  --benchmark-window-size "$BENCHMARK_WINDOW_SIZE" \
-  --benchmark-required-passes "$BENCHMARK_REQUIRED_PASSES" \
-  --security-audit-mode strict \
-  --enforce)"
+report_json="$(
+  cd "$WORKSPACE_DIR"
+  "$BIN" --root "$ROOT_DIR" release pack \
+    --workspace-dir "$WORKSPACE_DIR" \
+    --replay-limit "$REPLAY_LIMIT" \
+    --replay-max-cycles "$REPLAY_MAX_CYCLES" \
+    --trace-limit "$TRACE_LIMIT" \
+    --request-limit "$REQUEST_LIMIT" \
+    --eval-trace-limit "$EVAL_TRACE_LIMIT" \
+    --eval-query-limit "$EVAL_QUERY_LIMIT" \
+    --eval-search-limit "$EVAL_SEARCH_LIMIT" \
+    --benchmark-query-limit "$BENCHMARK_QUERY_LIMIT" \
+    --benchmark-search-limit "$BENCHMARK_SEARCH_LIMIT" \
+    --benchmark-threshold-p95-ms "$BENCHMARK_THRESHOLD_P95_MS" \
+    --benchmark-min-top1-accuracy "$BENCHMARK_MIN_TOP1_ACCURACY" \
+    --benchmark-window-size "$BENCHMARK_WINDOW_SIZE" \
+    --benchmark-required-passes "$BENCHMARK_REQUIRED_PASSES" \
+    --security-audit-mode strict \
+    --enforce
+)"
 
 echo "$report_json" | jq -e '.passed == true' >/dev/null
 

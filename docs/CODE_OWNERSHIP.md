@@ -11,6 +11,9 @@
 ## Core Runtime
 - `src/client.rs`
 - `src/client/facade.rs`
+- `src/client/runtime.rs`
+- `src/client/resource.rs`
+- `src/client/search/*`
 - `src/client/event.rs`
 - `src/client/link.rs`
 - `src/client/repo.rs`
@@ -41,6 +44,7 @@
 - `src/om/failure.rs`
 - `src/om_bridge.rs`
 - 책임: rooted filesystem, `axiom://`, `context.db`, retrieval, session lifecycle, v3 events/links/resources
+  explicit application service 경계: runtime bootstrap, resource ingest, search, session orchestration
 
 ## Ops / Lab
 - `src/cli/*`
@@ -58,6 +62,7 @@
 - `scripts/quality_gates.sh`
 - `scripts/release_pack_strict_gate.sh`
 - 책임: CLI, benchmark/eval, trace, audit, release gate
+  explicit application service 경계: release verification, release evidence/reporting
 
 ## Vendored OM
 - `src/om/engine/*`

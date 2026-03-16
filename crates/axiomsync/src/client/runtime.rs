@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 use chrono::{DateTime, Utc};
@@ -21,7 +20,311 @@ use crate::uri::{AxiomUri, Scope};
 use super::AxiomSync;
 
 const SEARCH_STACK_VERSION: &str = "drr-memory-v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeBootstrapPlan {
+    ensure_scope_tiers: bool,
+    restore_decision: RuntimeRestoreDecision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeRestoreDecision {
+    FullReindex { reason: &'static str },
+    RestoreFromState { stamp: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexRepairPlan {
+    repair_type: &'static str,
+    restore_source: &'static str,
+    index_profile_stamp: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionScopePlan {
+    session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PromotionExecutionPlan {
+    session_scope: SessionScopePlan,
+    checkpoint_after_promotion: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionDeletionPlan {
+    session_scope: SessionScopePlan,
+    session_uri: AxiomUri,
+    should_delete: bool,
+}
+
+pub(crate) struct RuntimeBootstrapService<'a> {
+    app: &'a AxiomSync,
+}
+
+impl<'a> RuntimeBootstrapService<'a> {
+    pub(crate) fn new(app: &'a AxiomSync) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn bootstrap(&self) -> Result<()> {
+        self.app.fs.initialize()?;
+        self.app.ensure_default_ontology_schema()?;
+        Ok(())
+    }
+
+    pub(crate) fn prepare_runtime(&self) -> Result<()> {
+        self.bootstrap()?;
+        let current_stamp = self.current_index_profile_stamp();
+        let stored_stamp = self.app.state.get_system_value(INDEX_PROFILE_STAMP_KEY)?;
+        let has_drift = self.has_index_state_drift()?;
+        let restored_search_documents = if stored_stamp.as_deref() == Some(current_stamp.as_str())
+            && !has_drift
+        {
+            self.restore_index_from_state()?
+        } else {
+            0
+        };
+        let plan = build_runtime_bootstrap_plan(
+            current_stamp,
+            stored_stamp,
+            has_drift,
+            restored_search_documents,
+        );
+        if plan.ensure_scope_tiers {
+            self.app.ensure_scope_tiers()?;
+        }
+        self.execute_restore_decision(&plan.restore_decision)?;
+        Ok(())
+    }
+
+    pub(crate) fn initialize(&self) -> Result<()> {
+        self.prepare_runtime()
+    }
+
+    pub(crate) fn reindex_all(&self) -> Result<()> {
+        let started_at = Utc::now().to_rfc3339();
+        self.app.state.clear_search_index()?;
+        self.app.state.clear_index_state()?;
+        {
+            let mut index = self
+                .app
+                .index
+                .write()
+                .map_err(|_| AxiomError::lock_poisoned("index"))?;
+            index.clear();
+        }
+        self.app.reindex_scopes(&default_scope_set())?;
+
+        let om_records = self.app.state.list_om_records()?;
+        let mut index = self
+            .app
+            .index
+            .write()
+            .map_err(|_| AxiomError::lock_poisoned("index"))?;
+        for om in om_records {
+            index.upsert_om_record(om);
+        }
+        drop(index);
+
+        let repair_plan = build_full_reindex_repair_plan(
+            self.current_index_profile_stamp(),
+            "full_reindex",
+        );
+        self.persist_repair_plan(repair_plan, started_at)
+    }
+
+    fn execute_restore_decision(&self, decision: &RuntimeRestoreDecision) -> Result<()> {
+        match decision {
+            RuntimeRestoreDecision::FullReindex { .. } => self.reindex_all(),
+            RuntimeRestoreDecision::RestoreFromState { stamp } => {
+                self.app
+                    .state
+                    .set_system_value(INDEX_PROFILE_STAMP_KEY, stamp)?;
+                self.app
+                    .state
+                    .set_system_value(RUNTIME_RESTORE_SOURCE_KEY, "state_restore")?;
+                Ok(())
+            }
+        }
+    }
+
+    fn persist_repair_plan(&self, repair_plan: IndexRepairPlan, started_at: String) -> Result<()> {
+        self.app
+            .state
+            .set_system_value(INDEX_PROFILE_STAMP_KEY, &repair_plan.index_profile_stamp)?;
+        self.app
+            .state
+            .set_system_value(RUNTIME_RESTORE_SOURCE_KEY, repair_plan.restore_source)?;
+        self.app.state.record_repair_run(&RepairRunRecord {
+            run_id: format!("repair-{}", uuid::Uuid::new_v4().simple()),
+            repair_type: repair_plan.repair_type.to_string(),
+            started_at,
+            finished_at: Some(Utc::now().to_rfc3339()),
+            status: RUN_STATUS_SUCCESS.to_string(),
+            details: Some(serde_json::json!({
+                "index_profile_stamp": repair_plan.index_profile_stamp,
+            })),
+        })?;
+        Ok(())
+    }
+
+    fn restore_index_from_state(&self) -> Result<usize> {
+        let records = self.app.state.list_search_documents()?;
+        let om_records = self.app.state.list_om_records()?;
+        let mut index = self
+            .app
+            .index
+            .write()
+            .map_err(|_| AxiomError::lock_poisoned("index"))?;
+        index.clear();
+        let restored_search_documents = records
+            .into_iter()
+            .filter_map(|record| {
+                let uri = AxiomUri::parse(&record.uri).ok()?;
+                if uri.scope().is_internal() {
+                    return None;
+                }
+                index.upsert(record);
+                Some(())
+            })
+            .count();
+        for om in om_records {
+            index.upsert_om_record(om);
+        }
+        drop(index);
+        Ok(restored_search_documents)
+    }
+
+    fn current_index_profile_stamp(&self) -> String {
+        let embed = crate::embedding::embedding_profile();
+        format!(
+            "stack:{};embed:{}@{}:{}",
+            SEARCH_STACK_VERSION, embed.provider, embed.vector_version, embed.dim
+        )
+    }
+
+    fn has_index_state_drift(&self) -> Result<bool> {
+        for (uri, stored_mtime) in self.app.state.list_index_state_entries()? {
+            let Ok(parsed) = AxiomUri::parse(&uri) else {
+                return Ok(true);
+            };
+            let path = self.app.fs.resolve_uri(&parsed);
+            match std::fs::metadata(&path) {
+                Err(_) => return Ok(true),
+                Ok(meta) => {
+                    let mtime = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map_or(0, saturating_duration_nanos_to_i64);
+                    if mtime != stored_mtime {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
+    }
+}
+
+pub(crate) struct SessionService<'a> {
+    app: &'a AxiomSync,
+}
+
+impl<'a> SessionService<'a> {
+    pub(crate) fn new(app: &'a AxiomSync) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn sessions(&self) -> Result<Vec<SessionInfo>> {
+        let root = AxiomUri::root(Scope::Session);
+        let mut sessions = self
+            .app
+            .fs
+            .list(&root, false)?
+            .into_iter()
+            .filter(|e| e.is_dir)
+            .map(|entry| {
+                let session_uri = AxiomUri::parse(&entry.uri)?;
+                Ok(SessionInfo {
+                    session_id: entry.name.clone(),
+                    uri: entry.uri,
+                    updated_at: self.app.session_updated_at(&session_uri),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        Ok(sessions)
+    }
+
+    pub(crate) fn promote_session_memories(
+        &self,
+        request: &MemoryPromotionRequest,
+    ) -> Result<MemoryPromotionResult> {
+        let plan = build_promotion_execution_plan(request.session_id.clone(), false);
+        let session = self.load_session(plan.session_scope.session_id.as_str())?;
+        session.promote_memories(request)
+    }
+
+    pub(crate) fn checkpoint_session_archive_only(&self, session_id: &str) -> Result<CommitResult> {
+        let plan = build_session_scope_plan(session_id);
+        let session = self.load_session(plan.session_id.as_str())?;
+        session.commit_with_mode(CommitMode::ArchiveOnly)
+    }
+
+    pub(crate) fn promote_and_checkpoint_archive_only(
+        &self,
+        request: &MemoryPromotionRequest,
+    ) -> Result<MemoryPromotionResult> {
+        let plan = build_promotion_execution_plan(request.session_id.clone(), true);
+        let session = self.load_session(plan.session_scope.session_id.as_str())?;
+        let result = session.promote_memories(request)?;
+        if plan.checkpoint_after_promotion {
+            let _ = session.commit_with_mode(CommitMode::ArchiveOnly)?;
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn delete(&self, session_id: &str) -> Result<bool> {
+        let session_uri = AxiomUri::root(Scope::Session).join(session_id)?;
+        let plan = build_session_deletion_plan(
+            session_id,
+            session_uri.clone(),
+            self.app.fs.exists(&session_uri),
+        );
+        if !plan.should_delete {
+            return Ok(false);
+        }
+        self.app.fs.rm(&plan.session_uri, true, true)?;
+        self.app.purge_uri_index(&plan.session_uri)?;
+        let _ = self
+            .app
+            .state
+            .remove_promotion_checkpoints_for_session(&plan.session_scope.session_id)?;
+        Ok(true)
+    }
+
+    fn load_session(&self, session_id: &str) -> Result<Session> {
+        let session = self.app.session(Some(session_id));
+        session.load()?;
+        Ok(session)
+    }
+}
+
 impl AxiomSync {
+    pub fn bootstrap(&self) -> Result<()> {
+        self.runtime_bootstrap_service().bootstrap()
+    }
+
+    pub fn prepare_runtime(&self) -> Result<()> {
+        self.runtime_bootstrap_service().prepare_runtime()
+    }
+
+    pub fn initialize(&self) -> Result<()> {
+        self.runtime_bootstrap_service().initialize()
+    }
+
     pub fn session(&self, session_id: Option<&str>) -> Session {
         let id = session_id.map_or_else(
             || format!("s-{}", uuid::Uuid::new_v4().simple()),
@@ -97,10 +400,11 @@ impl AxiomSync {
         status: Option<&str>,
     ) -> Result<Vec<RequestLogEntry>> {
         let uri = request_log_uri()?;
-        if !self.fs.exists(&uri) {
-            return Ok(Vec::new());
-        }
-        let raw = self.fs.read(&uri)?;
+        let raw = match self.fs.read(&uri) {
+            Ok(r) => r,
+            Err(crate::error::AxiomError::NotFound(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
         let operation = operation
             .map(str::trim)
             .filter(|x| !x.is_empty())
@@ -119,207 +423,55 @@ impl AxiomSync {
             ));
         }
 
-        let mut entries = Vec::new();
-        for entry in parsed.items {
-            if let Some(op) = operation.as_deref()
-                && !entry.operation.eq_ignore_ascii_case(op)
-            {
-                continue;
-            }
-            if let Some(st) = status.as_deref()
-                && !entry.status.eq_ignore_ascii_case(st)
-            {
-                continue;
-            }
-            entries.push(entry);
-        }
+        let mut entries = parsed
+            .items
+            .into_iter()
+            .filter(|e| {
+                operation
+                    .as_deref()
+                    .is_none_or(|op| e.operation.eq_ignore_ascii_case(op))
+            })
+            .filter(|e| {
+                status
+                    .as_deref()
+                    .is_none_or(|st| e.status.eq_ignore_ascii_case(st))
+            })
+            .collect::<Vec<_>>();
         entries.reverse();
         entries.truncate(limit.max(1));
         Ok(entries)
     }
 
     pub fn sessions(&self) -> Result<Vec<SessionInfo>> {
-        let root = AxiomUri::root(Scope::Session);
-        let mut out = Vec::new();
-        for entry in self.fs.list(&root, false)? {
-            if !entry.is_dir {
-                continue;
-            }
-            let session_uri = AxiomUri::parse(&entry.uri)?;
-            out.push(SessionInfo {
-                session_id: entry.name.clone(),
-                uri: entry.uri,
-                updated_at: self.session_updated_at(&session_uri),
-            });
-        }
-        out.sort_by(|a, b| a.session_id.cmp(&b.session_id));
-        Ok(out)
+        self.session_service().sessions()
     }
 
     pub fn promote_session_memories(
         &self,
         request: &MemoryPromotionRequest,
     ) -> Result<MemoryPromotionResult> {
-        let session = self.session(Some(&request.session_id));
-        session.load()?;
-        session.promote_memories(request)
+        self.session_service().promote_session_memories(request)
     }
 
     pub fn checkpoint_session_archive_only(&self, session_id: &str) -> Result<CommitResult> {
-        let session = self.session(Some(session_id));
-        session.load()?;
-        session.commit_with_mode(CommitMode::ArchiveOnly)
+        self.session_service()
+            .checkpoint_session_archive_only(session_id)
     }
 
     pub fn promote_and_checkpoint_archive_only(
         &self,
         request: &MemoryPromotionRequest,
     ) -> Result<MemoryPromotionResult> {
-        let session = self.session(Some(&request.session_id));
-        session.load()?;
-        let result = session.promote_memories(request)?;
-        let _ = session.commit_with_mode(CommitMode::ArchiveOnly)?;
-        Ok(result)
+        self.session_service()
+            .promote_and_checkpoint_archive_only(request)
     }
 
     pub fn delete(&self, session_id: &str) -> Result<bool> {
-        let uri = AxiomUri::root(Scope::Session).join(session_id)?;
-        if !self.fs.exists(&uri) {
-            return Ok(false);
-        }
-        self.fs.rm(&uri, true, true)?;
-        self.purge_uri_index(&uri)?;
-        let _ = self
-            .state
-            .remove_promotion_checkpoints_for_session(session_id)?;
-        Ok(true)
+        self.session_service().delete(session_id)
     }
 
     pub fn reindex_all(&self) -> Result<()> {
-        let started_at = Utc::now().to_rfc3339();
-        self.state.clear_search_index()?;
-        self.state.clear_index_state()?;
-        {
-            let mut index = self
-                .index
-                .write()
-                .map_err(|_| AxiomError::lock_poisoned("index"))?;
-            index.clear();
-        }
-        self.reindex_scopes(&default_scope_set())?;
-
-        // Restore OM records into the memory index after clearing everything
-        let om_records = self.state.list_om_records()?;
-        let mut index = self
-            .index
-            .write()
-            .map_err(|_| AxiomError::lock_poisoned("index"))?;
-        for om in om_records {
-            index.upsert_om_record(om);
-        }
-        drop(index);
-
-        let stamp = self.current_index_profile_stamp();
-        self.state
-            .set_system_value(INDEX_PROFILE_STAMP_KEY, &stamp)?;
-        self.state
-            .set_system_value(RUNTIME_RESTORE_SOURCE_KEY, "full_reindex")?;
-        self.state.record_repair_run(&RepairRunRecord {
-            run_id: format!("repair-{}", uuid::Uuid::new_v4().simple()),
-            repair_type: "full_reindex".to_string(),
-            started_at,
-            finished_at: Some(Utc::now().to_rfc3339()),
-            status: RUN_STATUS_SUCCESS.to_string(),
-            details: Some(serde_json::json!({
-                "index_profile_stamp": stamp,
-            })),
-        })?;
-        Ok(())
-    }
-
-    pub(super) fn initialize_runtime_index(&self) -> Result<()> {
-        let current_stamp = self.current_index_profile_stamp();
-        let stored_stamp = self.state.get_system_value(INDEX_PROFILE_STAMP_KEY)?;
-
-        if stored_stamp.as_deref() != Some(current_stamp.as_str()) {
-            self.reindex_all()?;
-            return Ok(());
-        }
-
-        if self.has_index_state_drift()? {
-            self.reindex_all()?;
-            return Ok(());
-        }
-
-        let restored_search_documents = self.restore_index_from_state()?;
-        // OM rows are supplemental runtime hints; startup success gating is based on
-        // searchable document restoration only.
-        if restored_search_documents == 0 {
-            self.reindex_all()?;
-        } else {
-            self.state
-                .set_system_value(INDEX_PROFILE_STAMP_KEY, &current_stamp)?;
-            self.state
-                .set_system_value(RUNTIME_RESTORE_SOURCE_KEY, "state_restore")?;
-        }
-        Ok(())
-    }
-
-    fn restore_index_from_state(&self) -> Result<usize> {
-        let records = self.state.list_search_documents()?;
-        let om_records = self.state.list_om_records()?;
-        let mut restored_search_documents = 0usize;
-        let mut index = self
-            .index
-            .write()
-            .map_err(|_| AxiomError::lock_poisoned("index"))?;
-        index.clear();
-        for record in records {
-            let Ok(uri) = AxiomUri::parse(&record.uri) else {
-                continue;
-            };
-            if uri.scope().is_internal() {
-                continue;
-            }
-            index.upsert(record);
-            restored_search_documents = restored_search_documents.saturating_add(1);
-        }
-        for om in om_records {
-            index.upsert_om_record(om);
-        }
-        drop(index);
-        Ok(restored_search_documents)
-    }
-
-    fn current_index_profile_stamp(&self) -> String {
-        let embed = crate::embedding::embedding_profile();
-        format!(
-            "stack:{};embed:{}@{}:{}",
-            SEARCH_STACK_VERSION, embed.provider, embed.vector_version, embed.dim
-        )
-    }
-
-    fn has_index_state_drift(&self) -> Result<bool> {
-        for (uri, stored_mtime) in self.state.list_index_state_entries()? {
-            let Ok(parsed) = AxiomUri::parse(&uri) else {
-                return Ok(true);
-            };
-            let path = self.fs.resolve_uri(&parsed);
-            match std::fs::metadata(&path) {
-                Err(_) => return Ok(true),
-                Ok(meta) => {
-                    let mtime = meta
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map_or(0, saturating_duration_nanos_to_i64);
-                    if mtime != stored_mtime {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-        Ok(false)
+        self.runtime_bootstrap_service().reindex_all()
     }
 
     fn session_updated_at(&self, session_uri: &AxiomUri) -> DateTime<Utc> {
@@ -341,14 +493,171 @@ fn saturating_duration_nanos_to_i64(duration: std::time::Duration) -> i64 {
     i64::try_from(duration.as_nanos()).unwrap_or(i64::MAX)
 }
 
-fn metadata_mtime_nanos(path: &Path) -> i64 {
-    fs::metadata(path)
-        .ok()
-        .and_then(|metadata| metadata.modified().ok())
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, saturating_duration_nanos_to_i64)
+fn build_runtime_bootstrap_plan(
+    current_stamp: String,
+    stored_stamp: Option<String>,
+    has_index_state_drift: bool,
+    restored_search_documents: usize,
+) -> RuntimeBootstrapPlan {
+    let restore_decision =
+        decide_runtime_restore(current_stamp, stored_stamp, has_index_state_drift, restored_search_documents);
+    RuntimeBootstrapPlan {
+        ensure_scope_tiers: true,
+        restore_decision,
+    }
+}
+
+fn decide_runtime_restore(
+    current_stamp: String,
+    stored_stamp: Option<String>,
+    has_index_state_drift: bool,
+    restored_search_documents: usize,
+) -> RuntimeRestoreDecision {
+    if stored_stamp.as_deref() != Some(current_stamp.as_str()) {
+        return RuntimeRestoreDecision::FullReindex {
+            reason: "index_profile_stamp_changed",
+        };
+    }
+    if has_index_state_drift {
+        return RuntimeRestoreDecision::FullReindex {
+            reason: "index_state_drift",
+        };
+    }
+    if restored_search_documents == 0 {
+        return RuntimeRestoreDecision::FullReindex {
+            reason: "state_restore_empty",
+        };
+    }
+    RuntimeRestoreDecision::RestoreFromState {
+        stamp: current_stamp,
+    }
+}
+
+fn build_full_reindex_repair_plan(
+    index_profile_stamp: String,
+    repair_type: &'static str,
+) -> IndexRepairPlan {
+    IndexRepairPlan {
+        repair_type,
+        restore_source: "full_reindex",
+        index_profile_stamp,
+    }
+}
+
+fn build_session_scope_plan(session_id: &str) -> SessionScopePlan {
+    SessionScopePlan {
+        session_id: session_id.to_string(),
+    }
+}
+
+fn build_promotion_execution_plan(
+    session_id: String,
+    checkpoint_after_promotion: bool,
+) -> PromotionExecutionPlan {
+    PromotionExecutionPlan {
+        session_scope: SessionScopePlan { session_id },
+        checkpoint_after_promotion,
+    }
+}
+
+fn build_session_deletion_plan(
+    session_id: &str,
+    session_uri: AxiomUri,
+    session_exists: bool,
+) -> SessionDeletionPlan {
+    SessionDeletionPlan {
+        session_scope: build_session_scope_plan(session_id),
+        session_uri,
+        should_delete: session_exists,
+    }
 }
 
 fn is_om_event_type(rate: &crate::models::QueueDeadLetterRate) -> bool {
     rate.event_type.starts_with("om_")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        RuntimeRestoreDecision, build_full_reindex_repair_plan,
+        build_promotion_execution_plan, build_runtime_bootstrap_plan,
+        build_session_deletion_plan, build_session_scope_plan, decide_runtime_restore,
+    };
+    use crate::{AxiomUri, Scope};
+
+    #[test]
+    fn runtime_restore_decision_reindexes_when_stamp_changes() {
+        let decision = decide_runtime_restore("stamp-v2".to_string(), Some("stamp-v1".to_string()), false, 3);
+
+        assert_eq!(
+            decision,
+            RuntimeRestoreDecision::FullReindex {
+                reason: "index_profile_stamp_changed"
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_restore_decision_restores_when_state_is_current_and_non_empty() {
+        let decision = decide_runtime_restore("stamp-v1".to_string(), Some("stamp-v1".to_string()), false, 2);
+
+        assert_eq!(
+            decision,
+            RuntimeRestoreDecision::RestoreFromState {
+                stamp: "stamp-v1".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn bootstrap_plan_keeps_scope_tier_creation_and_restore_decision_together() {
+        let plan = build_runtime_bootstrap_plan(
+            "stamp-v1".to_string(),
+            Some("stamp-v1".to_string()),
+            true,
+            4,
+        );
+
+        assert!(plan.ensure_scope_tiers);
+        assert_eq!(
+            plan.restore_decision,
+            RuntimeRestoreDecision::FullReindex {
+                reason: "index_state_drift"
+            }
+        );
+    }
+
+    #[test]
+    fn full_reindex_repair_plan_records_restore_source_and_stamp() {
+        let plan = build_full_reindex_repair_plan("stamp-v1".to_string(), "full_reindex");
+
+        assert_eq!(plan.repair_type, "full_reindex");
+        assert_eq!(plan.restore_source, "full_reindex");
+        assert_eq!(plan.index_profile_stamp, "stamp-v1");
+    }
+
+    #[test]
+    fn session_scope_plan_preserves_session_id() {
+        let plan = build_session_scope_plan("s-1");
+
+        assert_eq!(plan.session_id, "s-1");
+    }
+
+    #[test]
+    fn promotion_execution_plan_marks_archive_checkpoint_follow_up() {
+        let plan = build_promotion_execution_plan("s-2".to_string(), true);
+
+        assert_eq!(plan.session_scope.session_id, "s-2");
+        assert!(plan.checkpoint_after_promotion);
+    }
+
+    #[test]
+    fn session_deletion_plan_skips_missing_sessions() {
+        let uri = AxiomUri::root(Scope::Session).join("s-missing").expect("uri");
+        let plan = build_session_deletion_plan("s-missing", uri.clone(), false);
+
+        assert_eq!(plan.session_scope.session_id, "s-missing");
+        assert_eq!(plan.session_uri, uri);
+        assert!(!plan.should_delete);
+    }
 }

@@ -78,8 +78,8 @@ graph TD
 - no CLI formatting
 
 ### `src/client/facade.rs`
-- temporary orchestration facade
-- Phase 2 이후 thin facade only
+- explicit service accessor
+- thin delegate only
 
 ### `src/state/*`
 - SQLite persistence

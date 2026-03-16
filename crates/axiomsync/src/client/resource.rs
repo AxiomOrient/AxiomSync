@@ -23,70 +23,50 @@ const MAX_REMOTE_TEXT_BYTES: usize = 5 * 1024 * 1024;
 const WAIT_PROCESSED_MIN_SLEEP: Duration = Duration::from_millis(100);
 const WAIT_PROCESSED_MAX_SLEEP: Duration = Duration::from_secs(1);
 
-impl AxiomSync {
-    fn add_resource_core(
-        &self,
-        path_or_url: &str,
-        target: Option<&str>,
-        wait: bool,
-        timeout_secs: Option<u64>,
-        wait_mode: AddResourceWaitMode,
-        ingest_options: &AddResourceIngestOptions,
-    ) -> Result<AddResourceResult> {
-        let target_uri = target
-            .map(AxiomUri::parse)
-            .transpose()?
-            .map_or_else(|| default_resource_target(path_or_url), Ok)?;
-        let finalize_mode = resolve_add_resource_finalize_mode(path_or_url)?;
-        let ingest_manager = IngestManager::new(self.fs.clone(), self.parser_registry.clone());
-        let mut ingest = ingest_manager.start_session()?;
-        if let Err(err) = stage_add_resource_source(path_or_url, timeout_secs, &mut ingest, ingest_options) {
-            ingest.abort();
-            return Err(err);
-        }
-        if let Err(err) = ingest.write_manifest(path_or_url) {
-            ingest.abort();
-            return Err(err);
-        }
-        if let Err(err) = ingest.finalize_to(&target_uri, finalize_mode) {
-            ingest.abort();
-            return Err(err);
-        }
-        let outbox_event_id = self.state.enqueue(
-            "semantic_scan",
-            &target_uri.to_string(),
-            serde_json::json!({"op": "add_resource"}),
-        )?;
-        if wait {
-            match wait_mode {
-                AddResourceWaitMode::Relaxed => {
-                    let _ = self.replay_outbox(256, false)?;
-                }
-                AddResourceWaitMode::Strict => {
-                    self.wait_for_outbox_event_done_strict(outbox_event_id, timeout_secs)?;
-                }
-            }
-        }
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AddResourceIntent {
+    source: String,
+    target_uri: AxiomUri,
+    wait: bool,
+    timeout_secs: Option<u64>,
+    wait_mode: AddResourceWaitMode,
+    ingest_options: AddResourceIngestOptions,
+    finalize_mode: IngestFinalizeMode,
+}
 
-        Ok(AddResourceResult {
-            root_uri: target_uri.to_string(),
-            queued: !wait,
-            message: if wait {
-                "resource ingested".to_string()
-            } else {
-                "resource staged and queued for semantic processing".to_string()
-            },
-            wait_mode: wait.then_some(wait_mode),
-            wait_contract: wait.then_some(wait_mode.contract_label().to_string()),
-        })
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WaitStrategyDecision {
+    None,
+    RelaxedReplay,
+    StrictTerminal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AddResourcePlan {
+    source: String,
+    target_uri: AxiomUri,
+    timeout_secs: Option<u64>,
+    ingest_options: AddResourceIngestOptions,
+    finalize_mode: IngestFinalizeMode,
+    wait_strategy: WaitStrategyDecision,
+    result_message: String,
+    result_wait_mode: Option<AddResourceWaitMode>,
+    result_wait_contract: Option<String>,
+}
+
+pub(crate) struct ResourceService<'a> {
+    app: &'a AxiomSync,
+}
+
+impl<'a> ResourceService<'a> {
+    pub(crate) fn new(app: &'a AxiomSync) -> Self {
+        Self { app }
     }
 
-    pub fn add_resource(
+    pub(crate) fn add_resource(
         &self,
         path_or_url: &str,
         target: Option<&str>,
-        _reason: Option<&str>,
-        _instruction: Option<&str>,
         wait: bool,
         timeout_secs: Option<u64>,
     ) -> Result<AddResourceResult> {
@@ -98,30 +78,21 @@ impl AxiomSync {
         self.add_resource_with_ingest_options(request)
     }
 
-    pub fn add_resource_with_ingest_options(
+    pub(crate) fn add_resource_with_ingest_options(
         &self,
         request: AddResourceRequest,
     ) -> Result<AddResourceResult> {
-        let AddResourceRequest {
-            source,
-            target,
-            wait,
-            timeout_secs,
-            wait_mode,
-            ingest_options,
-        } = request;
         let request_id = uuid::Uuid::new_v4().to_string();
         let started = Instant::now();
-        let target_raw = target.clone();
-        let target_ref = target.as_deref();
-        let output = self.add_resource_core(
-            source.as_str(),
-            target_ref,
-            wait,
-            timeout_secs,
-            wait_mode,
-            &ingest_options,
-        );
+        let target_raw = request.target.clone();
+        let source = request.source.clone();
+        let wait = request.wait;
+        let wait_mode = request.wait_mode;
+        let ingest_options = request.ingest_options.clone();
+        let output = (|| -> Result<AddResourceResult> {
+            let plan = build_add_resource_plan(build_add_resource_intent(request)?);
+            self.execute_add_resource_plan(&plan)
+        })();
         let ingest_options_json = serde_json::to_value(&ingest_options).unwrap_or_else(|_| {
             serde_json::json!({
                 "markdown_only": ingest_options.markdown_only,
@@ -132,7 +103,7 @@ impl AxiomSync {
 
         match output {
             Ok(result) => {
-                self.log_request_status(
+                self.app.log_request_status(
                     request_id,
                     "add_resource",
                     "ok",
@@ -150,7 +121,7 @@ impl AxiomSync {
                 Ok(result)
             }
             Err(err) => {
-                self.log_request_error(
+                self.app.log_request_error(
                     request_id,
                     "add_resource",
                     started,
@@ -166,6 +137,67 @@ impl AxiomSync {
                 Err(err)
             }
         }
+    }
+
+    fn execute_add_resource_plan(&self, plan: &AddResourcePlan) -> Result<AddResourceResult> {
+        let ingest_manager =
+            IngestManager::new(self.app.fs.clone(), self.app.parser_registry.clone());
+        let mut ingest = ingest_manager.start_session()?;
+        if let Err(err) = stage_add_resource_source(
+            &plan.source,
+            plan.timeout_secs,
+            &mut ingest,
+            &plan.ingest_options,
+        ) {
+            ingest.abort();
+            return Err(err);
+        }
+        if let Err(err) = ingest.write_manifest(&plan.source) {
+            ingest.abort();
+            return Err(err);
+        }
+        if let Err(err) = ingest.finalize_to(&plan.target_uri, plan.finalize_mode) {
+            ingest.abort();
+            return Err(err);
+        }
+        let outbox_event_id = self.app.state.enqueue(
+            "semantic_scan",
+            &plan.target_uri.to_string(),
+            serde_json::json!({"op": "add_resource"}),
+        )?;
+        match plan.wait_strategy {
+            WaitStrategyDecision::None => {}
+            WaitStrategyDecision::RelaxedReplay => {
+                let _ = self.app.replay_outbox(256, false)?;
+            }
+            WaitStrategyDecision::StrictTerminal => {
+                self.app
+                    .wait_for_outbox_event_done_strict(outbox_event_id, plan.timeout_secs)?;
+            }
+        }
+        Ok(build_add_resource_result(plan))
+    }
+}
+
+impl AxiomSync {
+    pub fn add_resource(
+        &self,
+        path_or_url: &str,
+        target: Option<&str>,
+        _reason: Option<&str>,
+        _instruction: Option<&str>,
+        wait: bool,
+        timeout_secs: Option<u64>,
+    ) -> Result<AddResourceResult> {
+        self.resource_service()
+            .add_resource(path_or_url, target, wait, timeout_secs)
+    }
+
+    pub fn add_resource_with_ingest_options(
+        &self,
+        request: AddResourceRequest,
+    ) -> Result<AddResourceResult> {
+        self.resource_service().add_resource_with_ingest_options(request)
     }
 
     pub fn wait_processed(&self, timeout_secs: Option<u64>) -> Result<QueueStatus> {
@@ -500,6 +532,60 @@ impl AxiomSync {
     }
 }
 
+fn build_add_resource_intent(request: AddResourceRequest) -> Result<AddResourceIntent> {
+    let target_uri = request
+        .target
+        .as_deref()
+        .map(AxiomUri::parse)
+        .transpose()?
+        .map_or_else(|| default_resource_target(&request.source), Ok)?;
+    let finalize_mode = resolve_add_resource_finalize_mode(&request.source)?;
+    Ok(AddResourceIntent {
+        source: request.source,
+        target_uri,
+        wait: request.wait,
+        timeout_secs: request.timeout_secs,
+        wait_mode: request.wait_mode,
+        ingest_options: request.ingest_options,
+        finalize_mode,
+    })
+}
+
+fn build_add_resource_plan(intent: AddResourceIntent) -> AddResourcePlan {
+    let wait_strategy = match (intent.wait, intent.wait_mode) {
+        (false, _) => WaitStrategyDecision::None,
+        (true, AddResourceWaitMode::Relaxed) => WaitStrategyDecision::RelaxedReplay,
+        (true, AddResourceWaitMode::Strict) => WaitStrategyDecision::StrictTerminal,
+    };
+    AddResourcePlan {
+        source: intent.source,
+        target_uri: intent.target_uri,
+        timeout_secs: intent.timeout_secs,
+        ingest_options: intent.ingest_options,
+        finalize_mode: intent.finalize_mode,
+        result_message: if intent.wait {
+            "resource ingested".to_string()
+        } else {
+            "resource staged and queued for semantic processing".to_string()
+        },
+        result_wait_mode: intent.wait.then_some(intent.wait_mode),
+        result_wait_contract: intent
+            .wait
+            .then_some(intent.wait_mode.contract_label().to_string()),
+        wait_strategy,
+    }
+}
+
+fn build_add_resource_result(plan: &AddResourcePlan) -> AddResourceResult {
+    AddResourceResult {
+        root_uri: plan.target_uri.to_string(),
+        queued: matches!(plan.wait_strategy, WaitStrategyDecision::None),
+        message: plan.result_message.clone(),
+        wait_mode: plan.result_wait_mode,
+        wait_contract: plan.result_wait_contract.clone(),
+    }
+}
+
 fn resolve_add_resource_finalize_mode(path_or_url: &str) -> Result<IngestFinalizeMode> {
     if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
         return Ok(IngestFinalizeMode::MergeIntoTarget);
@@ -621,6 +707,45 @@ mod tests {
         let text =
             read_remote_text_limited(Cursor::new(data.clone()), MAX_REMOTE_TEXT_BYTES).expect("ok");
         assert_eq!(text, String::from_utf8(data).expect("utf8"));
+    }
+
+    #[test]
+    fn add_resource_plan_uses_default_target_and_relaxed_wait_strategy() {
+        let temp = tempdir().expect("tempdir");
+        let source = temp.path().join("demo.md");
+        fs::write(&source, "# demo").expect("write");
+        let source = source.to_string_lossy().to_string();
+        let plan = build_add_resource_plan(
+            build_add_resource_intent(AddResourceRequest::new(source.clone())).expect("intent"),
+        );
+
+        assert_eq!(plan.source, source);
+        assert_eq!(plan.wait_strategy, WaitStrategyDecision::None);
+        assert!(build_add_resource_result(&plan).queued);
+        assert_eq!(
+            plan.target_uri.to_string(),
+            default_resource_target(&source).expect("default target").to_string()
+        );
+    }
+
+    #[test]
+    fn add_resource_plan_records_strict_wait_contract() {
+        let temp = tempdir().expect("tempdir");
+        let source = temp.path().join("strict.md");
+        fs::write(&source, "# strict").expect("write");
+
+        let mut request = AddResourceRequest::new(source.to_str().expect("path"));
+        request.target = Some("axiom://resources/strict-plan".to_string());
+        request.wait = true;
+        request.wait_mode = AddResourceWaitMode::Strict;
+        let plan = build_add_resource_plan(build_add_resource_intent(request).expect("intent"));
+
+        assert_eq!(plan.wait_strategy, WaitStrategyDecision::StrictTerminal);
+        assert_eq!(plan.result_wait_mode, Some(AddResourceWaitMode::Strict));
+        assert_eq!(
+            plan.result_wait_contract.as_deref(),
+            Some(AddResourceWaitMode::Strict.contract_label())
+        );
     }
 
     #[test]

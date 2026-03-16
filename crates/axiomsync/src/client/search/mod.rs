@@ -54,6 +54,275 @@ const DEFAULT_OM_SCOPE_LOOKUP_FALLBACK_LIMIT: usize = 4;
 const OM_HINT_SNAPSHOT_BUFFERED_TAIL_LIMIT: usize = 2;
 const OM_HINT_COMPACTION_RESERVED_HIGH_LIMIT: usize = 1;
 
+#[derive(Debug, Clone)]
+struct SearchIntent {
+    query: String,
+    target_uri: Option<String>,
+    session: Option<String>,
+    requested_limit: usize,
+    score_threshold: Option<f32>,
+    min_match_tokens: Option<usize>,
+    filter: Option<MetadataFilter>,
+    budget: Option<SearchBudget>,
+    runtime_hints: Vec<RuntimeHint>,
+    request_type: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct SearchPlan {
+    options: SearchOptions,
+    query: String,
+    target_raw: Option<String>,
+    session_raw: Option<String>,
+    requested_limit: usize,
+    budget: Option<SearchBudget>,
+    score_threshold: Option<f32>,
+    min_match_tokens: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TraceContextPlan {
+    restore_source: String,
+    fts_fallback_used: bool,
+}
+
+pub(crate) struct SearchService<'a> {
+    app: &'a AxiomSync,
+}
+
+impl<'a> SearchService<'a> {
+    pub(crate) fn new(app: &'a AxiomSync) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn find(
+        &self,
+        query: &str,
+        target_uri: Option<&str>,
+        limit: Option<usize>,
+        score_threshold: Option<f32>,
+        filter: Option<MetadataFilter>,
+    ) -> Result<FindResult> {
+        self.find_with_budget(query, target_uri, limit, score_threshold, filter, None)
+    }
+
+    pub(crate) fn find_with_budget(
+        &self,
+        query: &str,
+        target_uri: Option<&str>,
+        limit: Option<usize>,
+        score_threshold: Option<f32>,
+        filter: Option<MetadataFilter>,
+        budget: Option<SearchBudget>,
+    ) -> Result<FindResult> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let started = Instant::now();
+        let requested_limit = limit.unwrap_or(10);
+        let budget = normalize_budget(budget);
+        let typed_edge_enrichment = self.app.config.search.typed_edge_enrichment;
+        let intent = SearchIntent {
+            query: query.to_string(),
+            target_uri: target_uri.map(ToString::to_string),
+            session: None,
+            requested_limit,
+            score_threshold,
+            min_match_tokens: None,
+            filter,
+            budget: budget.clone(),
+            runtime_hints: Vec::new(),
+            request_type: "find",
+        };
+        let output = (|| -> Result<(FindResult, SearchPlan)> {
+            let plan = build_search_plan(intent.clone(), Vec::new())?;
+            let execution = self.app.run_retrieval_memory_only_with_metadata(&plan.options)?;
+            let mut result = execution.result;
+            self.app
+                .enrich_find_result_relations(&mut result, 5, typed_edge_enrichment)?;
+            annotate_trace_relation_metrics(&mut result);
+            annotate_typed_edge_query_plan_visibility(&mut result, typed_edge_enrichment);
+            let trace_context = build_trace_context_plan(
+                self.app.current_restore_source()?,
+                execution.metadata.fts_fallback_used,
+            );
+            annotate_trace_execution_context(
+                &mut result,
+                &build_trace_execution_context(
+                    trace_context.restore_source,
+                    trace_context.fts_fallback_used,
+                ),
+            );
+            self.app.persist_trace_result(&mut result)?;
+            Ok((result, plan))
+        })();
+
+        match output {
+            Ok((result, plan)) => {
+                let trace_id = result.trace.as_ref().map(|x| x.trace_id.clone());
+                let details = serde_json::json!({
+                    "query": plan.query,
+                    "result_count": result.query_results.len(),
+                    "limit": plan.requested_limit,
+                    "budget": budget_to_json(plan.budget.as_ref()),
+                    "retrieval_backend": RETRIEVAL_BACKEND_MEMORY,
+                    "retrieval_backend_policy": RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
+                    "typed_edge_enrichment": typed_edge_enrichment,
+                });
+                self.app.try_log_request(&RequestLogEntry {
+                    request_id,
+                    operation: "find".to_string(),
+                    status: "ok".to_string(),
+                    latency_ms: started.elapsed().as_millis(),
+                    created_at: Utc::now().to_rfc3339(),
+                    trace_id,
+                    target_uri: plan.target_raw,
+                    error_code: None,
+                    error_message: None,
+                    details: Some(details),
+                });
+                Ok(result)
+            }
+            Err(err) => {
+                self.app.try_log_request(&RequestLogEntry {
+                    request_id,
+                    operation: "find".to_string(),
+                    status: "error".to_string(),
+                    latency_ms: started.elapsed().as_millis(),
+                    created_at: Utc::now().to_rfc3339(),
+                    trace_id: None,
+                    target_uri: intent.target_uri,
+                    error_code: Some(err.code().to_string()),
+                    error_message: Some(err.to_string()),
+                    details: Some(serde_json::json!({
+                        "query": intent.query,
+                        "limit": intent.requested_limit,
+                        "budget": budget_to_json(intent.budget.as_ref()),
+                        "retrieval_backend": RETRIEVAL_BACKEND_MEMORY,
+                        "retrieval_backend_policy": RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
+                        "typed_edge_enrichment": typed_edge_enrichment,
+                    })),
+                });
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn search(
+        &self,
+        query: &str,
+        target_uri: Option<&str>,
+        session: Option<&str>,
+        limit: Option<usize>,
+        score_threshold: Option<f32>,
+        filter: Option<MetadataFilter>,
+    ) -> Result<FindResult> {
+        self.search_with_request(SearchRequest {
+            query: query.to_string(),
+            target_uri: target_uri.map(ToString::to_string),
+            session: session.map(ToString::to_string),
+            limit,
+            score_threshold,
+            min_match_tokens: None,
+            filter,
+            budget: None,
+            runtime_hints: Vec::new(),
+        })
+    }
+
+    pub(crate) fn search_with_request(&self, request: SearchRequest) -> Result<FindResult> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let started = Instant::now();
+        let intent = build_search_intent(request, "search");
+        let hint_policy = self.app.config.search.om_hint_policy;
+        let hint_bounds = self.app.config.search.om_hint_bounds;
+        let typed_edge_enrichment = self.app.config.search.typed_edge_enrichment;
+        let mut om_metrics = OmSearchMetrics::default();
+
+        let output = (|| -> Result<(FindResult, SearchPlan)> {
+            let (session_hints, resolved_metrics) = self.app.resolve_search_hints(
+                intent.session.as_deref(),
+                &intent.query,
+                &intent.runtime_hints,
+                hint_policy,
+                hint_bounds,
+            )?;
+            om_metrics = resolved_metrics;
+            let plan = build_search_plan(intent.clone(), session_hints)?;
+            let execution = self.app.run_retrieval_memory_only_with_metadata(&plan.options)?;
+            let mut result = execution.result;
+            self.app
+                .enrich_find_result_relations(&mut result, 5, typed_edge_enrichment)?;
+            annotate_trace_relation_metrics(&mut result);
+            annotate_typed_edge_query_plan_visibility(&mut result, typed_edge_enrichment);
+            annotate_om_query_plan_visibility(&mut result, &om_metrics, hint_policy);
+            let trace_context = build_trace_context_plan(
+                self.app.current_restore_source()?,
+                execution.metadata.fts_fallback_used,
+            );
+            annotate_trace_execution_context(
+                &mut result,
+                &build_trace_execution_context(
+                    trace_context.restore_source,
+                    trace_context.fts_fallback_used,
+                ),
+            );
+            self.app.persist_trace_result(&mut result)?;
+            Ok((result, plan))
+        })();
+
+        match output {
+            Ok((result, plan)) => {
+                let trace_id = result.trace.as_ref().map(|x| x.trace_id.clone());
+                let details = search_request_details(SearchRequestLogInput {
+                    query: &plan.query,
+                    requested_limit: plan.requested_limit,
+                    session: plan.session_raw.as_deref(),
+                    budget: plan.budget.as_ref(),
+                    score_threshold: plan.score_threshold,
+                    min_match_tokens: plan.min_match_tokens,
+                    metrics: om_metrics,
+                    hint_policy,
+                    typed_edge_enrichment,
+                    result_count: Some(result.query_results.len()),
+                });
+                self.app.try_log_search_request(SearchRequestLogEvent {
+                    request_id: &request_id,
+                    started,
+                    target_uri: plan.target_raw.as_deref(),
+                    trace_id: trace_id.as_deref(),
+                    status: "ok",
+                    error: None,
+                    details,
+                });
+                Ok(result)
+            }
+            Err(err) => {
+                let details = search_request_details(SearchRequestLogInput {
+                    query: &intent.query,
+                    requested_limit: intent.requested_limit,
+                    session: intent.session.as_deref(),
+                    budget: intent.budget.as_ref(),
+                    score_threshold: intent.score_threshold,
+                    min_match_tokens: intent.min_match_tokens,
+                    metrics: om_metrics,
+                    hint_policy,
+                    typed_edge_enrichment,
+                    result_count: None,
+                });
+                self.app.try_log_search_request(SearchRequestLogEvent {
+                    request_id: &request_id,
+                    started,
+                    target_uri: intent.target_uri.as_deref(),
+                    trace_id: None,
+                    status: "error",
+                    error: Some(&err),
+                    details,
+                });
+                Err(err)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct OmSearchMetrics {
     context_tokens_before_om: u32,
@@ -177,7 +446,8 @@ impl AxiomSync {
         score_threshold: Option<f32>,
         filter: Option<MetadataFilter>,
     ) -> Result<FindResult> {
-        self.find_with_budget(query, target_uri, limit, score_threshold, filter, None)
+        self.search_service()
+            .find(query, target_uri, limit, score_threshold, filter)
     }
 
     pub fn find_with_budget(
@@ -189,95 +459,8 @@ impl AxiomSync {
         filter: Option<MetadataFilter>,
         budget: Option<SearchBudget>,
     ) -> Result<FindResult> {
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let started = Instant::now();
-        let target_raw = target_uri.map(ToString::to_string);
-        let requested_limit = limit.unwrap_or(10);
-        let budget = normalize_budget(budget);
-        let typed_edge_enrichment = self.config.search.typed_edge_enrichment;
-
-        let output = (|| -> Result<FindResult> {
-            validate_filter(filter.as_ref())?;
-            validate_search_cutoff_options(score_threshold, None)?;
-            let target = parse_optional_target_uri(target_uri)?;
-            let options = build_search_options(SearchOptionsInput {
-                query: query.to_string(),
-                target_uri: target,
-                session: None,
-                session_hints: Vec::new(),
-                budget: budget.clone(),
-                requested_limit,
-                score_threshold,
-                min_match_tokens: None,
-                filter,
-                request_type: "find",
-            });
-
-            let execution = self.run_retrieval_memory_only_with_metadata(&options)?;
-            let mut result = execution.result;
-            self.enrich_find_result_relations(&mut result, 5, typed_edge_enrichment)?;
-            annotate_trace_relation_metrics(&mut result);
-            annotate_typed_edge_query_plan_visibility(&mut result, typed_edge_enrichment);
-            annotate_trace_execution_context(
-                &mut result,
-                &build_trace_execution_context(
-                    self.current_restore_source()?,
-                    execution.metadata.fts_fallback_used,
-                ),
-            );
-            self.persist_trace_result(&mut result)?;
-            Ok(result)
-        })();
-
-        match output {
-            Ok(result) => {
-                let trace_id = result.trace.as_ref().map(|x| x.trace_id.clone());
-                let details = serde_json::json!({
-                    "query": query,
-                    "result_count": result.query_results.len(),
-                    "limit": requested_limit,
-                    "budget": budget_to_json(budget.as_ref()),
-                    "retrieval_backend": RETRIEVAL_BACKEND_MEMORY,
-                    "retrieval_backend_policy": RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
-                    "typed_edge_enrichment": typed_edge_enrichment,
-                });
-                self.try_log_request(&RequestLogEntry {
-                    request_id,
-                    operation: "find".to_string(),
-                    status: "ok".to_string(),
-                    latency_ms: started.elapsed().as_millis(),
-                    created_at: Utc::now().to_rfc3339(),
-                    trace_id,
-                    target_uri: target_raw,
-                    error_code: None,
-                    error_message: None,
-                    details: Some(details),
-                });
-                Ok(result)
-            }
-            Err(err) => {
-                self.try_log_request(&RequestLogEntry {
-                    request_id,
-                    operation: "find".to_string(),
-                    status: "error".to_string(),
-                    latency_ms: started.elapsed().as_millis(),
-                    created_at: Utc::now().to_rfc3339(),
-                    trace_id: None,
-                    target_uri: target_raw,
-                    error_code: Some(err.code().to_string()),
-                    error_message: Some(err.to_string()),
-                    details: Some(serde_json::json!({
-                        "query": query,
-                        "limit": requested_limit,
-                        "budget": budget_to_json(budget.as_ref()),
-                        "retrieval_backend": RETRIEVAL_BACKEND_MEMORY,
-                        "retrieval_backend_policy": RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
-                        "typed_edge_enrichment": typed_edge_enrichment,
-                    })),
-                });
-                Err(err)
-            }
-        }
+        self.search_service()
+            .find_with_budget(query, target_uri, limit, score_threshold, filter, budget)
     }
 
     pub fn search(
@@ -289,17 +472,8 @@ impl AxiomSync {
         score_threshold: Option<f32>,
         filter: Option<MetadataFilter>,
     ) -> Result<FindResult> {
-        self.search_with_request(SearchRequest {
-            query: query.to_string(),
-            target_uri: target_uri.map(ToString::to_string),
-            session: session.map(ToString::to_string),
-            limit,
-            score_threshold,
-            min_match_tokens: None,
-            filter,
-            budget: None,
-            runtime_hints: Vec::new(),
-        })
+        self.search_service()
+            .search(query, target_uri, session, limit, score_threshold, filter)
     }
 
     fn build_search_session_hints(
@@ -462,122 +636,7 @@ impl AxiomSync {
     }
 
     pub fn search_with_request(&self, request: SearchRequest) -> Result<FindResult> {
-        let SearchRequest {
-            query,
-            target_uri,
-            session,
-            limit,
-            score_threshold,
-            min_match_tokens,
-            filter,
-            budget,
-            runtime_hints,
-        } = request;
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let started = Instant::now();
-        let target_raw = target_uri.clone();
-        let session_raw = session.clone();
-        let requested_limit = limit.unwrap_or(10);
-        let budget = normalize_budget(budget);
-        let hint_policy = self.config.search.om_hint_policy;
-        let hint_bounds = self.config.search.om_hint_bounds;
-        let typed_edge_enrichment = self.config.search.typed_edge_enrichment;
-        let mut om_metrics = OmSearchMetrics::default();
-
-        let output = (|| -> Result<FindResult> {
-            validate_filter(filter.as_ref())?;
-            validate_search_cutoff_options(score_threshold, min_match_tokens)?;
-            let target = parse_optional_target_uri(target_uri.as_deref())?;
-            let (session_hints, resolved_metrics) = self.resolve_search_hints(
-                session.as_deref(),
-                &query,
-                &runtime_hints,
-                hint_policy,
-                hint_bounds,
-            )?;
-            om_metrics = resolved_metrics;
-
-            let options = build_search_options(SearchOptionsInput {
-                query: query.clone(),
-                target_uri: target,
-                session: session.clone(),
-                session_hints,
-                budget: budget.clone(),
-                requested_limit,
-                score_threshold,
-                min_match_tokens,
-                filter,
-                request_type: "search",
-            });
-
-            let execution = self.run_retrieval_memory_only_with_metadata(&options)?;
-            let mut result = execution.result;
-            self.enrich_find_result_relations(&mut result, 5, typed_edge_enrichment)?;
-            annotate_trace_relation_metrics(&mut result);
-            annotate_typed_edge_query_plan_visibility(&mut result, typed_edge_enrichment);
-            annotate_om_query_plan_visibility(&mut result, &om_metrics, hint_policy);
-            annotate_trace_execution_context(
-                &mut result,
-                &build_trace_execution_context(
-                    self.current_restore_source()?,
-                    execution.metadata.fts_fallback_used,
-                ),
-            );
-            self.persist_trace_result(&mut result)?;
-            Ok(result)
-        })();
-
-        match output {
-            Ok(result) => {
-                let trace_id = result.trace.as_ref().map(|x| x.trace_id.clone());
-                let details = search_request_details(SearchRequestLogInput {
-                    query: &query,
-                    requested_limit,
-                    session: session_raw.as_deref(),
-                    budget: budget.as_ref(),
-                    score_threshold,
-                    min_match_tokens,
-                    metrics: om_metrics,
-                    hint_policy,
-                    typed_edge_enrichment,
-                    result_count: Some(result.query_results.len()),
-                });
-                self.try_log_search_request(SearchRequestLogEvent {
-                    request_id: &request_id,
-                    started,
-                    target_uri: target_raw.as_deref(),
-                    trace_id: trace_id.as_deref(),
-                    status: "ok",
-                    error: None,
-                    details,
-                });
-                Ok(result)
-            }
-            Err(err) => {
-                let details = search_request_details(SearchRequestLogInput {
-                    query: &query,
-                    requested_limit,
-                    session: session_raw.as_deref(),
-                    budget: budget.as_ref(),
-                    score_threshold,
-                    min_match_tokens,
-                    metrics: om_metrics,
-                    hint_policy,
-                    typed_edge_enrichment,
-                    result_count: None,
-                });
-                self.try_log_search_request(SearchRequestLogEvent {
-                    request_id: &request_id,
-                    started,
-                    target_uri: target_raw.as_deref(),
-                    trace_id: None,
-                    status: "error",
-                    error: Some(&err),
-                    details,
-                });
-                Err(err)
-            }
-        }
+        self.search_service().search_with_request(request)
     }
 
     pub(crate) fn fetch_session_om_state(
@@ -987,6 +1046,59 @@ fn parse_optional_target_uri(target_uri: Option<&str>) -> Result<Option<AxiomUri
     target_uri.map(AxiomUri::parse).transpose()
 }
 
+fn build_search_intent(request: SearchRequest, request_type: &'static str) -> SearchIntent {
+    SearchIntent {
+        query: request.query,
+        target_uri: request.target_uri,
+        session: request.session,
+        requested_limit: request.limit.unwrap_or(10),
+        score_threshold: request.score_threshold,
+        min_match_tokens: request.min_match_tokens,
+        filter: request.filter,
+        budget: normalize_budget(request.budget),
+        runtime_hints: request.runtime_hints,
+        request_type,
+    }
+}
+
+fn build_search_plan(intent: SearchIntent, session_hints: Vec<String>) -> Result<SearchPlan> {
+    validate_filter(intent.filter.as_ref())?;
+    validate_search_cutoff_options(intent.score_threshold, intent.min_match_tokens)?;
+    let target_uri = parse_optional_target_uri(intent.target_uri.as_deref())?;
+    let options = build_search_options(SearchOptionsInput {
+        query: intent.query.clone(),
+        target_uri,
+        session: intent.session.clone(),
+        session_hints,
+        budget: intent.budget.clone(),
+        requested_limit: intent.requested_limit,
+        score_threshold: intent.score_threshold,
+        min_match_tokens: intent.min_match_tokens,
+        filter: intent.filter.clone(),
+        request_type: intent.request_type,
+    });
+    Ok(SearchPlan {
+        options,
+        query: intent.query,
+        target_raw: intent.target_uri,
+        session_raw: intent.session,
+        requested_limit: intent.requested_limit,
+        budget: intent.budget,
+        score_threshold: intent.score_threshold,
+        min_match_tokens: intent.min_match_tokens,
+    })
+}
+
+fn build_trace_context_plan(
+    restore_source: String,
+    fts_fallback_used: bool,
+) -> TraceContextPlan {
+    TraceContextPlan {
+        restore_source,
+        fts_fallback_used,
+    }
+}
+
 fn build_search_options(input: SearchOptionsInput) -> SearchOptions {
     let SearchOptionsInput {
         query,
@@ -1286,12 +1398,13 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        SearchOptionsInput, build_search_options, infer_buffered_entry_priority,
-        normalize_hint_text, parse_optional_target_uri, snapshot_visible_entry_selection,
+        SearchOptionsInput, build_search_intent, build_search_options, build_search_plan,
+        build_trace_context_plan, infer_buffered_entry_priority, normalize_hint_text,
+        parse_optional_target_uri, snapshot_visible_entry_selection,
         snapshot_visible_entry_source_key, validate_search_cutoff_options,
     };
     use crate::error::AxiomError;
-    use crate::models::{MetadataFilter, SearchBudget};
+    use crate::models::{MetadataFilter, RuntimeHint, RuntimeHintKind, SearchBudget, SearchRequest};
     use crate::om::{OmObservationEntryV2, OmObservationOriginKind, OmObservationPriority};
     use crate::uri::AxiomUri;
 
@@ -1386,6 +1499,72 @@ mod tests {
             vec!["auth".to_string(), "oauth".to_string()]
         );
         assert_eq!(resolved_filter.mime.as_deref(), Some("text/markdown"));
+    }
+
+    #[test]
+    fn build_search_intent_normalizes_requested_limit_and_budget() {
+        let intent = build_search_intent(
+            SearchRequest {
+                query: "oauth".to_string(),
+                target_uri: Some("axiom://resources".to_string()),
+                session: Some("s-1".to_string()),
+                limit: None,
+                score_threshold: Some(0.4),
+                min_match_tokens: Some(2),
+                filter: None,
+                budget: Some(SearchBudget {
+                    max_ms: Some(100),
+                    max_nodes: Some(20),
+                    max_depth: Some(3),
+                }),
+                runtime_hints: vec![RuntimeHint {
+                    kind: RuntimeHintKind::External,
+                    text: "recent outage".to_string(),
+                    source: Some("test".to_string()),
+                }],
+            },
+            "search",
+        );
+
+        assert_eq!(intent.requested_limit, 10);
+        assert_eq!(intent.request_type, "search");
+        assert_eq!(intent.session.as_deref(), Some("s-1"));
+        assert_eq!(intent.runtime_hints.len(), 1);
+    }
+
+    #[test]
+    fn build_search_plan_preserves_query_and_session_hint_layers() {
+        let intent = build_search_intent(
+            SearchRequest {
+                query: "oauth".to_string(),
+                target_uri: Some("axiom://resources".to_string()),
+                session: Some("s-1".to_string()),
+                limit: Some(7),
+                score_threshold: Some(0.4),
+                min_match_tokens: Some(3),
+                filter: None,
+                budget: None,
+                runtime_hints: Vec::new(),
+            },
+            "search",
+        );
+
+        let plan =
+            build_search_plan(intent, vec!["runtime hint".to_string(), "om hint".to_string()])
+                .expect("plan");
+        assert_eq!(plan.query, "oauth");
+        assert_eq!(plan.requested_limit, 7);
+        assert_eq!(plan.session_raw.as_deref(), Some("s-1"));
+        assert_eq!(plan.options.session_hints.len(), 2);
+        assert_eq!(plan.options.request_type, "search");
+    }
+
+    #[test]
+    fn trace_context_plan_carries_restore_source_and_fts_flag() {
+        let plan = build_trace_context_plan("state_restore".to_string(), true);
+
+        assert_eq!(plan.restore_source, "state_restore");
+        assert!(plan.fts_fallback_used);
     }
 
     #[test]

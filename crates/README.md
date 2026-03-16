@@ -1,36 +1,23 @@
-# Crates
+# Packages
 
-Minimal crate index for the runtime repository.
+이 저장소의 Rust package는 하나입니다. runtime library와 operator CLI binary를 같은 crate에 두고, web/mobile companion 프로젝트는 여기 넣지 않습니다.
 
-## Modules
+## Package Map
+- [`axiomsync`](./axiomsync/README.md): runtime library, operator CLI binary, persistence, retrieval, session, release evidence
 
-- [`axiomme-core`](./axiomme-core/README.md): domain/runtime engine, persistence, retrieval.
-- [`axiomme-cli`](./axiomme-cli/README.md): operator/automation command surface.
-- [`axiomme-mobile-ffi`](./axiomme-mobile-ffi/README.md): native mobile FFI boundary.
+## Out Of Repository
+- web companion project
+- mobile FFI companion project
+- iOS and Android application shells
 
-Out of scope in this repository:
-- web viewer/server crate (moved to external project)
-- iOS/Android app projects
-
-## Run
-
+## Common Commands
 ```bash
-cargo run -p axiomme-cli -- --help
+cargo run -p axiomsync -- --help
+bash scripts/quality_gates.sh
 ```
 
-Queue daemon (local operator workflow):
-
-```bash
-process-compose --log-file logs/process-compose.log -f process-compose.yaml up
-```
-
-Logs:
-- `logs/process-compose.log`
-- `logs/queue_daemon.log`
-
-## Develop
-
-```bash
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-```
+## Reader Path
+- Start with [../README.md](../README.md)
+- Runtime boundary: [`axiomsync`](./axiomsync/README.md)
+- Runtime and CLI boundary: [`axiomsync`](./axiomsync/README.md)
+- Contracts and architecture: [../docs/INDEX.md](../docs/INDEX.md)

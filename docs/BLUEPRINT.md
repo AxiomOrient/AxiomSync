@@ -37,8 +37,8 @@
 - ReleaseVerificationService
 
 주석:
-- Phase 1 완료 서비스: Event/Link/Repo/Archive
-- Phase 2 대상: Resource/Search/Session/Runtime/ReleaseVerification
+- 이미 explicit service로 승격된 서비스: Event/Link/Repo/Archive
+- 현재 explicit service 경계: RuntimeBootstrap/Resource/Search/Session/ReleaseVerification
 
 ### Domain Layer
 - URI / Scope

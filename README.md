@@ -1,31 +1,58 @@
-# AxiomMe
+# AxiomSync
 
-**Production-grade Context Management System for Agentic Runtimes**
+Local-first context runtime and operator CLI for agentic systems.
 
-AxiomMe는 에이전트 환경을 위한 Rust 기반의 로컬 컨텍스트 관리 시스템입니다. `axiom://` 가상 파일 시스템을 통해 데이터의 일관성을 보장하며, 고성능 검색 엔진과 정밀한 세션 메모리 관리 기능을 제공합니다.
+AxiomSync는 `axiom://` URI, `context.db`, 메모리 검색 런타임, 세션/OM 상태를 하나로 묶는 로컬 런타임입니다. 이 저장소는 런타임과 CLI만 소유합니다.
 
-## Key Features
-- **Local-first Architecture**: 모든 데이터는 로컬 디스크(`fs`), SQLite(`state`), 그리고 인메모리 인덱스(`index`)에서 관리됩니다.
-- **High Performance Retrieval**: John Carmack의 성능 철학을 반영한 최적화된 DRR(Document Retrieval and Ranking) 엔진을 탑재하여 수만 개의 문서에서도 밀리초 단위의 검색을 보장합니다.
-- **Atomic Memory Promotion**: 세션의 대화 내용을 분석하여 유의미한 기억으로 승격시키는 과정을 체크포인트 기반의 원자적 작업으로 수행합니다.
-- **Rigorous Quality Gates**: 600개 이상의 테스트와 다층 품질 게이트를 통해 상용 수준의 안정성을 유지합니다.
+## Release Line
+- Current repository release line: `v1.3.0`
+- Canonical local store: `<root>/context.db`
+- Retrieval policy: `memory_only`
+- Persistence policy: SQLite only
+
+## Repository Boundary
+- In this repository: `crates/axiomsync`, `docs/`, `scripts/`
+- Outside this repository: web companion, mobile FFI companion, app-specific frontend shells
 
 ## Quick Start
 ```bash
-# 초기화
-axiomme init
+cargo run -p axiomsync -- --help
 
-# 리소스 추가
-axiomme add ./docs --target axiom://resources/docs
-
-# 검색
-axiomme search "oauth flow"
-
-# 세션 커밋 및 기억 승격
-axiomme session commit
+cargo run -p axiomsync -- init
+cargo run -p axiomsync -- add ./docs --target axiom://resources/docs
+cargo run -p axiomsync -- search "oauth flow"
+cargo run -p axiomsync -- session commit
 ```
 
-## Documentation
-- [Architecture](./docs/ARCHITECTURE.md): 시스템 설계 및 데이터 흐름 명세
-- [API Contract](./docs/API_CONTRACT.md): 인터페이스 규약 및 데이터 모델
-- [Ontology Policy](./docs/ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md): 데이터 스키마 진화 정책
+## Runtime Model
+- URI model: `axiom://{scope}/{path}`
+- State store: `context.db`
+- Retrieval runtime: `memory_only`
+- Persisted retrieval state: `search_docs` + `search_docs_fts`
+- Canonical result shape: `FindResult.query_results` + `hit_buckets`
+- Compatibility JSON views: serialized `memories`, `resources`, `skills`
+- Derived bucket views: `FindResult.memories()`, `resources()`, `skills()`
+- Session/OM state: explicit and durable
+
+## Documentation Map
+- [docs/INDEX.md](./docs/INDEX.md): documentation entrypoint
+- [docs/BLUEPRINT.md](./docs/BLUEPRINT.md): product target state
+- [docs/IMPLEMENTATION_SPEC.md](./docs/IMPLEMENTATION_SPEC.md): implementation completion contract
+- [docs/API_CONTRACT.md](./docs/API_CONTRACT.md): stable contract
+- [docs/RUNTIME_ARCHITECTURE.md](./docs/RUNTIME_ARCHITECTURE.md): runtime structure
+- [docs/RETRIEVAL_ARCHITECTURE.md](./docs/RETRIEVAL_ARCHITECTURE.md): retrieval path
+- [docs/RELEASE_RUNBOOK.md](./docs/RELEASE_RUNBOOK.md): release owner checklist
+- [docs/CODE_OWNERSHIP.md](./docs/CODE_OWNERSHIP.md): change routing
+
+## Quality And Release
+```bash
+bash scripts/quality_gates.sh
+bash scripts/release_pack_strict_gate.sh --workspace-dir "$(pwd)"
+```
+
+## Non-Negotiable Rules
+- Canonical URI protocol stays `axiom://`
+- Runtime startup is a hard cutover to `context.db`
+- Legacy DB filename discovery or migration is not supported
+- Retrieval backend remains `memory_only`; `sqlite` retrieval mode is rejected
+- Vendored pure-OM boundary remains explicit under `axiomsync::om`

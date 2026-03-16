@@ -44,3 +44,4 @@
 ## Execution Artifacts
 - 실행 계획은 `plans/IMPLEMENTATION-PLAN.md`
 - 실행 태스크 ledger는 `plans/TASKS.md`
+- explicit service 경계는 `src/client/{runtime,resource,search,release/verify_service}.rs` 와 `src/client/facade.rs` 에서 확인할 수 있다.

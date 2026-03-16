@@ -15,7 +15,7 @@
 *.pdb
 
 # ==============================================================================
-# AxiomMe Data & Runtime
+# AxiomSync Data & Runtime
 # ==============================================================================
 
 # Context database storage
@@ -24,11 +24,16 @@
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
+.axiomsync_state.sqlite3*
 .axiomme_state.sqlite3*
+context.db*
+*.db-shm
+*.db-wal
 
-# Default runtime directory (CLI default: --root .axiomme)
-/.axiomme/
+# Default runtime directory (CLI default: --root .axiomsync)
 /.axiomsync/
+/.axiomnexus/
+/.axiomme/
 
 # Canonical filesystem directories
 /resources/

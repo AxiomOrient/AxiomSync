@@ -129,23 +129,6 @@ impl AxiomSync {
         })
     }
 
-    pub fn bootstrap(&self) -> Result<()> {
-        self.fs.initialize()?;
-        self.ensure_default_ontology_schema()?;
-        Ok(())
-    }
-
-    pub fn prepare_runtime(&self) -> Result<()> {
-        self.bootstrap()?;
-        self.ensure_scope_tiers()?;
-        self.initialize_runtime_index()?;
-        Ok(())
-    }
-
-    pub fn initialize(&self) -> Result<()> {
-        self.prepare_runtime()
-    }
-
     fn markdown_gate_for_uri(&self, uri: &AxiomUri) -> Result<DocumentEditGate> {
         self.markdown_edit_gates.gate_for(uri)
     }

@@ -1,18 +1,16 @@
 [workspace]
 members = [
-    "crates/axiomme-core",
-    "crates/axiomme-cli",
-    "crates/axiomme-mobile-ffi",
+    "crates/axiomsync",
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "0.1.6"
+version = "1.3.0"
 license = "Apache-2.0"
 authors = ["axient"]
-repository = "https://github.com/AxiomOrient/AxiomMe"
-homepage = "https://github.com/AxiomOrient/AxiomMe"
+repository = "https://github.com/AxiomOrient/AxiomSync"
+homepage = "https://github.com/AxiomOrient/AxiomSync"
 
 [workspace.dependencies]
 anyhow = "1.0.98"
@@ -33,3 +31,13 @@ pulldown-cmark = "0.13.0"
 serde_norway = "0.9.42"
 toml = "0.8.23"
 semver = "1.0.27"
+
+[profile.dev]
+debug = 0
+incremental = false
+codegen-units = 64
+
+[profile.test]
+debug = 0
+incremental = false
+codegen-units = 64
