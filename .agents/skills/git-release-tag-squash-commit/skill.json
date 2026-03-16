@@ -27,7 +27,7 @@
       "type": "list",
       "required": false,
       "shape": "{PATH}",
-      "description": "Runtime/cache paths to remove before commit (for example .axiomsync, .axiomme)."
+      "description": "Repository-specific runtime or cache paths to remove before commit."
     }
   ],
   "display_name": "Git / Release Tag Squash Commit",

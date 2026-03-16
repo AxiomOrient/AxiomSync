@@ -28,15 +28,16 @@ Enforce two-branch topology by removing non-core branches.
 Remote delete set command:
 ```bash
 git for-each-ref --format='%(refname:short)' refs/remotes \
-  | grep '^origin/' \
-  | sed 's#^origin/##' \
-  | grep -Ev '^(HEAD|main|release)$'
+  | grep '^<REMOTE_NAME>/' \
+  | sed "s#^<REMOTE_NAME>/##" \
+  | grep -Ev '^(HEAD|<KEEP_BRANCH_1>|<KEEP_BRANCH_2>|...)$'
 ```
 
 ## Safety Rules
 - Never delete the currently checked-out branch.
 - Never target symbolic remote refs.
 - Stop and report if protected branch deletion is attempted.
+- Interpret `KEEP_BRANCHES` as the only allowed survivors; do not hardcode branch names outside defaults.
 
 ## Output
 - `DELETED_LOCAL`: list

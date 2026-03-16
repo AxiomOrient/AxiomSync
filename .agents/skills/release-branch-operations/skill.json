@@ -5,10 +5,22 @@
   "default_program": "[stages: preflight>plan>act>verify>handoff | scope: repo | policy: composable-atomic-steps,deterministic-output | output: md(contract=v1)]",
   "required_inputs": [
     {
+      "name": "MAIN_BRANCH",
+      "type": "string",
+      "required": false,
+      "description": "Integration branch name. Default: main."
+    },
+    {
+      "name": "RELEASE_BRANCH",
+      "type": "string",
+      "required": false,
+      "description": "Deployment branch name. Default: release."
+    },
+    {
       "name": "SOURCE_BRANCH",
       "type": "string",
-      "required": true,
-      "description": "Integration source branch to move into main."
+      "required": false,
+      "description": "Integration source branch to move into the configured main branch. Optional when setup can auto-detect."
     },
     {
       "name": "RELEASE_TAGS",
@@ -22,6 +34,13 @@
       "type": "string",
       "required": false,
       "description": "Remote to sync and push. Default: origin."
+    },
+    {
+      "name": "CACHE_PATHS",
+      "type": "list",
+      "required": false,
+      "shape": "{PATH}",
+      "description": "Repository-specific cache/runtime paths to remove during release snapshot commits."
     }
   ],
   "display_name": "Workflow / Release Branch Operations",
@@ -32,6 +51,7 @@
   "starter_inputs": [],
   "expands_to": [
     "$git-preflight-clean-sync",
+    "$git-configure-main-release-topology",
     "$git-main-sync-ff",
     "$git-release-tag-squash-commit",
     "$git-prune-branches-keep-main-release"

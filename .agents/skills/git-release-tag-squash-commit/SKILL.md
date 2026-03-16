@@ -17,24 +17,26 @@ Append exactly one release commit derived from exactly one existing tag.
 - `RELEASE_TAG` (string; required)
 - `RELEASE_BRANCH` (string; optional; default `release`)
 - `REMOTE_NAME` (string; optional; default `origin`)
-- `CACHE_PATHS` (list; optional; default: `.axiomsync`, `.axiomme`)
+- `CACHE_PATHS` (list; optional): cache/runtime paths to remove before commit when the repository needs that cleanup
 
 ## Procedure
 1. Verify tag exists: `git rev-parse <RELEASE_TAG>`.
-2. Checkout release branch.
-3. Replace tree with tag snapshot:
+2. Verify `<RELEASE_BRANCH>` already exists. If not, run `git-configure-main-release-topology` first.
+3. Checkout `<RELEASE_BRANCH>`.
+4. Replace tree with tag snapshot:
 - `git rm -rf .`
 - `git clean -ffdx`
 - `git checkout <RELEASE_TAG> -- .`
-4. Remove runtime caches from worktree/index.
-5. Commit:
+5. Remove any user-supplied `CACHE_PATHS` from worktree/index.
+6. Commit:
 - `git add -A`
 - `git commit -m "release(<RELEASE_TAG>): squash snapshot from tag <RELEASE_TAG>"`
-6. Push release branch.
+7. Push `<REMOTE_NAME> <RELEASE_BRANCH>`.
 
 ## Block Conditions
 - Tag does not exist.
 - Dirty worktree.
+- Release branch does not exist.
 - Nothing changed after snapshot apply.
 
 ## Output

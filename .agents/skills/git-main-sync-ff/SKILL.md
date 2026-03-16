@@ -6,7 +6,7 @@ description: Fast-forward sync a target branch (default main) from a validated s
 # Git / Main Sync FF
 
 ## Purpose
-Update `main` to latest integrated line using fast-forward only.
+Update an integration branch using fast-forward only. Default target is `main`.
 
 ## Default Program
 ```text
@@ -17,6 +17,9 @@ Update `main` to latest integrated line using fast-forward only.
 - `SOURCE_BRANCH` (string; required)
 - `TARGET_BRANCH` (string; optional; default `main`)
 - `REMOTE_NAME` (string; optional; default `origin`)
+
+## Prerequisite
+- The target integration branch already exists. If not, run `git-configure-main-release-topology` first.
 
 ## Procedure
 1. `git checkout <TARGET_BRANCH>`

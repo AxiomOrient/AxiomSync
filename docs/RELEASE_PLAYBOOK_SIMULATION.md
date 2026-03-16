@@ -30,6 +30,21 @@
 - `RELEASE_TOP=release(v1.1.0): squash snapshot from tag v1.1.0`
 - `SIMULATION_RESULT=PASS`
 
+## Topology Setup Simulation
+1. Create a virtual repo whose working branch is `develop`, not `main`.
+2. Add another active branch `feature/api`.
+3. Point remote default branch (`origin/HEAD`) to `develop`.
+4. Run the setup flow from the new `git-configure-main-release-topology` skill.
+5. Verify `main` and `release` are created from `develop` without rewriting existing refs.
+
+### Topology Setup Pass Evidence
+- `DEFAULT_BRANCH=develop`
+- `SELECTED_SOURCE_BRANCH=develop`
+- `REMOTE_BRANCHES=origin/develop origin/feature/api origin/main origin/release`
+- `SOURCE_TIP == MAIN_TIP == RELEASE_TIP`
+- `TOPOLOGY_SIMULATION_RESULT=PASS`
+
 ## Conclusion
 - updated playbook commands now execute successfully in virtual run.
 - branch prune logic is shell-safe for zsh and excludes pseudo-refs correctly.
+- topology setup flow can bootstrap `main` and `release` from a non-standard default branch.
