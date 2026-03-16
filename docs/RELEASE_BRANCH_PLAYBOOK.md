@@ -1,75 +1,96 @@
-# Branch and Release Operations Playbook
+# Release Operations Playbook (Skill-Composed)
 
-## 1. Why this model exists
-- `main` is the integration truth: all validated work converges here.
-- `release` is deployment truth: only versioned release snapshots live here.
-- Keeping only two long-lived branches reduces drift, merge debt, and release mistakes.
-- Release history stays readable because each deployable version is a single squash commit.
+## Atomic Skill Index
+- `git-preflight-clean-sync`
+  - file: `.agents/skills/git-preflight-clean-sync/`
+- `git-main-sync-ff`
+  - file: `.agents/skills/git-main-sync-ff/`
+- `git-release-tag-squash-commit`
+  - file: `.agents/skills/git-release-tag-squash-commit/`
+- `git-prune-branches-keep-main-release`
+  - file: `.agents/skills/git-prune-branches-keep-main-release/`
 
-## 2. Operating contract (What)
-- Allowed long-lived branches: `main`, `release` only.
-- All feature or temporary branches are short-lived and must be deleted after merge.
-- `release` must contain only commits shaped like:
-  - `release(<tag>): squash snapshot from tag <tag>`
-- Every release commit must map to a real git tag.
+## Workflow Skill
+- `release-branch-operations`
+  - file: `.agents/skills/release-branch-operations/`
+  - expands to atomic skills in this order:
+    1. `git-preflight-clean-sync`
+    2. `git-main-sync-ff`
+    3. `git-release-tag-squash-commit` (repeat per tag)
+    4. `git-prune-branches-keep-main-release`
 
-## 3. When to run which flow
-- Daily integration:
-  - Trigger: validated development changes are ready.
-  - Action: integrate into `main`, push `main`.
-- Release preparation:
-  - Trigger: a production release candidate is approved on `main`.
-  - Action: create release tag on `main` first.
-- Release branch update:
-  - Trigger: new release tag exists.
-  - Action: add one squash snapshot commit for that tag on `release`.
-- Branch hygiene:
-  - Trigger: after integration/release update work.
-  - Action: remove every branch except `main` and `release` (local + remote).
+## Runbook A: Integrate Source Into Main
+1. Run `git-preflight-clean-sync`
+- required: clean worktree
+- command baseline:
+```bash
+git status --short --branch
+git fetch origin --prune
+```
+2. Run `git-main-sync-ff`
+```bash
+git checkout main
+git merge --ff-only <source-branch>
+git push origin main
+```
 
-## 4. How to execute safely
+## Runbook B: Append One Release Commit From One Tag
+1. Run `git-preflight-clean-sync` with required tag.
+2. Run `git-release-tag-squash-commit` once.
+```bash
+git rev-parse <tag>
+git checkout release
+git rm -rf .
+git clean -ffdx
+git checkout <tag> -- .
+rm -rf .axiomsync .axiomme
+git add -A
+git commit -m "release(<tag>): squash snapshot from tag <tag>"
+git push origin release
+```
 
-### 4.1 Pre-flight checks
-1. `git status --short --branch` must be clean.
-2. Verify target tags exist: `git tag --list`.
-3. Verify remote sync: `git fetch origin --prune`.
+## Runbook C: Rebuild Release Branch From Ordered Tags
+Use this when release branch history must be regenerated as tag-only snapshots.
 
-### 4.2 Make main the latest
-1. Checkout main: `git checkout main`
-2. Integrate latest validated line (example from dev): `git merge --ff-only dev`
-3. Push: `git push origin main`
+1. Preflight with `git-preflight-clean-sync`.
+2. Create a temporary orphan branch.
+3. For each tag in semver order, repeat `git-release-tag-squash-commit` logic on the temp branch.
+4. Move `release` to rebuilt tip.
+5. Force-push `release` only when explicitly approved.
 
-### 4.3 Create/advance release commit from a tag
-1. Tag on main (example): `git tag -a v1.4.0 -m "release v1.4.0"`
-2. Push tag: `git push origin v1.4.0`
-3. Checkout release: `git checkout release`
-4. Replace tree with tag snapshot:
-   - `git rm -rf .`
-   - `git clean -ffdx`
-   - `git checkout v1.4.0 -- .`
-   - `rm -rf .axiomsync`
-5. Commit squash snapshot:
-   - `git add -A`
-   - `git commit -m "release(v1.4.0): squash snapshot from tag v1.4.0"`
-6. Push release: `git push origin release`
+Reference loop:
+```bash
+git checkout --orphan codex/release-rebuild
+git rm -rf . || true
+git clean -ffdx
+for tag in $(git tag --list | awk '{orig=$0; norm=$0; sub(/^v/,"",norm); print norm" "orig}' | sort -V | awk '{print $2}'); do
+  git rm -rf . || true
+  git clean -ffdx
+  git checkout "$tag" -- .
+  rm -rf .axiomsync .axiomme
+  git add -A
+  git diff --cached --quiet || git commit -m "release(${tag}): squash snapshot from tag ${tag}"
+done
+git branch -f release codex/release-rebuild
+```
 
-### 4.4 Cleanup branches after work
-- Local cleanup:
-  - `for b in $(git for-each-ref --format='%(refname:short)' refs/heads); do if [ "$b" != "main" ] && [ "$b" != "release" ]; then git branch -D "$b"; fi; done`
-- Remote cleanup:
-  - `for rb in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin | sed 's#^origin/##' | grep -Ev '^(HEAD|main|release)$'); do git push origin --delete "$rb"; done`
+## Runbook D: Prune Non-Core Branches
+Run `git-prune-branches-keep-main-release`.
 
-## 5. Guardrails and failure conditions
-- Never push `release` without a corresponding tag.
-- Never keep temp branches after merge is done.
-- If merge reports unrelated histories, stop and perform explicit merge plan with conflict strategy.
-- If `.axiomsync/` or other local runtime cache appears in staged files, remove it before commit.
-- If branch divergence is large, do not force-push blindly; validate commit lineage first.
+```bash
+for b in $(git for-each-ref --format='%(refname:short)' refs/heads); do
+  if [ "$b" != "main" ] && [ "$b" != "release" ]; then
+    git branch -D "$b"
+  fi
+done
+for rb in $(git for-each-ref --format='%(refname:short)' refs/remotes | grep '^origin/' | sed 's#^origin/##' | grep -Ev '^(HEAD|main|release)$'); do
+  git push origin --delete "$rb"
+done
+git fetch origin --prune
+```
 
-## 6. Release day checklist
-1. Main tests/gates pass.
-2. Tag created on main and pushed.
-3. Release squash commit created from that exact tag.
-4. `origin/main` and `origin/release` both updated.
-5. No extra local/remote branches except main/release.
-6. Deployment automation points to `release` commit.
+## Acceptance Checks
+- local branches: only `main`, `release`
+- remote branches: only `origin/main`, `origin/release`
+- release commits: only `release(<tag>): squash snapshot from tag <tag>` format
+- latest release commit tag matches intended deployment tag

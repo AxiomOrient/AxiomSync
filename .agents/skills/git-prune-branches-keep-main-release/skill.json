@@ -1,0 +1,33 @@
+{
+  "name": "git-prune-branches-keep-main-release",
+  "layer": "atomic",
+  "layer_badge": "Atomic",
+  "default_program": "[stages: preflight>detect>act>verify>handoff | scope: refs(local,remote) | policy: allowlist-only,safety-first,deterministic-output | output: md(contract=v1)]",
+  "required_inputs": [
+    {
+      "name": "REMOTE_NAME",
+      "type": "string",
+      "required": false,
+      "description": "Remote whose branches will be pruned. Default: origin."
+    },
+    {
+      "name": "KEEP_BRANCHES",
+      "type": "list",
+      "required": false,
+      "shape": "{BRANCH}",
+      "description": "Branch allowlist. Default: main, release."
+    },
+    {
+      "name": "DRY_RUN",
+      "type": "boolean",
+      "required": false,
+      "description": "If true, report deletions only."
+    }
+  ],
+  "display_name": "Git / Prune Branches Keep Main Release",
+  "browse_category": "git",
+  "browse_priority": 30,
+  "is_category_default": false,
+  "codex_surface": "expert",
+  "starter_inputs": []
+}

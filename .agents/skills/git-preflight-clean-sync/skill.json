@@ -1,0 +1,34 @@
+{
+  "name": "git-preflight-clean-sync",
+  "layer": "atomic",
+  "layer_badge": "Atomic",
+  "default_program": "[stages: preflight>detect>verify>handoff | scope: repo | policy: safety-first,deterministic-output | output: md(contract=v1)]",
+  "required_inputs": [
+    {
+      "name": "REMOTE_NAME",
+      "type": "string",
+      "required": false,
+      "description": "Remote name to fetch/prune. Default: origin."
+    },
+    {
+      "name": "REQUIRED_BRANCHES",
+      "type": "list",
+      "required": false,
+      "shape": "{BRANCH}",
+      "description": "Branches that must exist locally or remotely before mutation steps."
+    },
+    {
+      "name": "REQUIRED_TAGS",
+      "type": "list",
+      "required": false,
+      "shape": "{TAG}",
+      "description": "Tags that must exist before release steps."
+    }
+  ],
+  "display_name": "Git / Preflight Clean Sync",
+  "browse_category": "git",
+  "browse_priority": 10,
+  "is_category_default": false,
+  "codex_surface": "expert",
+  "starter_inputs": []
+}
