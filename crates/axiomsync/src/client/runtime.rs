@@ -188,11 +188,7 @@ impl AxiomSync {
             return Ok(false);
         }
         self.fs.rm(&uri, true, true)?;
-        self.prune_index_prefix_from_memory(&uri)?;
-        self.state
-            .remove_search_documents_with_prefix(&uri.to_string())?;
-        self.state
-            .remove_index_state_with_prefix(&uri.to_string())?;
+        self.purge_uri_index(&uri)?;
         let _ = self
             .state
             .remove_promotion_checkpoints_for_session(session_id)?;
@@ -221,9 +217,11 @@ impl AxiomSync {
         for om in om_records {
             index.upsert_om_record(om);
         }
+        drop(index);
 
+        let stamp = self.current_index_profile_stamp();
         self.state
-            .set_system_value(INDEX_PROFILE_STAMP_KEY, &self.current_index_profile_stamp())?;
+            .set_system_value(INDEX_PROFILE_STAMP_KEY, &stamp)?;
         self.state
             .set_system_value(RUNTIME_RESTORE_SOURCE_KEY, "full_reindex")?;
         self.state.record_repair_run(&RepairRunRecord {
@@ -233,7 +231,7 @@ impl AxiomSync {
             finished_at: Some(Utc::now().to_rfc3339()),
             status: RUN_STATUS_SUCCESS.to_string(),
             details: Some(serde_json::json!({
-                "index_profile_stamp": self.current_index_profile_stamp(),
+                "index_profile_stamp": stamp,
             })),
         })?;
         Ok(())
@@ -307,13 +305,18 @@ impl AxiomSync {
                 return Ok(true);
             };
             let path = self.fs.resolve_uri(&parsed);
-            if !path.exists() {
-                return Ok(true);
-            }
-
-            let mtime = metadata_mtime_nanos(&path);
-            if mtime != stored_mtime {
-                return Ok(true);
+            match std::fs::metadata(&path) {
+                Err(_) => return Ok(true),
+                Ok(meta) => {
+                    let mtime = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map_or(0, saturating_duration_nanos_to_i64);
+                    if mtime != stored_mtime {
+                        return Ok(true);
+                    }
+                }
             }
         }
         Ok(false)

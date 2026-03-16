@@ -37,17 +37,13 @@ impl AxiomSync {
             .map(AxiomUri::parse)
             .transpose()?
             .map_or_else(|| default_resource_target(path_or_url), Ok)?;
+        let finalize_mode = resolve_add_resource_finalize_mode(path_or_url)?;
         let ingest_manager = IngestManager::new(self.fs.clone(), self.parser_registry.clone());
         let mut ingest = ingest_manager.start_session()?;
-        let finalize_mode =
-            match stage_add_resource_source(path_or_url, timeout_secs, &mut ingest, ingest_options)
-            {
-                Ok(mode) => mode,
-                Err(err) => {
-                    ingest.abort();
-                    return Err(err);
-                }
-            };
+        if let Err(err) = stage_add_resource_source(path_or_url, timeout_secs, &mut ingest, ingest_options) {
+            ingest.abort();
+            return Err(err);
+        }
         if let Err(err) = ingest.write_manifest(path_or_url) {
             ingest.abort();
             return Err(err);
@@ -323,12 +319,7 @@ impl AxiomSync {
     pub fn rm(&self, uri: &str, recursive: bool) -> Result<()> {
         let uri = AxiomUri::parse(uri)?;
         self.fs.rm(&uri, recursive, false)?;
-
-        self.prune_index_prefix_from_memory(&uri)?;
-        self.state
-            .remove_search_documents_with_prefix(&uri.to_string())?;
-        self.state
-            .remove_index_state_with_prefix(&uri.to_string())?;
+        self.purge_uri_index(&uri)?;
 
         self.state.enqueue(
             "delete",
@@ -349,11 +340,7 @@ impl AxiomSync {
             )));
         }
         self.fs.mv(&from, &to, false)?;
-        self.prune_index_prefix_from_memory(&from)?;
-        self.state
-            .remove_search_documents_with_prefix(&from.to_string())?;
-        self.state
-            .remove_index_state_with_prefix(&from.to_string())?;
+        self.purge_uri_index(&from)?;
         self.reindex_uri_tree(&to)?;
 
         self.state.enqueue(
@@ -444,11 +431,7 @@ impl AxiomSync {
             }
             let imported = pack::import_ovpack(&self.fs, Path::new(file_path), &parent_uri, force)?;
             if vectorize {
-                self.prune_index_prefix_from_memory(&imported)?;
-                self.state
-                    .remove_search_documents_with_prefix(&imported.to_string())?;
-                self.state
-                    .remove_index_state_with_prefix(&imported.to_string())?;
+                self.purge_uri_index(&imported)?;
                 self.ensure_tiers_recursive(&imported)?;
                 self.reindex_uri_tree(&imported)?;
             }
@@ -492,6 +475,15 @@ impl AxiomSync {
 }
 
 impl AxiomSync {
+    pub(super) fn purge_uri_index(&self, uri: &AxiomUri) -> Result<()> {
+        self.prune_index_prefix_from_memory(uri)?;
+        self.state
+            .remove_search_documents_with_prefix(&uri.to_string())?;
+        self.state
+            .remove_index_state_with_prefix(&uri.to_string())?;
+        Ok(())
+    }
+
     pub(super) fn prune_index_prefix_from_memory(&self, prefix: &AxiomUri) -> Result<Vec<String>> {
         let doomed = {
             let mut index = self
@@ -508,12 +500,26 @@ impl AxiomSync {
     }
 }
 
+fn resolve_add_resource_finalize_mode(path_or_url: &str) -> Result<IngestFinalizeMode> {
+    if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
+        return Ok(IngestFinalizeMode::MergeIntoTarget);
+    }
+    match std::fs::metadata(path_or_url) {
+        Ok(meta) => Ok(if meta.is_dir() {
+            IngestFinalizeMode::ReplaceTarget
+        } else {
+            IngestFinalizeMode::MergeIntoTarget
+        }),
+        Err(_) => Err(AxiomError::NotFound(path_or_url.to_string())),
+    }
+}
+
 fn stage_add_resource_source(
     path_or_url: &str,
     timeout_secs: Option<u64>,
     ingest: &mut IngestSession,
     ingest_options: &AddResourceIngestOptions,
-) -> Result<IngestFinalizeMode> {
+) -> Result<()> {
     if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
         let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(30).max(1));
         let client = reqwest::blocking::Client::builder()
@@ -535,19 +541,11 @@ fn stage_add_resource_source(
         }
         let text = read_remote_text_limited(resp, MAX_REMOTE_TEXT_BYTES)?;
         ingest.stage_text("source.txt", &text)?;
-        return Ok(IngestFinalizeMode::MergeIntoTarget);
+        return Ok(());
     }
 
-    let src = Path::new(path_or_url);
-    if !src.exists() {
-        return Err(AxiomError::NotFound(path_or_url.to_string()));
-    }
-    ingest.stage_local_path_with_options(src, ingest_options)?;
-    if src.is_dir() {
-        Ok(IngestFinalizeMode::ReplaceTarget)
-    } else {
-        Ok(IngestFinalizeMode::MergeIntoTarget)
-    }
+    ingest.stage_local_path_with_options(Path::new(path_or_url), ingest_options)?;
+    Ok(())
 }
 
 fn read_remote_text_limited<R: Read>(mut reader: R, max_bytes: usize) -> Result<String> {

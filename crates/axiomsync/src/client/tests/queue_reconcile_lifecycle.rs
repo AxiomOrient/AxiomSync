@@ -619,8 +619,8 @@ fn ingest_failure_missing_source_cleans_temp_and_logs_error() {
     let temp_root = app
         .fs
         .resolve_uri(&AxiomUri::parse("axiom://temp/ingest").expect("temp uri"));
-    let entries = fs::read_dir(&temp_root).expect("read temp ingest");
-    assert_eq!(entries.count(), 0);
+    let leftover_count = fs::read_dir(&temp_root).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(leftover_count, 0);
 
     let target = AxiomUri::parse("axiom://resources/ingest-fail").expect("target");
     assert!(!app.fs.exists(&target));
