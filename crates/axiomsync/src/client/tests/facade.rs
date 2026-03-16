@@ -125,6 +125,49 @@ fn mount_repo_ingests_and_registers_resource_record() {
 }
 
 #[test]
+fn mount_repo_root_projection_namespace_and_kind_survive_reindex_all() {
+    let temp = tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&repo).expect("repo dir");
+    fs::write(repo.join("README.md"), "# Demo\n\nrepo mount stability test").expect("write");
+
+    let app = AxiomSync::new(temp.path().join("runtime")).expect("app");
+    app.initialize().expect("init");
+
+    app.mount_repo(RepoMountRequest {
+        source_path: repo.to_string_lossy().to_string(),
+        target_uri: AxiomUri::parse("axiom://resources/acme/repos/stable").expect("uri"),
+        namespace: NamespaceKey::parse("acme/platform").expect("namespace"),
+        kind: Kind::new("repository").expect("kind"),
+        title: Some("Stable Repo".to_string()),
+        tags: vec!["repo".to_string()],
+        attrs: serde_json::json!({}),
+        wait: false,
+    })
+    .expect("mount repo");
+
+    // Global reindex must not overwrite mount-root namespace/kind projection.
+    app.reindex_all().expect("reindex all");
+
+    let doc = app
+        .state
+        .get_search_document("axiom://resources/acme/repos/stable")
+        .expect("get search doc")
+        .expect("search doc must exist after reindex");
+
+    assert!(
+        doc.tags.iter().any(|t| t == "ns:acme/platform"),
+        "reindex must preserve ns tag on mount root; got tags: {:?}",
+        doc.tags
+    );
+    assert!(
+        doc.tags.iter().any(|t| t == "kind:repository"),
+        "reindex must preserve kind tag on mount root; got tags: {:?}",
+        doc.tags
+    );
+}
+
+#[test]
 fn mount_repo_realistic_identity_workspace_preserves_rich_resource_metadata_and_searchability() {
     let temp = tempdir().expect("tempdir");
     let repo = temp.path().join("identity-control-plane");
@@ -228,11 +271,13 @@ break-glass client rotation, auth-worker restart, and replay of stuck device ses
     assert!(stored.tombstoned_at.is_none());
     assert!(stored.created_at > 0);
     assert!(stored.updated_at >= stored.created_at);
-    assert_eq!(
+    assert_eq!(stored.content_hash.len(), 64, "content_hash must be a 32-byte hex blake3 digest");
+    assert_ne!(
         stored.content_hash,
         blake3::hash(repo.to_string_lossy().as_bytes())
             .to_hex()
-            .to_string()
+            .to_string(),
+        "content_hash must be derived from tree content, not the path string"
     );
 
     let mount_object_uri = stored.object_uri.clone().expect("mount object uri");

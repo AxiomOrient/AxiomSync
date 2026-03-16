@@ -97,7 +97,8 @@ impl<'a> ArchiveService<'a> {
             serde_json::to_writer(&mut buf, record)?;
             buf.push(b'\n');
         }
-        let payload = unsafe { String::from_utf8_unchecked(buf) };
+        let payload = String::from_utf8(buf)
+            .map_err(|e| AxiomError::Internal(format!("archive jsonl utf8 error: {e}")))?;
         self.app.fs.write(&plan.object_uri, &payload, true)?;
         if matches!(retention, RetentionClass::Ephemeral) {
             self.app

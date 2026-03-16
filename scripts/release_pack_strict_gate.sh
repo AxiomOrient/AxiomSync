@@ -12,17 +12,17 @@ BIN="${AXIOMSYNC_BIN:-}"
 BIN_OVERRIDDEN=false
 OUTPUT_PATH=""
 
-REPLAY_LIMIT=20
-REPLAY_MAX_CYCLES=2
-TRACE_LIMIT=20
-REQUEST_LIMIT=20
-EVAL_TRACE_LIMIT=20
-EVAL_QUERY_LIMIT=10
-EVAL_SEARCH_LIMIT=5
-BENCHMARK_QUERY_LIMIT=10
-BENCHMARK_SEARCH_LIMIT=5
-BENCHMARK_THRESHOLD_P95_MS=10000
-BENCHMARK_MIN_TOP1_ACCURACY=0.0
+REPLAY_LIMIT=100
+REPLAY_MAX_CYCLES=8
+TRACE_LIMIT=200
+REQUEST_LIMIT=200
+EVAL_TRACE_LIMIT=200
+EVAL_QUERY_LIMIT=50
+EVAL_SEARCH_LIMIT=10
+BENCHMARK_QUERY_LIMIT=60
+BENCHMARK_SEARCH_LIMIT=10
+BENCHMARK_THRESHOLD_P95_MS=600
+BENCHMARK_MIN_TOP1_ACCURACY=0.75
 BENCHMARK_WINDOW_SIZE=1
 BENCHMARK_REQUIRED_PASSES=1
 
@@ -34,19 +34,19 @@ Usage:
 Options:
   --root <path>                    AxiomSync root directory (default: temporary)
   --workspace-dir <path>           Workspace directory (default: current directory)
-  --axiomsync-bin <path>           CLI binary path (default: target/debug/axiomsync)
+  --axiomsync-bin <path>           CLI binary path (default: target/release/axiomsync)
   --output <path>                  Write release pack report JSON to file
-  --replay-limit <n>               Replay limit (default: 20)
-  --replay-max-cycles <n>          Replay max cycles (default: 2)
-  --trace-limit <n>                Trace limit (default: 20)
-  --request-limit <n>              Request log limit (default: 20)
-  --eval-trace-limit <n>           Eval trace limit (default: 20)
-  --eval-query-limit <n>           Eval query limit (default: 10)
-  --eval-search-limit <n>          Eval search limit (default: 5)
-  --benchmark-query-limit <n>      Benchmark query limit (default: 10)
-  --benchmark-search-limit <n>     Benchmark search limit (default: 5)
-  --benchmark-threshold-p95-ms <n> Benchmark p95 threshold (default: 10000)
-  --benchmark-min-top1-accuracy <f> Benchmark min top1 (default: 0.0)
+  --replay-limit <n>               Replay limit (default: 100)
+  --replay-max-cycles <n>          Replay max cycles (default: 8)
+  --trace-limit <n>                Trace limit (default: 200)
+  --request-limit <n>              Request log limit (default: 200)
+  --eval-trace-limit <n>           Eval trace limit (default: 200)
+  --eval-query-limit <n>           Eval query limit (default: 50)
+  --eval-search-limit <n>          Eval search limit (default: 10)
+  --benchmark-query-limit <n>      Benchmark query limit (default: 60)
+  --benchmark-search-limit <n>     Benchmark search limit (default: 10)
+  --benchmark-threshold-p95-ms <n> Benchmark p95 threshold (default: 600)
+  --benchmark-min-top1-accuracy <f> Benchmark min top1 (default: 0.75)
   --benchmark-window-size <n>      Benchmark window size (default: 1)
   --benchmark-required-passes <n>  Benchmark required passes (default: 1)
 EOF
@@ -146,7 +146,7 @@ if [[ ! -d "$WORKSPACE_DIR" ]]; then
 fi
 
 WORKSPACE_DIR="$(cd "$WORKSPACE_DIR" && pwd)"
-DEFAULT_BIN="${WORKSPACE_DIR}/target/debug/axiomsync"
+DEFAULT_BIN="${WORKSPACE_DIR}/target/release/axiomsync"
 
 if [[ -n "${AXIOMSYNC_BIN:-}" ]]; then
   BIN_OVERRIDDEN=true
@@ -168,7 +168,7 @@ resolve_bin_path() {
 if [[ "$BIN_OVERRIDDEN" != "true" ]]; then
   (
     cd "$WORKSPACE_DIR"
-    cargo build -p axiomsync >/dev/null
+    cargo build --release -p axiomsync >/dev/null
   )
   BIN="${DEFAULT_BIN}"
 fi

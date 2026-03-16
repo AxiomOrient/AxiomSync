@@ -197,17 +197,21 @@ fn build_pending_migration_actions(
     search_docs_fts_schema_version: Option<String>,
     release_contract_version: Option<String>,
 ) -> Vec<String> {
-    let mut pending_actions = Vec::new();
-    if context_schema_version.is_none() {
-        pending_actions.push("context_schema_version_missing".to_string());
-    }
-    if search_docs_fts_schema_version.is_none() {
-        pending_actions.push("search_docs_fts_schema_version_missing".to_string());
-    }
-    if release_contract_version.is_none() {
-        pending_actions.push("release_contract_version_missing".to_string());
-    }
-    pending_actions
+    [
+        context_schema_version
+            .is_none()
+            .then_some("context_schema_version_missing"),
+        search_docs_fts_schema_version
+            .is_none()
+            .then_some("search_docs_fts_schema_version_missing"),
+        release_contract_version
+            .is_none()
+            .then_some("release_contract_version_missing"),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::to_string)
+    .collect()
 }
 
 fn build_migration_inspect_report(snapshot: MigrationInspectSnapshot) -> MigrationInspectReport {

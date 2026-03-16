@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use chrono::Utc;
+use walkdir::WalkDir;
 
 use crate::error::{AxiomError, Result};
 use crate::models::{
@@ -59,9 +60,7 @@ impl<'a> RepoService<'a> {
             attrs: req.attrs,
             object_uri: Some(repo_object_uri),
             excerpt_text: req.title,
-            content_hash: blake3::hash(req.source_path.as_bytes())
-                .to_hex()
-                .to_string(),
+            content_hash: compute_repo_tree_digest(source_path)?,
             tombstoned_at: None,
             created_at: now,
             updated_at: now,
@@ -163,5 +162,128 @@ impl<'a> RepoService<'a> {
 impl AxiomSync {
     pub fn mount_repo(&self, req: RepoMountRequest) -> Result<RepoMountReport> {
         self.repo_service().mount_repo(req)
+    }
+}
+
+/// Computes a stable blake3 digest of the repository tree rooted at `source_path`.
+///
+/// The digest is derived from the sorted set of (relative path, file content) pairs,
+/// making it stable for identical content regardless of absolute path and deterministic
+/// across mounts with the same files. Tier-generated files (`.abstract.md`, `.overview.md`)
+/// are excluded because they are derived artifacts and not stable repository content.
+fn compute_repo_tree_digest(source_path: &Path) -> Result<String> {
+    // Pass 1: collect (rel_path, abs_path) pairs and sort by rel_path.
+    // Only paths are kept in memory; file contents are streamed in pass 2.
+    let mut entries: Vec<(String, std::path::PathBuf)> = Vec::new();
+
+    for entry in WalkDir::new(source_path).follow_links(false) {
+        let entry =
+            entry.map_err(|e| AxiomError::Validation(format!("repo tree walk error: {e}")))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy();
+        if name == ".abstract.md" || name == ".overview.md" {
+            continue;
+        }
+        let rel_path = entry
+            .path()
+            .strip_prefix(source_path)
+            .map_err(|e| AxiomError::Internal(format!("repo tree digest path error: {e}")))?
+            .to_string_lossy()
+            .into_owned();
+        entries.push((rel_path, entry.path().to_owned()));
+    }
+
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Pass 2: stream each file through the hasher in sorted path order.
+    let mut hasher = blake3::Hasher::new();
+    for (rel_path, abs_path) in &entries {
+        let content = std::fs::read(abs_path)
+            .map_err(|e| AxiomError::Internal(format!("repo tree digest read error: {e}")))?;
+        hasher.update(rel_path.as_bytes());
+        hasher.update(b"\x00");
+        hasher.update(&(content.len() as u64).to_le_bytes());
+        hasher.update(&content);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::compute_repo_tree_digest;
+
+    #[test]
+    fn repo_tree_digest_is_stable_for_identical_content() {
+        let temp = tempdir().expect("tempdir");
+        let repo_a = temp.path().join("repo-a");
+        let repo_b = temp.path().join("repo-b");
+        fs::create_dir_all(&repo_a).expect("mkdir a");
+        fs::create_dir_all(&repo_b).expect("mkdir b");
+        fs::write(repo_a.join("README.md"), "# Same Content").expect("write a");
+        fs::write(repo_b.join("README.md"), "# Same Content").expect("write b");
+
+        let hash_a = compute_repo_tree_digest(&repo_a).expect("digest a");
+        let hash_b = compute_repo_tree_digest(&repo_b).expect("digest b");
+
+        assert_eq!(hash_a, hash_b, "identical content must yield identical digest");
+    }
+
+    #[test]
+    fn repo_tree_digest_changes_when_content_mutates() {
+        let temp = tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).expect("mkdir");
+        fs::write(repo.join("README.md"), "# Version 1").expect("write v1");
+
+        let hash_v1 = compute_repo_tree_digest(&repo).expect("digest v1");
+
+        fs::write(repo.join("README.md"), "# Version 2").expect("write v2");
+
+        let hash_v2 = compute_repo_tree_digest(&repo).expect("digest v2");
+
+        assert_ne!(hash_v1, hash_v2, "content change must change the digest");
+    }
+
+    #[test]
+    fn repo_tree_digest_changes_when_file_added() {
+        let temp = tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).expect("mkdir");
+        fs::write(repo.join("a.md"), "# A").expect("write a");
+
+        let hash_before = compute_repo_tree_digest(&repo).expect("digest before");
+
+        fs::write(repo.join("b.md"), "# B").expect("write b");
+
+        let hash_after = compute_repo_tree_digest(&repo).expect("digest after");
+
+        assert_ne!(
+            hash_before, hash_after,
+            "adding a file must change the digest"
+        );
+    }
+
+    #[test]
+    fn repo_tree_digest_is_not_path_string_hash() {
+        let temp = tempdir().expect("tempdir");
+        let repo = temp.path().join("my-repo");
+        fs::create_dir_all(&repo).expect("mkdir");
+        fs::write(repo.join("README.md"), "# Hello").expect("write");
+
+        let tree_digest = compute_repo_tree_digest(&repo).expect("tree digest");
+        let path_string_hash = blake3::hash(repo.to_string_lossy().as_bytes())
+            .to_hex()
+            .to_string();
+
+        assert_ne!(
+            tree_digest, path_string_hash,
+            "tree digest must differ from path-string hash"
+        );
     }
 }

@@ -8,10 +8,12 @@ use crate::config::{RETRIEVAL_BACKEND_MEMORY, RETRIEVAL_BACKEND_POLICY_MEMORY_ON
 use crate::error::{AxiomError, Result};
 use crate::jsonl::{jsonl_all_lines_invalid, parse_jsonl_tolerant};
 use crate::models::{
-    BackendStatus, CommitMode, CommitResult, EmbeddingBackendStatus, MemoryPromotionRequest,
-    MemoryPromotionResult, QueueDiagnostics, QueueOverview, RUN_STATUS_SUCCESS, RepairRunRecord,
-    RequestLogEntry, SessionInfo, SessionMeta,
+    BackendStatus, CommitMode, CommitResult, EmbeddingBackendStatus, IngestProfile,
+    MemoryPromotionRequest, MemoryPromotionResult, QueueDiagnostics, QueueOverview,
+    RUN_STATUS_SUCCESS, RepairRunRecord, RequestLogEntry, ResourceQuery, ResourceRecord,
+    SessionInfo, SessionMeta,
 };
+use crate::om::engine::model::OmRecord;
 use crate::queue_policy::default_scope_set;
 use crate::session::Session;
 use crate::state::schema::{INDEX_PROFILE_STAMP_KEY, RUNTIME_RESTORE_SOURCE_KEY};
@@ -49,6 +51,12 @@ struct SessionScopePlan {
 struct PromotionExecutionPlan {
     session_scope: SessionScopePlan,
     checkpoint_after_promotion: bool,
+}
+
+#[derive(Debug)]
+struct ProjectionRepairPlan {
+    resources: Vec<ResourceRecord>,
+    om_records: Vec<OmRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,22 +124,41 @@ impl<'a> RuntimeBootstrapService<'a> {
         }
         self.app.reindex_scopes(&default_scope_set())?;
 
+        // Re-apply resource record search projections so that mount-root namespace/kind
+        // invariants are not overwritten by the generic directory indexer during the
+        // filesystem walk above. The resource table is the authoritative source for these fields.
+        let resources = self.app.state.list_resources(ResourceQuery::default())?;
         let om_records = self.app.state.list_om_records()?;
-        let mut index = self
-            .app
-            .index
-            .write()
-            .map_err(|_| AxiomError::lock_poisoned("index"))?;
-        for om in om_records {
-            index.upsert_om_record(om);
-        }
-        drop(index);
+        self.execute_projection_repair(ProjectionRepairPlan { resources, om_records })?;
 
         let repair_plan = build_full_reindex_repair_plan(
             self.current_index_profile_stamp(),
             "full_reindex",
         );
         self.persist_repair_plan(repair_plan, started_at)
+    }
+
+    fn execute_projection_repair(&self, plan: ProjectionRepairPlan) -> Result<()> {
+        let mut index = self
+            .app
+            .index
+            .write()
+            .map_err(|_| AxiomError::lock_poisoned("index"))?;
+        for resource in &plan.resources {
+            let uri_str = resource.uri.to_string();
+            let profile = IngestProfile::for_kind(&resource.kind);
+            self.app
+                .state
+                .persist_resource_search_document(resource, &profile)?;
+            if let Some(record) = self.app.state.get_search_document(&uri_str)? {
+                index.remove(&uri_str);
+                index.upsert(record);
+            }
+        }
+        for om in plan.om_records {
+            index.upsert_om_record(om);
+        }
+        Ok(())
     }
 
     fn execute_restore_decision(&self, decision: &RuntimeRestoreDecision) -> Result<()> {

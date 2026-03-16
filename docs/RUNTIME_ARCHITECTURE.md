@@ -56,5 +56,4 @@
 - Vendored OM code remains explicit under `src/om/engine`; runtime-only policy stays in `axiomsync::om`.
 
 ## Known Behavioral Notes
-- `mount_repo` 후 전역 reindex가 실행되면, root resource URI의 search_docs 항목에서 `namespace`/`kind` 컬럼이 디렉터리 인덱서에 의해 덮어써질 수 있다. `resources` 테이블의 원본 데이터는 보존된다.
 - `plan_event_archive`로 대상 이벤트를 먼저 확정하고 `execute_event_archive`로 ephemeral 이벤트를 압축하면, 이벤트는 search_docs에서 제거되지만 `events` 테이블에는 남아 `query_events`로 조회 가능하다 (attrs_json이 archive 참조로 교체됨).
