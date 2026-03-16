@@ -28,6 +28,7 @@
 
 # Default runtime directory (CLI default: --root .axiomme)
 /.axiomme/
+/.axiomsync/
 
 # Canonical filesystem directories
 /resources/
