@@ -4,8 +4,8 @@ use tempfile::tempdir;
 
 use crate::error::AxiomError;
 use crate::models::{
-    EventRecord, IndexRecord, LinkRecord, NamespaceKey, OmReflectionApplyMetrics,
-    QueueEventStatus, ReconcileRunStatus, UpsertResource,
+    EventRecord, IndexRecord, LinkRecord, NamespaceKey, OmReflectionApplyMetrics, QueueEventStatus,
+    ReconcileRunStatus, UpsertResource,
 };
 use crate::om::{OmObservationChunk, OmOriginType, OmRecord, OmScope};
 use crate::uri::AxiomUri;
@@ -2239,11 +2239,31 @@ fn purge_uri_prefix_state_clears_all_tables_atomically() {
 
     store.purge_uri_prefix_state(prefix).expect("purge");
 
-    assert_eq!(store.count_table("resources").expect("count"), 0, "resources must be purged");
-    assert_eq!(store.count_table("index_state").expect("count"), 0, "index_state must be purged");
-    assert_eq!(store.count_table("events").expect("count"), 0, "events must be purged");
-    assert_eq!(store.count_table("links").expect("count"), 0, "links must be purged");
-    assert_eq!(store.count_table("outbox").expect("count"), 0, "outbox must be purged");
+    assert_eq!(
+        store.count_table("resources").expect("count"),
+        0,
+        "resources must be purged"
+    );
+    assert_eq!(
+        store.count_table("index_state").expect("count"),
+        0,
+        "index_state must be purged"
+    );
+    assert_eq!(
+        store.count_table("events").expect("count"),
+        0,
+        "events must be purged"
+    );
+    assert_eq!(
+        store.count_table("links").expect("count"),
+        0,
+        "links must be purged"
+    );
+    assert_eq!(
+        store.count_table("outbox").expect("count"),
+        0,
+        "outbox must be purged"
+    );
 }
 
 #[test]

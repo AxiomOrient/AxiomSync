@@ -137,7 +137,8 @@ impl LocalContextFs {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, content)?;
+        fs::write(&path, content)
+            .map_err(|e| AxiomError::io_context(path.display().to_string(), e))?;
         Ok(())
     }
 
@@ -172,7 +173,7 @@ impl LocalContextFs {
 
         if let Err(err) = fs::rename(&tmp_path, &path) {
             let _ = fs::remove_file(&tmp_path);
-            return Err(AxiomError::from(err));
+            return Err(AxiomError::io_context(path.display().to_string(), err));
         }
 
         if let Ok(dir) = fs::File::open(parent) {
@@ -191,8 +192,10 @@ impl LocalContextFs {
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)?;
-        file.write_all(content.as_bytes())?;
+            .open(&path)
+            .map_err(|e| AxiomError::io_context(path.display().to_string(), e))?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| AxiomError::io_context(path.display().to_string(), e))?;
         Ok(())
     }
 
@@ -203,7 +206,8 @@ impl LocalContextFs {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, bytes)?;
+        fs::write(&path, bytes)
+            .map_err(|e| AxiomError::io_context(path.display().to_string(), e))?;
         Ok(())
     }
 
@@ -267,12 +271,15 @@ impl LocalContextFs {
         self.ensure_path_within_root(&path)?;
         if path.is_dir() {
             if recursive {
-                fs::remove_dir_all(path)?;
+                fs::remove_dir_all(&path)
+                    .map_err(|e| AxiomError::io_context(path.display().to_string(), e))?;
             } else {
-                fs::remove_dir(path)?;
+                fs::remove_dir(&path)
+                    .map_err(|e| AxiomError::io_context(path.display().to_string(), e))?;
             }
         } else {
-            fs::remove_file(path)?;
+            fs::remove_file(&path)
+                .map_err(|e| AxiomError::io_context(path.display().to_string(), e))?;
         }
         Ok(())
     }
@@ -287,7 +294,8 @@ impl LocalContextFs {
         if let Some(parent) = to_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::rename(from_path, to_path)?;
+        fs::rename(&from_path, &to_path)
+            .map_err(|e| AxiomError::io_context(from_path.display().to_string(), e))?;
         Ok(())
     }
 

@@ -86,6 +86,12 @@ struct TraceContextPlan {
     fts_fallback_used: bool,
 }
 
+#[derive(Debug, Clone)]
+struct HintLayerPlan {
+    merged_hints: Vec<String>,
+    om_metrics: OmSearchMetrics,
+}
+
 pub(crate) struct SearchService<'a> {
     app: &'a AxiomSync,
 }
@@ -134,7 +140,9 @@ impl<'a> SearchService<'a> {
         };
         let output = (|| -> Result<(FindResult, SearchPlan)> {
             let plan = build_search_plan(intent.clone(), Vec::new())?;
-            let execution = self.app.run_retrieval_memory_only_with_metadata(&plan.options)?;
+            let execution = self
+                .app
+                .run_retrieval_memory_only_with_metadata(&plan.options)?;
             let mut result = execution.result;
             self.app
                 .enrich_find_result_relations(&mut result, 5, typed_edge_enrichment)?;
@@ -228,6 +236,169 @@ impl<'a> SearchService<'a> {
         })
     }
 
+    fn build_search_session_hints(
+        &self,
+        session_id: &str,
+        query: &str,
+        hint_policy: OmHintPolicy,
+        hint_bounds: OmHintBounds,
+    ) -> Result<SessionHintSnapshot> {
+        let snapshot_reader_enabled = self.app.om_snapshot_hint_reader_enabled();
+        let mut metrics = OmSearchMetrics {
+            om_hint_reader_snapshot_v2: snapshot_reader_enabled,
+            ..OmSearchMetrics::default()
+        };
+        let ctx = self.app.session(Some(session_id)).get_context_for_search(
+            query,
+            hint_policy.context_max_archives,
+            hint_policy.context_max_messages,
+        )?;
+        let om_snapshot = self
+            .app
+            .fetch_session_om_hint_snapshot_with_enabled(session_id, snapshot_reader_enabled)?;
+        metrics.om_snapshot_buffered_chunk_count = om_snapshot.as_ref().map_or(0, |snapshot| {
+            saturating_usize_to_u32(snapshot.buffered_chunk_count)
+        });
+        metrics.om_snapshot_buffered_chunk_ids = om_snapshot
+            .as_ref()
+            .map_or_else(Vec::new, |snapshot| snapshot.buffered_chunk_ids.clone());
+        metrics.om_hint_compaction_priority_v2 = om_snapshot.is_some();
+        metrics.om_hint_high_priority_selected_count = om_snapshot.as_ref().map_or(0, |snapshot| {
+            saturating_usize_to_u32(snapshot.high_priority_selected_count)
+        });
+        metrics.om_snapshot_visible_entry_ids = om_snapshot
+            .as_ref()
+            .map_or_else(Vec::new, |snapshot| snapshot.selected_entry_ids.clone());
+        metrics.om_snapshot_visible_activated_entry_ids =
+            om_snapshot.as_ref().map_or_else(Vec::new, |snapshot| {
+                snapshot.activated_visible_entry_ids.clone()
+            });
+        metrics.om_snapshot_visible_buffered_entry_ids =
+            om_snapshot.as_ref().map_or_else(Vec::new, |snapshot| {
+                snapshot.buffered_visible_entry_ids.clone()
+            });
+        metrics.om_hint_current_task_reserved = om_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.current_task.is_some());
+        let om_state = om_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.to_read_state(hint_bounds));
+        let pre_om_recent_hints =
+            collect_recent_hints(&ctx.recent_messages, hint_policy.recent_hint_limit);
+        let pre_om_hints = merge_recent_and_om_hints(&pre_om_recent_hints, None, hint_policy);
+        let om_hint = om_state
+            .as_ref()
+            .and_then(|state| state.hint.as_deref())
+            .map(ToString::to_string);
+        let filtered_recent_messages =
+            om_state
+                .as_ref()
+                .filter(|state| state.hint.is_some())
+                .map(|state| {
+                    filter_recent_messages_by_ids(
+                        &ctx.recent_messages,
+                        &state.activated_message_ids,
+                    )
+                });
+        let recent_messages_for_hints = filtered_recent_messages
+            .as_deref()
+            .unwrap_or(ctx.recent_messages.as_slice());
+        let recent_hints =
+            collect_recent_hints(recent_messages_for_hints, hint_policy.recent_hint_limit);
+        let merged_hints = merge_runtime_om_recent_hints(
+            &[],
+            om_hint.as_deref(),
+            &recent_hints,
+            hint_policy,
+            hint_bounds.max_chars,
+        );
+
+        metrics.context_tokens_before_om = estimate_hint_tokens(&pre_om_hints);
+        metrics.om_hint_applied = om_state
+            .as_ref()
+            .and_then(|state| state.hint.as_ref())
+            .is_some();
+        metrics.observer_trigger_count = om_state
+            .as_ref()
+            .map_or(0, |state| state.observer_trigger_count_total);
+        metrics.reflector_trigger_count = om_state
+            .as_ref()
+            .map_or(0, |state| state.reflector_trigger_count_total);
+        metrics.observation_tokens_active = om_state
+            .as_ref()
+            .map_or(0, |state| state.observation_tokens_active);
+        metrics.session_recent_hint_count = saturating_usize_to_u32(pre_om_recent_hints.len());
+        metrics.session_hint_count_final = saturating_usize_to_u32(merged_hints.len());
+        metrics.om_filtered_message_count =
+            saturating_usize_to_u32(filtered_recent_messages.as_ref().map_or(0, |messages| {
+                ctx.recent_messages.len().saturating_sub(messages.len())
+            }));
+        metrics.context_tokens_after_om = estimate_hint_tokens(&merged_hints);
+
+        Ok(SessionHintSnapshot {
+            recent_hints,
+            om_hint,
+            metrics,
+        })
+    }
+
+    fn resolve_search_hints(
+        &self,
+        session_id: Option<&str>,
+        query: &str,
+        runtime_hints: &[RuntimeHint],
+        hint_policy: OmHintPolicy,
+        hint_bounds: OmHintBounds,
+    ) -> Result<HintLayerPlan> {
+        let normalized_runtime_hints = normalize_runtime_hints(
+            runtime_hints,
+            hint_policy.total_hint_limit,
+            hint_bounds.max_chars,
+        );
+        let mut hint_layers = SearchHintLayers {
+            runtime: normalized_runtime_hints,
+            ..SearchHintLayers::default()
+        };
+        let mut om_metrics = OmSearchMetrics::default();
+        if let Some(session_id) = session_id {
+            let snapshot =
+                self.build_search_session_hints(session_id, query, hint_policy, hint_bounds)?;
+            hint_layers.recent = snapshot.recent_hints;
+            hint_layers.om_hint = snapshot.om_hint;
+            om_metrics = snapshot.metrics;
+        }
+        let merged_hints = merge_runtime_om_recent_hints(
+            &hint_layers.runtime,
+            hint_layers.om_hint.as_deref(),
+            &hint_layers.recent,
+            hint_policy,
+            hint_bounds.max_chars,
+        );
+        if session_id.is_some() {
+            om_metrics.session_hint_count_final = saturating_usize_to_u32(merged_hints.len());
+            om_metrics.context_tokens_after_om = estimate_hint_tokens(&merged_hints);
+        }
+        Ok(HintLayerPlan {
+            merged_hints,
+            om_metrics,
+        })
+    }
+
+    fn try_log_search_request(&self, event: SearchRequestLogEvent<'_>) {
+        self.app.try_log_request(&RequestLogEntry {
+            request_id: event.request_id.to_string(),
+            operation: "search".to_string(),
+            status: event.status.to_string(),
+            latency_ms: event.started.elapsed().as_millis(),
+            created_at: Utc::now().to_rfc3339(),
+            trace_id: event.trace_id.map(ToString::to_string),
+            target_uri: event.target_uri.map(ToString::to_string),
+            error_code: event.error.map(|err| err.code().to_string()),
+            error_message: event.error.map(ToString::to_string),
+            details: Some(event.details),
+        });
+    }
+
     pub(crate) fn search_with_request(&self, request: SearchRequest) -> Result<FindResult> {
         let request_id = uuid::Uuid::new_v4().to_string();
         let started = Instant::now();
@@ -238,16 +409,18 @@ impl<'a> SearchService<'a> {
         let mut om_metrics = OmSearchMetrics::default();
 
         let output = (|| -> Result<(FindResult, SearchPlan)> {
-            let (session_hints, resolved_metrics) = self.app.resolve_search_hints(
+            let hint_plan = self.resolve_search_hints(
                 intent.session.as_deref(),
                 &intent.query,
                 &intent.runtime_hints,
                 hint_policy,
                 hint_bounds,
             )?;
-            om_metrics = resolved_metrics;
-            let plan = build_search_plan(intent.clone(), session_hints)?;
-            let execution = self.app.run_retrieval_memory_only_with_metadata(&plan.options)?;
+            om_metrics = hint_plan.om_metrics;
+            let plan = build_search_plan(intent.clone(), hint_plan.merged_hints)?;
+            let execution = self
+                .app
+                .run_retrieval_memory_only_with_metadata(&plan.options)?;
             let mut result = execution.result;
             self.app
                 .enrich_find_result_relations(&mut result, 5, typed_edge_enrichment)?;
@@ -284,7 +457,7 @@ impl<'a> SearchService<'a> {
                     typed_edge_enrichment,
                     result_count: Some(result.query_results.len()),
                 });
-                self.app.try_log_search_request(SearchRequestLogEvent {
+                self.try_log_search_request(SearchRequestLogEvent {
                     request_id: &request_id,
                     started,
                     target_uri: plan.target_raw.as_deref(),
@@ -308,7 +481,7 @@ impl<'a> SearchService<'a> {
                     typed_edge_enrichment,
                     result_count: None,
                 });
-                self.app.try_log_search_request(SearchRequestLogEvent {
+                self.try_log_search_request(SearchRequestLogEvent {
                     request_id: &request_id,
                     started,
                     target_uri: intent.target_uri.as_deref(),
@@ -459,8 +632,14 @@ impl AxiomSync {
         filter: Option<MetadataFilter>,
         budget: Option<SearchBudget>,
     ) -> Result<FindResult> {
-        self.search_service()
-            .find_with_budget(query, target_uri, limit, score_threshold, filter, budget)
+        self.search_service().find_with_budget(
+            query,
+            target_uri,
+            limit,
+            score_threshold,
+            filter,
+            budget,
+        )
     }
 
     pub fn search(
@@ -474,165 +653,6 @@ impl AxiomSync {
     ) -> Result<FindResult> {
         self.search_service()
             .search(query, target_uri, session, limit, score_threshold, filter)
-    }
-
-    fn build_search_session_hints(
-        &self,
-        session_id: &str,
-        query: &str,
-        hint_policy: OmHintPolicy,
-        hint_bounds: OmHintBounds,
-    ) -> Result<SessionHintSnapshot> {
-        let snapshot_reader_enabled = self.om_snapshot_hint_reader_enabled();
-        let mut metrics = OmSearchMetrics {
-            om_hint_reader_snapshot_v2: snapshot_reader_enabled,
-            ..OmSearchMetrics::default()
-        };
-        let ctx = self.session(Some(session_id)).get_context_for_search(
-            query,
-            hint_policy.context_max_archives,
-            hint_policy.context_max_messages,
-        )?;
-        let om_snapshot =
-            self.fetch_session_om_hint_snapshot_with_enabled(session_id, snapshot_reader_enabled)?;
-        metrics.om_snapshot_buffered_chunk_count = om_snapshot.as_ref().map_or(0, |snapshot| {
-            saturating_usize_to_u32(snapshot.buffered_chunk_count)
-        });
-        metrics.om_snapshot_buffered_chunk_ids = om_snapshot
-            .as_ref()
-            .map_or_else(Vec::new, |snapshot| snapshot.buffered_chunk_ids.clone());
-        metrics.om_hint_compaction_priority_v2 = om_snapshot.is_some();
-        metrics.om_hint_high_priority_selected_count = om_snapshot.as_ref().map_or(0, |snapshot| {
-            saturating_usize_to_u32(snapshot.high_priority_selected_count)
-        });
-        metrics.om_snapshot_visible_entry_ids = om_snapshot
-            .as_ref()
-            .map_or_else(Vec::new, |snapshot| snapshot.selected_entry_ids.clone());
-        metrics.om_snapshot_visible_activated_entry_ids =
-            om_snapshot.as_ref().map_or_else(Vec::new, |snapshot| {
-                snapshot.activated_visible_entry_ids.clone()
-            });
-        metrics.om_snapshot_visible_buffered_entry_ids =
-            om_snapshot.as_ref().map_or_else(Vec::new, |snapshot| {
-                snapshot.buffered_visible_entry_ids.clone()
-            });
-        metrics.om_hint_current_task_reserved = om_snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.current_task.is_some());
-        let om_state = om_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.to_read_state(hint_bounds));
-        let pre_om_recent_hints =
-            collect_recent_hints(&ctx.recent_messages, hint_policy.recent_hint_limit);
-        let pre_om_hints = merge_recent_and_om_hints(&pre_om_recent_hints, None, hint_policy);
-        let om_hint = om_state
-            .as_ref()
-            .and_then(|state| state.hint.as_deref())
-            .map(ToString::to_string);
-        let filtered_recent_messages =
-            om_state
-                .as_ref()
-                .filter(|state| state.hint.is_some())
-                .map(|state| {
-                    filter_recent_messages_by_ids(
-                        &ctx.recent_messages,
-                        &state.activated_message_ids,
-                    )
-                });
-        let recent_messages_for_hints = filtered_recent_messages
-            .as_deref()
-            .unwrap_or(ctx.recent_messages.as_slice());
-        let recent_hints =
-            collect_recent_hints(recent_messages_for_hints, hint_policy.recent_hint_limit);
-        let merged_hints = merge_runtime_om_recent_hints(
-            &[],
-            om_hint.as_deref(),
-            &recent_hints,
-            hint_policy,
-            hint_bounds.max_chars,
-        );
-
-        metrics.context_tokens_before_om = estimate_hint_tokens(&pre_om_hints);
-        metrics.om_hint_applied = om_state
-            .as_ref()
-            .and_then(|state| state.hint.as_ref())
-            .is_some();
-        metrics.observer_trigger_count = om_state
-            .as_ref()
-            .map_or(0, |state| state.observer_trigger_count_total);
-        metrics.reflector_trigger_count = om_state
-            .as_ref()
-            .map_or(0, |state| state.reflector_trigger_count_total);
-        metrics.observation_tokens_active = om_state
-            .as_ref()
-            .map_or(0, |state| state.observation_tokens_active);
-        metrics.session_recent_hint_count = saturating_usize_to_u32(pre_om_recent_hints.len());
-        metrics.session_hint_count_final = saturating_usize_to_u32(merged_hints.len());
-        metrics.om_filtered_message_count =
-            saturating_usize_to_u32(filtered_recent_messages.as_ref().map_or(0, |messages| {
-                ctx.recent_messages.len().saturating_sub(messages.len())
-            }));
-        metrics.context_tokens_after_om = estimate_hint_tokens(&merged_hints);
-
-        Ok(SessionHintSnapshot {
-            recent_hints,
-            om_hint,
-            metrics,
-        })
-    }
-
-    fn resolve_search_hints(
-        &self,
-        session_id: Option<&str>,
-        query: &str,
-        runtime_hints: &[RuntimeHint],
-        hint_policy: OmHintPolicy,
-        hint_bounds: OmHintBounds,
-    ) -> Result<(Vec<String>, OmSearchMetrics)> {
-        let normalized_runtime_hints = normalize_runtime_hints(
-            runtime_hints,
-            hint_policy.total_hint_limit,
-            hint_bounds.max_chars,
-        );
-        let mut hint_layers = SearchHintLayers {
-            runtime: normalized_runtime_hints,
-            ..SearchHintLayers::default()
-        };
-        let mut om_metrics = OmSearchMetrics::default();
-        if let Some(session_id) = session_id {
-            let snapshot =
-                self.build_search_session_hints(session_id, query, hint_policy, hint_bounds)?;
-            hint_layers.recent = snapshot.recent_hints;
-            hint_layers.om_hint = snapshot.om_hint;
-            om_metrics = snapshot.metrics;
-        }
-        let session_hints = merge_runtime_om_recent_hints(
-            &hint_layers.runtime,
-            hint_layers.om_hint.as_deref(),
-            &hint_layers.recent,
-            hint_policy,
-            hint_bounds.max_chars,
-        );
-        if session_id.is_some() {
-            om_metrics.session_hint_count_final = saturating_usize_to_u32(session_hints.len());
-            om_metrics.context_tokens_after_om = estimate_hint_tokens(&session_hints);
-        }
-        Ok((session_hints, om_metrics))
-    }
-
-    fn try_log_search_request(&self, event: SearchRequestLogEvent<'_>) {
-        self.try_log_request(&RequestLogEntry {
-            request_id: event.request_id.to_string(),
-            operation: "search".to_string(),
-            status: event.status.to_string(),
-            latency_ms: event.started.elapsed().as_millis(),
-            created_at: Utc::now().to_rfc3339(),
-            trace_id: event.trace_id.map(ToString::to_string),
-            target_uri: event.target_uri.map(ToString::to_string),
-            error_code: event.error.map(|err| err.code().to_string()),
-            error_message: event.error.map(ToString::to_string),
-            details: Some(event.details),
-        });
     }
 
     pub fn search_with_request(&self, request: SearchRequest) -> Result<FindResult> {
@@ -1089,10 +1109,7 @@ fn build_search_plan(intent: SearchIntent, session_hints: Vec<String>) -> Result
     })
 }
 
-fn build_trace_context_plan(
-    restore_source: String,
-    fts_fallback_used: bool,
-) -> TraceContextPlan {
+fn build_trace_context_plan(restore_source: String, fts_fallback_used: bool) -> TraceContextPlan {
     TraceContextPlan {
         restore_source,
         fts_fallback_used,
@@ -1404,7 +1421,9 @@ mod tests {
         snapshot_visible_entry_source_key, validate_search_cutoff_options,
     };
     use crate::error::AxiomError;
-    use crate::models::{MetadataFilter, RuntimeHint, RuntimeHintKind, SearchBudget, SearchRequest};
+    use crate::models::{
+        MetadataFilter, RuntimeHint, RuntimeHintKind, SearchBudget, SearchRequest,
+    };
     use crate::om::{OmObservationEntryV2, OmObservationOriginKind, OmObservationPriority};
     use crate::uri::AxiomUri;
 
@@ -1549,9 +1568,11 @@ mod tests {
             "search",
         );
 
-        let plan =
-            build_search_plan(intent, vec!["runtime hint".to_string(), "om hint".to_string()])
-                .expect("plan");
+        let plan = build_search_plan(
+            intent,
+            vec!["runtime hint".to_string(), "om hint".to_string()],
+        )
+        .expect("plan");
         assert_eq!(plan.query, "oauth");
         assert_eq!(plan.requested_limit, 7);
         assert_eq!(plan.session_raw.as_deref(), Some("s-1"));

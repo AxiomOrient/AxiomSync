@@ -5,9 +5,15 @@
 //! `search`, and `release`.
 
 use super::{
-    AxiomSync, archive::ArchiveService, event::EventService, link::LinkService,
-    release::ReleaseVerificationService, repo::RepoService, resource::ResourceService,
-    runtime::{RuntimeBootstrapService, SessionService}, search::SearchService,
+    AxiomSync,
+    archive::ArchiveService,
+    event::EventService,
+    link::LinkService,
+    release::ReleaseVerificationService,
+    repo::RepoService,
+    resource::ResourceService,
+    runtime::{RuntimeBootstrapService, SessionService},
+    search::SearchService,
 };
 
 impl AxiomSync {

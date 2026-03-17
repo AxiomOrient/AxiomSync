@@ -274,7 +274,10 @@ mod tests {
         let hash_a = compute_repo_tree_digest(&repo_a).expect("digest a");
         let hash_b = compute_repo_tree_digest(&repo_b).expect("digest b");
 
-        assert_eq!(hash_a, hash_b, "identical content must yield identical digest");
+        assert_eq!(
+            hash_a, hash_b,
+            "identical content must yield identical digest"
+        );
     }
 
     #[test]

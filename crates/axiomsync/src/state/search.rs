@@ -485,10 +485,10 @@ impl SqliteStateStore {
                     }
                 }
 
-                if let Some(ref prev) = effective_previous {
-                    if prev.as_str() != current_uri.as_str() {
-                        delete_search_doc_by_uri_in_tx(tx, prev)?;
-                    }
+                if let Some(ref prev) = effective_previous
+                    && prev.as_str() != current_uri.as_str()
+                {
+                    delete_search_doc_by_uri_in_tx(tx, prev)?;
                 }
 
                 uri_tracker.insert(event.event_id.clone(), current_uri);
@@ -555,7 +555,10 @@ fn insert_search_doc_in_tx(
         |row| row.get(0),
     )?;
 
-    tx.execute("DELETE FROM search_doc_tags WHERE doc_id = ?1", params![doc_id])?;
+    tx.execute(
+        "DELETE FROM search_doc_tags WHERE doc_id = ?1",
+        params![doc_id],
+    )?;
     for tag in &tags {
         tx.execute(
             "INSERT OR IGNORE INTO search_doc_tags(doc_id, tag) VALUES (?1, ?2)",
@@ -575,7 +578,10 @@ fn delete_search_doc_by_uri_in_tx(tx: &Transaction<'_>, uri: &str) -> Result<()>
         )
         .optional()?
     {
-        tx.execute("DELETE FROM search_doc_tags WHERE doc_id = ?1", params![doc_id])?;
+        tx.execute(
+            "DELETE FROM search_doc_tags WHERE doc_id = ?1",
+            params![doc_id],
+        )?;
         tx.execute("DELETE FROM search_docs WHERE id = ?1", params![doc_id])?;
     }
     Ok(())
@@ -1016,7 +1022,8 @@ mod tests {
         // Indexed kinds produce search docs.
         let docs = store.list_search_documents().expect("list docs");
         assert!(
-            docs.iter().any(|d| d.uri == "axiom://events/acme/incidents/1"),
+            docs.iter()
+                .any(|d| d.uri == "axiom://events/acme/incidents/1"),
             "incident must have a search doc"
         );
     }
@@ -1081,7 +1088,11 @@ mod tests {
                 include_tombstoned: false,
             })
             .expect("query");
-        assert_eq!(queried.len(), 1, "duplicate event_id must upsert, not duplicate");
+        assert_eq!(
+            queried.len(),
+            1,
+            "duplicate event_id must upsert, not duplicate"
+        );
         assert_eq!(queried[0].title.as_deref(), Some("updated"));
     }
 
@@ -1118,9 +1129,7 @@ mod tests {
             mk("axiom://events/acme/incidents/1"),
             mk("axiom://events/acme/incidents/2"),
         ];
-        store
-            .append_events_and_search_docs(&batch)
-            .expect("append");
+        store.append_events_and_search_docs(&batch).expect("append");
 
         let docs = store.list_search_documents().expect("list docs");
         assert_eq!(docs.len(), 1, "exactly one search doc must exist");

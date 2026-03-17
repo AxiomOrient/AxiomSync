@@ -69,7 +69,13 @@ mod tests {
 
     #[test]
     fn validate_relation_accepts_valid_identifiers() {
-        for valid in ["references", "depends-on", "blocks_work", "owns", "a1-b2_c3"] {
+        for valid in [
+            "references",
+            "depends-on",
+            "blocks_work",
+            "owns",
+            "a1-b2_c3",
+        ] {
             validate_relation(valid).unwrap_or_else(|e| panic!("{valid:?} should be valid: {e}"));
         }
     }
@@ -89,8 +95,7 @@ mod tests {
     #[test]
     fn validate_relation_rejects_spaces_and_special_chars() {
         for invalid in ["has ref", "dep/on", "link.to", "rel@2", "rel:v1"] {
-            validate_relation(invalid)
-                .expect_err(&format!("{invalid:?} should be rejected"));
+            validate_relation(invalid).expect_err(&format!("{invalid:?} should be rejected"));
         }
     }
 

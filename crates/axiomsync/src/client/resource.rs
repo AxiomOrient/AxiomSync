@@ -197,7 +197,8 @@ impl AxiomSync {
         &self,
         request: AddResourceRequest,
     ) -> Result<AddResourceResult> {
-        self.resource_service().add_resource_with_ingest_options(request)
+        self.resource_service()
+            .add_resource_with_ingest_options(request)
     }
 
     pub fn wait_processed(&self, timeout_secs: Option<u64>) -> Result<QueueStatus> {
@@ -721,7 +722,9 @@ mod tests {
         assert!(build_add_resource_result(&plan).queued);
         assert_eq!(
             plan.target_uri.to_string(),
-            default_resource_target(&source).expect("default target").to_string()
+            default_resource_target(&source)
+                .expect("default target")
+                .to_string()
         );
     }
 

@@ -62,7 +62,9 @@ impl<'a> EventService<'a> {
             .into_iter()
             .map(|req| -> Result<EventRecord> {
                 if req.event_id.is_empty() {
-                    return Err(AxiomError::Validation("event_id must not be empty".to_string()));
+                    return Err(AxiomError::Validation(
+                        "event_id must not be empty".to_string(),
+                    ));
                 }
                 if req.event_id.len() > MAX_EVENT_ID_BYTES {
                     return Err(AxiomError::Validation(format!(

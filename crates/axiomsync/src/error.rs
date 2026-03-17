@@ -96,6 +96,13 @@ pub enum AxiomError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
+    #[error("io error at '{path}': {source}")]
+    IoContext {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error(transparent)]
     Json(#[from] serde_json::Error),
 
@@ -126,6 +133,14 @@ pub struct ErrorPayload {
 
 impl AxiomError {
     #[must_use]
+    pub fn io_context(path: impl Into<String>, source: std::io::Error) -> Self {
+        Self::IoContext {
+            path: path.into(),
+            source,
+        }
+    }
+
+    #[must_use]
     pub fn lock_poisoned(name: &str) -> Self {
         Self::Internal(format!("{name} lock poisoned"))
     }
@@ -153,7 +168,7 @@ impl AxiomError {
                 OmInferenceFailureKind::Fatal => "OM_INFERENCE_FATAL",
                 OmInferenceFailureKind::Schema => "OM_INFERENCE_SCHEMA",
             },
-            Self::Io(_) => "IO_ERROR",
+            Self::Io(_) | Self::IoContext { .. } => "IO_ERROR",
             Self::Json(_) => "JSON_ERROR",
             Self::Sqlite(_) => "SQLITE_ERROR",
             Self::Zip(_) => "ZIP_ERROR",

@@ -55,6 +55,7 @@ fn run_validated(app: &AxiomSync, root: &Path, command: Commands) -> Result<()> 
             let mut request = AddResourceRequest::new(args.source.clone());
             request.target = args.target.clone();
             request.wait = args.wait;
+            request.timeout_secs = args.timeout_secs;
             request.wait_mode = match args.wait_mode {
                 AddWaitModeArg::Relaxed => AddResourceWaitMode::Relaxed,
                 AddWaitModeArg::Strict => AddResourceWaitMode::Strict,

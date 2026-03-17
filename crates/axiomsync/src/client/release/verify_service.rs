@@ -16,19 +16,6 @@ use crate::state::schema::{
 use super::AxiomSync;
 
 #[derive(Debug, Clone)]
-struct StorageDoctorSnapshot {
-    context_schema_version: Option<String>,
-    search_docs_fts_schema_version: Option<String>,
-    index_profile_stamp: Option<String>,
-    release_contract_version: Option<String>,
-    search_document_count: usize,
-    event_count: usize,
-    link_count: usize,
-    latest_migration_runs: Vec<MigrationRunRecord>,
-    latest_repair_runs: Vec<crate::models::RepairRunRecord>,
-}
-
-#[derive(Debug, Clone)]
 struct RetrievalDoctorSnapshot {
     retrieval_backend: String,
     retrieval_backend_policy: String,
@@ -37,16 +24,6 @@ struct RetrievalDoctorSnapshot {
     trace_count: usize,
     restore_source: Option<String>,
     fts_ready: bool,
-}
-
-#[derive(Debug, Clone)]
-struct MigrationInspectSnapshot {
-    context_schema_version: Option<String>,
-    search_docs_fts_schema_version: Option<String>,
-    release_contract_version: Option<String>,
-    latest_migration_runs: Vec<MigrationRunRecord>,
-    latest_repair_runs: Vec<crate::models::RepairRunRecord>,
-    pending_actions: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +42,7 @@ impl<'a> ReleaseVerificationService<'a> {
     }
 
     pub(super) fn doctor_storage(&self) -> Result<StorageDoctorReport> {
-        let snapshot = StorageDoctorSnapshot {
+        Ok(StorageDoctorReport {
             context_schema_version: self.state_value(CONTEXT_SCHEMA_VERSION_KEY)?,
             search_docs_fts_schema_version: self.state_value(SEARCH_DOCS_FTS_SCHEMA_VERSION_KEY)?,
             index_profile_stamp: self.state_value(INDEX_PROFILE_STAMP_KEY)?,
@@ -75,8 +52,7 @@ impl<'a> ReleaseVerificationService<'a> {
             link_count: self.app.state.link_count()?,
             latest_migration_runs: self.app.state.list_migration_runs(5)?,
             latest_repair_runs: self.app.state.list_repair_runs(5)?,
-        };
-        Ok(build_storage_doctor_report(snapshot))
+        })
     }
 
     pub(super) fn doctor_retrieval(&self) -> Result<RetrievalDoctorReport> {
@@ -92,19 +68,23 @@ impl<'a> ReleaseVerificationService<'a> {
     }
 
     pub(super) fn migrate_inspect(&self) -> Result<MigrationInspectReport> {
-        let snapshot = MigrationInspectSnapshot {
-            context_schema_version: self.state_value(CONTEXT_SCHEMA_VERSION_KEY)?,
-            search_docs_fts_schema_version: self.state_value(SEARCH_DOCS_FTS_SCHEMA_VERSION_KEY)?,
-            release_contract_version: self.state_value(RELEASE_CONTRACT_VERSION_KEY)?,
+        let context_schema_version = self.state_value(CONTEXT_SCHEMA_VERSION_KEY)?;
+        let search_docs_fts_schema_version =
+            self.state_value(SEARCH_DOCS_FTS_SCHEMA_VERSION_KEY)?;
+        let release_contract_version = self.state_value(RELEASE_CONTRACT_VERSION_KEY)?;
+        let pending_actions = build_pending_migration_actions(
+            context_schema_version.as_deref(),
+            search_docs_fts_schema_version.as_deref(),
+            release_contract_version.as_deref(),
+        );
+        Ok(MigrationInspectReport {
+            context_schema_version,
+            search_docs_fts_schema_version,
+            release_contract_version,
             latest_migration_runs: self.app.state.list_migration_runs(5)?,
             latest_repair_runs: self.app.state.list_repair_runs(5)?,
-            pending_actions: build_pending_migration_actions(
-                self.state_value(CONTEXT_SCHEMA_VERSION_KEY)?,
-                self.state_value(SEARCH_DOCS_FTS_SCHEMA_VERSION_KEY)?,
-                self.state_value(RELEASE_CONTRACT_VERSION_KEY)?,
-            ),
-        };
-        Ok(build_migration_inspect_report(snapshot))
+            pending_actions,
+        })
     }
 
     pub(super) fn migrate_apply(&self, backup_dir: Option<&Path>) -> Result<MigrationApplyReport> {
@@ -121,7 +101,7 @@ impl<'a> ReleaseVerificationService<'a> {
         let started_at = Utc::now().to_rfc3339();
         self.app.state.ensure_schema()?;
         let finished_at = Utc::now().to_rfc3339();
-        let plan = build_migration_apply_plan(backup_path.clone(), started_at, finished_at);
+        let plan = build_migration_apply_plan(backup_path, started_at, finished_at);
         self.app.state.record_migration_run(&plan.applied_run)?;
         let inspect_after = self.migrate_inspect()?;
 
@@ -145,20 +125,6 @@ impl<'a> ReleaseVerificationService<'a> {
 
     fn state_value(&self, key: &str) -> Result<Option<String>> {
         self.app.state.get_system_value(key)
-    }
-}
-
-fn build_storage_doctor_report(snapshot: StorageDoctorSnapshot) -> StorageDoctorReport {
-    StorageDoctorReport {
-        context_schema_version: snapshot.context_schema_version,
-        search_docs_fts_schema_version: snapshot.search_docs_fts_schema_version,
-        index_profile_stamp: snapshot.index_profile_stamp,
-        release_contract_version: snapshot.release_contract_version,
-        search_document_count: snapshot.search_document_count,
-        event_count: snapshot.event_count,
-        link_count: snapshot.link_count,
-        latest_migration_runs: snapshot.latest_migration_runs,
-        latest_repair_runs: snapshot.latest_repair_runs,
     }
 }
 
@@ -193,9 +159,9 @@ fn build_retrieval_doctor_report(snapshot: RetrievalDoctorSnapshot) -> Retrieval
 }
 
 fn build_pending_migration_actions(
-    context_schema_version: Option<String>,
-    search_docs_fts_schema_version: Option<String>,
-    release_contract_version: Option<String>,
+    context_schema_version: Option<&str>,
+    search_docs_fts_schema_version: Option<&str>,
+    release_contract_version: Option<&str>,
 ) -> Vec<String> {
     [
         context_schema_version
@@ -214,33 +180,21 @@ fn build_pending_migration_actions(
     .collect()
 }
 
-fn build_migration_inspect_report(snapshot: MigrationInspectSnapshot) -> MigrationInspectReport {
-    MigrationInspectReport {
-        context_schema_version: snapshot.context_schema_version,
-        search_docs_fts_schema_version: snapshot.search_docs_fts_schema_version,
-        release_contract_version: snapshot.release_contract_version,
-        latest_migration_runs: snapshot.latest_migration_runs,
-        latest_repair_runs: snapshot.latest_repair_runs,
-        pending_actions: snapshot.pending_actions,
-    }
-}
-
 fn build_migration_apply_plan(
     backup_path: Option<String>,
     started_at: String,
     finished_at: String,
 ) -> MigrationApplyPlan {
+    let details = Some(serde_json::json!({ "backup_path": &backup_path }));
     MigrationApplyPlan {
-        backup_path: backup_path.clone(),
+        backup_path,
         applied_run: MigrationRunRecord {
             run_id: format!("migration-{}", uuid::Uuid::new_v4().simple()),
             operation: "ensure_schema".to_string(),
             started_at,
             finished_at: Some(finished_at),
             status: RUN_STATUS_SUCCESS.to_string(),
-            details: Some(serde_json::json!({
-                "backup_path": backup_path,
-            })),
+            details,
         },
     }
 }
@@ -250,11 +204,14 @@ fn build_release_verify_report(
     storage: StorageDoctorReport,
     retrieval: RetrievalDoctorReport,
 ) -> ReleaseVerifyReport {
-    ReleaseVerifyReport {
+    let report = ReleaseVerifyReport {
         verified_at,
+        healthy: false,
         storage,
         retrieval,
-    }
+    };
+    let healthy = report.is_healthy();
+    ReleaseVerifyReport { healthy, ..report }
 }
 
 impl AxiomSync {
@@ -271,7 +228,8 @@ impl AxiomSync {
     }
 
     pub fn migrate_apply(&self, backup_dir: Option<&Path>) -> Result<MigrationApplyReport> {
-        self.release_verification_service().migrate_apply(backup_dir)
+        self.release_verification_service()
+            .migrate_apply(backup_dir)
     }
 
     pub fn release_verify(&self) -> Result<ReleaseVerifyReport> {
@@ -282,18 +240,14 @@ impl AxiomSync {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_migration_apply_plan, build_pending_migration_actions,
-        build_release_verify_report, build_retrieval_doctor_report, build_retrieval_doctor_snapshot,
+        build_migration_apply_plan, build_pending_migration_actions, build_release_verify_report,
+        build_retrieval_doctor_report, build_retrieval_doctor_snapshot,
     };
     use crate::models::{BackendStatus, EmbeddingBackendStatus, RetrievalDoctorReport};
 
     #[test]
     fn pending_migration_actions_only_include_missing_versions() {
-        let pending = build_pending_migration_actions(
-            Some("1".to_string()),
-            None,
-            Some("2026-03-01".to_string()),
-        );
+        let pending = build_pending_migration_actions(Some("1"), None, Some("2026-03-01"));
 
         assert_eq!(
             pending,
@@ -373,6 +327,9 @@ mod tests {
             build_release_verify_report("2026-03-16T00:00:00Z".to_string(), storage, retrieval);
         assert_eq!(report.verified_at, "2026-03-16T00:00:00Z");
         assert_eq!(report.storage.search_document_count, 5);
-        assert_eq!(report.retrieval.restore_source.as_deref(), Some("full_reindex"));
+        assert_eq!(
+            report.retrieval.restore_source.as_deref(),
+            Some("full_reindex")
+        );
     }
 }

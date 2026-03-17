@@ -33,6 +33,9 @@ pub struct AddArgs {
     /// Wait contract when `--wait=true` (`relaxed`: one replay pass, `strict`: terminal done only).
     #[arg(long, value_enum, default_value_t = AddWaitModeArg::Relaxed)]
     pub wait_mode: AddWaitModeArg,
+    /// Wait timeout in seconds when `--wait=true` (default: 30).
+    #[arg(long, value_name = "SECS")]
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Args)]

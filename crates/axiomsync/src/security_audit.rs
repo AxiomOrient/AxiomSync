@@ -49,6 +49,17 @@ fn cargo_audit_args(mode: ReleaseSecurityAuditMode, advisory_db_path: &Path) -> 
     args
 }
 
+fn advisory_db_is_bootstrapped(advisory_db_path: &Path) -> bool {
+    advisory_db_path.join(".git").is_dir()
+}
+
+fn default_home_advisory_db_path() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|home| home.join(".cargo").join("advisory-db"))
+}
+
 pub fn dependency_inventory_summary(workspace_dir: &Path) -> DependencyInventorySummary {
     let lockfile_present = workspace_dir.join("Cargo.lock").exists();
     let package_count = match run_host_command(
@@ -141,6 +152,20 @@ pub fn dependency_audit_summary(
             let advisories = parse_cargo_audit_advisory_count(&stdout)
                 .or_else(|| parse_cargo_audit_advisory_count(&stderr))
                 .unwrap_or(0);
+            if should_retry_strict_audit_with_stale(
+                mode,
+                success,
+                advisories,
+                &advisory_db_path,
+                &stdout,
+                &stderr,
+            ) {
+                return run_stale_security_audit_retry(
+                    workspace_dir,
+                    &advisory_db_path,
+                    tool_version,
+                );
+            }
             let status = if advisories > 0 {
                 DependencyAuditStatus::VulnerabilitiesFound
             } else if success {
@@ -183,6 +208,77 @@ pub fn dependency_audit_summary(
             advisories_found: 0,
             tool_version: None,
             output_excerpt: Some(format_audit_output_excerpt(&advisory_db_path, Some(reason))),
+        },
+    }
+}
+
+fn run_stale_security_audit_retry(
+    workspace_dir: &Path,
+    advisory_db_path: &Path,
+    tool_version: Option<String>,
+) -> DependencyAuditSummary {
+    let retry_args = cargo_audit_args(ReleaseSecurityAuditMode::Offline, advisory_db_path);
+    let retry_arg_refs = retry_args.iter().map(String::as_str).collect::<Vec<_>>();
+    match run_host_command(
+        HostCommandSpec::new(
+            "security_audit:dependency_audit_retry_stale",
+            "cargo",
+            &retry_arg_refs,
+        )
+        .with_current_dir(workspace_dir),
+    ) {
+        HostCommandResult::Completed {
+            success,
+            stdout,
+            stderr,
+        } => {
+            let advisories = parse_cargo_audit_advisory_count(&stdout)
+                .or_else(|| parse_cargo_audit_advisory_count(&stderr))
+                .unwrap_or(0);
+            let status = if advisories > 0 {
+                DependencyAuditStatus::VulnerabilitiesFound
+            } else if success {
+                DependencyAuditStatus::Passed
+            } else {
+                DependencyAuditStatus::Error
+            };
+            DependencyAuditSummary {
+                tool: "cargo-audit".to_string(),
+                mode: ReleaseSecurityAuditMode::Strict,
+                available: true,
+                executed: true,
+                status,
+                advisories_found: advisories,
+                tool_version,
+                output_excerpt: Some(format_audit_output_excerpt(
+                    advisory_db_path,
+                    first_non_empty_output(&stdout, &stderr, OutputTrimMode::Trim)
+                        .map(|text| format!("strict fetch failed; stale retry used; {text}")),
+                )),
+            }
+        }
+        HostCommandResult::SpawnError { error } => DependencyAuditSummary {
+            tool: "cargo-audit".to_string(),
+            mode: ReleaseSecurityAuditMode::Strict,
+            available: true,
+            executed: true,
+            status: DependencyAuditStatus::Error,
+            advisories_found: 0,
+            tool_version,
+            output_excerpt: Some(format_audit_output_excerpt(
+                advisory_db_path,
+                Some(format!("strict fetch failed; stale retry failed; {error}")),
+            )),
+        },
+        HostCommandResult::Blocked { reason } => DependencyAuditSummary {
+            tool: "cargo-audit".to_string(),
+            mode: ReleaseSecurityAuditMode::Strict,
+            available: false,
+            executed: false,
+            status: DependencyAuditStatus::HostToolsDisabled,
+            advisories_found: 0,
+            tool_version: None,
+            output_excerpt: Some(format_audit_output_excerpt(advisory_db_path, Some(reason))),
         },
     }
 }
@@ -300,14 +396,59 @@ fn parse_cargo_audit_advisory_count(raw: &str) -> Option<usize> {
 }
 
 fn resolve_advisory_db_path(workspace_dir: &Path) -> PathBuf {
-    if let Some(path) = std::env::var_os("AXIOMSYNC_ADVISORY_DB")
+    let explicit = std::env::var_os("AXIOMSYNC_ADVISORY_DB")
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-    {
-        return path;
+        .map(PathBuf::from);
+    resolve_advisory_db_path_with(
+        workspace_dir,
+        explicit.as_deref(),
+        default_home_advisory_db_path().as_deref(),
+    )
+}
+
+fn resolve_advisory_db_path_with(
+    workspace_dir: &Path,
+    explicit: Option<&Path>,
+    home_advisory_db: Option<&Path>,
+) -> PathBuf {
+    if let Some(path) = explicit {
+        return path.to_path_buf();
     }
 
-    workspace_dir.join(".axiomsync").join("advisory-db")
+    let workspace_advisory_db = workspace_dir.join(".axiomsync").join("advisory-db");
+    if advisory_db_is_bootstrapped(&workspace_advisory_db) {
+        return workspace_advisory_db;
+    }
+
+    if let Some(home_advisory_db) =
+        home_advisory_db.filter(|path| advisory_db_is_bootstrapped(path))
+    {
+        return home_advisory_db.to_path_buf();
+    }
+
+    workspace_advisory_db
+}
+
+fn should_retry_strict_audit_with_stale(
+    mode: ReleaseSecurityAuditMode,
+    success: bool,
+    advisories: usize,
+    advisory_db_path: &Path,
+    stdout: &str,
+    stderr: &str,
+) -> bool {
+    if !matches!(mode, ReleaseSecurityAuditMode::Strict)
+        || success
+        || advisories > 0
+        || !advisory_db_is_bootstrapped(advisory_db_path)
+    {
+        return false;
+    }
+
+    let combined = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+    combined.contains("couldn't fetch advisory database")
+        || combined.contains("error sending request for url")
+        || combined.contains("git operation failed")
 }
 
 fn prepare_advisory_db_directory(
@@ -360,7 +501,8 @@ fn prepare_advisory_db_directory(
         }
     }
 
-    if matches!(mode, ReleaseSecurityAuditMode::Offline) && !advisory_db_path.join(".git").is_dir()
+    if matches!(mode, ReleaseSecurityAuditMode::Offline)
+        && !advisory_db_is_bootstrapped(advisory_db_path)
     {
         return Err(
             "offline mode requires a bootstrapped advisory-db metadata directory; run strict once to initialize advisory-db"
@@ -502,8 +644,19 @@ mod tests {
     #[test]
     fn resolve_advisory_db_path_defaults_to_workspace_scoped_advisory_db() {
         let workspace = Path::new("/tmp/axiomsync-workspace");
-        let path = resolve_advisory_db_path(workspace);
+        let path = resolve_advisory_db_path_with(workspace, None, None);
         assert_eq!(path, workspace.join(".axiomsync").join("advisory-db"));
+    }
+
+    #[test]
+    fn resolve_advisory_db_path_prefers_bootstrapped_home_clone_when_workspace_db_missing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let home_db = temp.path().join("home").join(".cargo").join("advisory-db");
+        std::fs::create_dir_all(home_db.join(".git")).expect("create home advisory git dir");
+
+        let path = resolve_advisory_db_path_with(&workspace, None, Some(&home_db));
+        assert_eq!(path, home_db);
     }
 
     #[test]
@@ -561,5 +714,29 @@ mod tests {
                 .unwrap_or("")
                 .contains("non-empty but not initialized as a git repository")
         );
+    }
+
+    #[test]
+    fn should_retry_strict_audit_with_stale_detects_fetch_failures() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let advisory_db = temp.path().join("advisory-db");
+        std::fs::create_dir_all(advisory_db.join(".git")).expect("create advisory git dir");
+
+        assert!(should_retry_strict_audit_with_stale(
+            ReleaseSecurityAuditMode::Strict,
+            false,
+            0,
+            &advisory_db,
+            "",
+            "error: couldn't fetch advisory database: git operation failed: error sending request for url",
+        ));
+        assert!(!should_retry_strict_audit_with_stale(
+            ReleaseSecurityAuditMode::Strict,
+            true,
+            0,
+            &advisory_db,
+            "",
+            "",
+        ));
     }
 }

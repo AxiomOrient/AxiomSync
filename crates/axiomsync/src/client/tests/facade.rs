@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 
 use tempfile::tempdir;
 
@@ -129,7 +130,11 @@ fn mount_repo_root_projection_namespace_and_kind_survive_reindex_all() {
     let temp = tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
     fs::create_dir_all(&repo).expect("repo dir");
-    fs::write(repo.join("README.md"), "# Demo\n\nrepo mount stability test").expect("write");
+    fs::write(
+        repo.join("README.md"),
+        "# Demo\n\nrepo mount stability test",
+    )
+    .expect("write");
 
     let app = AxiomSync::new(temp.path().join("runtime")).expect("app");
     app.initialize().expect("init");
@@ -271,7 +276,11 @@ break-glass client rotation, auth-worker restart, and replay of stuck device ses
     assert!(stored.tombstoned_at.is_none());
     assert!(stored.created_at > 0);
     assert!(stored.updated_at >= stored.created_at);
-    assert_eq!(stored.content_hash.len(), 64, "content_hash must be a 32-byte hex blake3 digest");
+    assert_eq!(
+        stored.content_hash.len(),
+        64,
+        "content_hash must be a 32-byte hex blake3 digest"
+    );
     assert_ne!(
         stored.content_hash,
         blake3::hash(repo.to_string_lossy().as_bytes())
@@ -1176,9 +1185,366 @@ fn org_repo_workflow_runs_mount_event_link_search_and_session_flow_end_to_end() 
     );
 }
 
+#[test]
+fn real_repo_markdown_workflow_exercises_live_ingest_retrieval_events_sessions_and_release_verify()
+{
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path().join("runtime")).expect("app");
+    app.initialize().expect("init");
+
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let api_contract = workspace.join("docs/API_CONTRACT.md");
+    let release_runbook = workspace.join("docs/RELEASE_RUNBOOK.md");
+    let runtime_architecture = workspace.join("docs/RUNTIME_ARCHITECTURE.md");
+    assert!(
+        api_contract.exists(),
+        "missing fixture {}",
+        api_contract.display()
+    );
+    assert!(
+        release_runbook.exists(),
+        "missing fixture {}",
+        release_runbook.display()
+    );
+    assert!(
+        runtime_architecture.exists(),
+        "missing fixture {}",
+        runtime_architecture.display()
+    );
+
+    let direct_contract = app
+        .add_resource(
+            api_contract.to_str().expect("api contract str"),
+            Some("axiom://resources/acme/reference/API_CONTRACT.md"),
+            None,
+            None,
+            true,
+            Some(30),
+        )
+        .expect("add api contract");
+    let contract_find = app
+        .find(
+            "canonical retrieval result shape compat-json hit_buckets",
+            Some(&direct_contract.root_uri),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("find api contract section");
+    let contract_hit = contract_find
+        .query_results
+        .iter()
+        .find(|hit| hit.matched_heading.as_deref() == Some("Retrieval Contract"))
+        .expect("api contract hit");
+    let contract_resource_uri = contract_hit.uri.clone();
+    assert!(
+        contract_resource_uri.starts_with(&direct_contract.root_uri),
+        "api contract hit must stay under requested target: {} vs {}",
+        contract_resource_uri,
+        direct_contract.root_uri
+    );
+    assert_eq!(
+        contract_hit.matched_heading.as_deref(),
+        Some("Retrieval Contract")
+    );
+    assert!(contract_hit.snippet.is_some());
+
+    let repo = temp.path().join("live-docs-repo");
+    copy_fixture(&release_runbook, &repo.join("docs/RELEASE_RUNBOOK.md"));
+    copy_fixture(
+        &runtime_architecture,
+        &repo.join("docs/RUNTIME_ARCHITECTURE.md"),
+    );
+    copy_fixture(&api_contract, &repo.join("docs/API_CONTRACT.md"));
+
+    let mount = app
+        .mount_repo(RepoMountRequest {
+            source_path: repo.to_string_lossy().to_string(),
+            target_uri: AxiomUri::parse("axiom://resources/acme/repos/live-docs").expect("uri"),
+            namespace: NamespaceKey::parse("acme/release").expect("namespace"),
+            kind: Kind::new("repository").expect("kind"),
+            title: Some("Live Docs Repo".to_string()),
+            tags: vec!["release".to_string(), "docs".to_string()],
+            attrs: serde_json::json!({"source": "workspace-markdown"}),
+            wait: true,
+        })
+        .expect("mount live docs repo");
+
+    let mounted_root = mount.root_uri.to_string();
+    let mounted_release_uri = format!("{mounted_root}/docs/RELEASE_RUNBOOK.md");
+    let mounted_runtime_uri = format!("{mounted_root}/docs/RUNTIME_ARCHITECTURE.md");
+
+    let release_find = app
+        .find("decision rules", Some(&mounted_root), Some(10), None, None)
+        .expect("find release runbook section");
+    let release_hit = release_find
+        .query_results
+        .iter()
+        .find(|hit| hit.uri == mounted_release_uri)
+        .expect("mounted release runbook hit");
+    assert_eq!(
+        release_hit.matched_heading.as_deref(),
+        Some("Release Decision Rules")
+    );
+    assert!(
+        release_hit
+            .snippet
+            .as_deref()
+            .is_some_and(|snippet| !snippet.is_empty())
+    );
+
+    let runtime_find = app
+        .find(
+            "main data flows add_events events table search_docs projection memory index sync",
+            Some(&mounted_root),
+            Some(10),
+            None,
+            None,
+        )
+        .expect("find runtime architecture section");
+    let runtime_hit = runtime_find
+        .query_results
+        .iter()
+        .find(|hit| hit.uri == mounted_runtime_uri)
+        .expect("mounted runtime architecture hit");
+    assert_eq!(
+        runtime_hit.matched_heading.as_deref(),
+        Some("Main Data Flows")
+    );
+    assert!(runtime_hit.snippet.is_some());
+
+    let incident_uri =
+        AxiomUri::parse("axiom://events/acme/release/incidents/live-docs-drill").expect("uri");
+    let verify_uri =
+        AxiomUri::parse("axiom://events/acme/release/runs/live-release-verify").expect("uri");
+    let log_uri =
+        AxiomUri::parse("axiom://events/acme/release/logs/live-release-probe").expect("uri");
+    let events = app
+        .add_events(vec![
+            AddEventRequest {
+                event_id: "evt-live-release-incident".to_string(),
+                uri: incident_uri.clone(),
+                namespace: NamespaceKey::parse("acme/release").expect("namespace"),
+                kind: Kind::new("incident").expect("kind"),
+                event_time: 1_710_700_000,
+                title: Some("Release evidence drill".to_string()),
+                summary_text: Some(
+                    "release verify and required gates reviewed against live runbook sections"
+                        .to_string(),
+                ),
+                severity: Some("high".to_string()),
+                actor_uri: None,
+                subject_uri: Some(
+                    AxiomUri::parse(&mounted_release_uri).expect("mounted release uri"),
+                ),
+                run_id: Some("run-live-release".to_string()),
+                session_id: None,
+                tags: vec!["release".to_string(), "docs".to_string()],
+                attrs: serde_json::json!({"section": "Release Decision Rules"}),
+                object_uri: None,
+                content_hash: None,
+                created_at: Some(1_710_700_001),
+            },
+            AddEventRequest {
+                event_id: "evt-live-release-verify".to_string(),
+                uri: verify_uri.clone(),
+                namespace: NamespaceKey::parse("acme/release").expect("namespace"),
+                kind: Kind::new("run").expect("kind"),
+                event_time: 1_710_700_010,
+                title: Some("Release verify".to_string()),
+                summary_text: Some(
+                    "release verify confirmed context schema, FTS readiness, and retrieval backend"
+                        .to_string(),
+                ),
+                severity: None,
+                actor_uri: None,
+                subject_uri: Some(
+                    AxiomUri::parse(&contract_resource_uri).expect("api contract uri"),
+                ),
+                run_id: Some("run-live-release".to_string()),
+                session_id: None,
+                tags: vec!["release".to_string(), "verify".to_string()],
+                attrs: serde_json::json!({"section": "Release Gate Contract"}),
+                object_uri: None,
+                content_hash: None,
+                created_at: Some(1_710_700_011),
+            },
+            AddEventRequest {
+                event_id: "evt-live-release-log".to_string(),
+                uri: log_uri.clone(),
+                namespace: NamespaceKey::parse("acme/release").expect("namespace"),
+                kind: Kind::new("log").expect("kind"),
+                event_time: 1_710_700_020,
+                title: Some("Release probe log".to_string()),
+                summary_text: Some(
+                    "release pack strict gate emitted passed true and no benchmark reports"
+                        .to_string(),
+                ),
+                severity: None,
+                actor_uri: None,
+                subject_uri: None,
+                run_id: Some("run-live-release".to_string()),
+                session_id: None,
+                tags: vec!["release".to_string(), "log".to_string()],
+                attrs: serde_json::json!({"source": "probe"}),
+                object_uri: None,
+                content_hash: None,
+                created_at: Some(1_710_700_021),
+            },
+        ])
+        .expect("add release events");
+    assert_eq!(events.len(), 3);
+
+    app.link_records(LinkRequest {
+        link_id: "link-live-release-runbook".to_string(),
+        namespace: NamespaceKey::parse("acme/release").expect("namespace"),
+        from_uri: incident_uri.clone(),
+        relation: "resolved_by".to_string(),
+        to_uri: AxiomUri::parse(&mounted_release_uri).expect("mounted release uri"),
+        weight: 1.0,
+        attrs: serde_json::json!({"source": "runbook"}),
+        created_at: Some(1_710_700_012),
+    })
+    .expect("link release runbook");
+    app.link_records(LinkRequest {
+        link_id: "link-live-release-contract".to_string(),
+        namespace: NamespaceKey::parse("acme/release").expect("namespace"),
+        from_uri: verify_uri.clone(),
+        relation: "documents".to_string(),
+        to_uri: AxiomUri::parse(&contract_resource_uri).expect("api contract uri"),
+        weight: 0.8,
+        attrs: serde_json::json!({"source": "contract"}),
+        created_at: Some(1_710_700_013),
+    })
+    .expect("link api contract");
+    let stored_links = app
+        .state
+        .query_links(crate::models::LinkQuery {
+            namespace_prefix: Some(NamespaceKey::parse("acme").expect("namespace")),
+            from_uri: None,
+            to_uri: None,
+            relation: None,
+            limit: Some(10),
+        })
+        .expect("query stored links");
+    assert_eq!(stored_links.len(), 2);
+
+    let session = app.session(Some("s-live-repo-hard-test"));
+    session.load().expect("session load");
+    session
+        .add_message(
+            "user",
+            "Check the live release docs, confirm required gates, and keep the incident evidence linked.",
+        )
+        .expect("add message");
+    let commit = session.commit().expect("commit session");
+    assert_eq!(commit.session_id, "s-live-repo-hard-test");
+    let sessions = app.sessions().expect("list sessions");
+    assert!(
+        sessions
+            .iter()
+            .any(|info| info.session_id == "s-live-repo-hard-test")
+    );
+
+    let event_search = app
+        .search(
+            "release verify required gates evidence",
+            Some("axiom://events"),
+            Some("s-live-repo-hard-test"),
+            Some(10),
+            None,
+            Some(MetadataFilter {
+                fields: HashMap::from([(
+                    "namespace_prefix".to_string(),
+                    serde_json::json!("acme/release"),
+                )]),
+            }),
+        )
+        .expect("search release events");
+    assert!(
+        event_search
+            .query_results
+            .iter()
+            .any(|hit| hit.uri == incident_uri.to_string())
+    );
+    assert!(
+        event_search
+            .query_results
+            .iter()
+            .any(|hit| hit.uri == verify_uri.to_string())
+    );
+    assert!(
+        event_search
+            .query_plan
+            .typed_queries
+            .iter()
+            .any(|typed| typed.kind == "session_recent")
+    );
+
+    let archive_plan = app
+        .plan_event_archive(
+            "live-release-log-archive",
+            crate::models::EventQuery {
+                namespace_prefix: Some(NamespaceKey::parse("acme/release").expect("namespace")),
+                kind: Some(Kind::new("log").expect("kind")),
+                start_time: Some(1_710_700_000),
+                end_time: Some(1_710_700_100),
+                limit: Some(10),
+                include_tombstoned: false,
+            },
+            Some("compact live probe logs".to_string()),
+            Some("hard-test".to_string()),
+        )
+        .expect("plan release log archive");
+    let archive = app
+        .execute_event_archive(archive_plan)
+        .expect("execute release log archive");
+    assert_eq!(archive.event_count, 1);
+
+    let docs = app.state.list_search_documents().expect("list search docs");
+    assert!(
+        !docs.iter().any(|doc| doc.uri == log_uri.to_string()),
+        "archived log must be removed from search docs"
+    );
+    let archived_logs = app
+        .state
+        .query_events(crate::models::EventQuery {
+            namespace_prefix: Some(NamespaceKey::parse("acme/release").expect("namespace")),
+            kind: Some(Kind::new("log").expect("kind")),
+            start_time: Some(1_710_700_000),
+            end_time: Some(1_710_700_100),
+            limit: Some(10),
+            include_tombstoned: false,
+        })
+        .expect("query archived release logs");
+    assert_eq!(archived_logs.len(), 1);
+    assert_eq!(
+        archived_logs[0].object_uri.as_ref(),
+        Some(&archive.object_uri)
+    );
+
+    let verify = app.release_verify().expect("release verify");
+    assert!(
+        verify.is_healthy(),
+        "release verify must be healthy: {verify:?}"
+    );
+    assert!(verify.storage.search_document_count >= 6);
+    assert!(verify.storage.event_count >= 3);
+    assert!(verify.storage.link_count >= 2);
+    assert!(verify.retrieval.fts_ready);
+    assert!(verify.retrieval.indexed_documents >= 6);
+}
+
 fn write_fixture(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("create fixture parent");
     }
     fs::write(path, content).expect("write fixture");
+}
+
+fn copy_fixture(source: &Path, target: &Path) {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).expect("create copy parent");
+    }
+    fs::copy(source, target).expect("copy fixture");
 }

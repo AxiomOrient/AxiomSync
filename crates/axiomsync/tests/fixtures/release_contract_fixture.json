@@ -157,6 +157,7 @@
   },
   "release_verify_report": {
     "verified_at": "2026-01-01T00:00:00Z",
+    "healthy": true,
     "storage": {
       "context_schema_version": "v3",
       "search_docs_fts_schema_version": "fts5-v1",

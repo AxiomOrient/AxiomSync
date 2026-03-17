@@ -166,6 +166,7 @@ fn backend_runs_runtime_prepare_and_reflects_local_records() {
             include_hidden: false,
             exclude: Vec::new(),
             wait_mode: AddWaitModeArg::Relaxed,
+            timeout_secs: None,
         }),
     )
     .expect("add");
@@ -1343,6 +1344,7 @@ fn add_markdown_flag_validation_runs_before_bootstrap_side_effects() {
             include_hidden: false,
             exclude: vec!["**/*.json".to_string()],
             wait_mode: AddWaitModeArg::Relaxed,
+            timeout_secs: None,
         }),
     )
     .expect_err("must fail");

@@ -333,6 +333,7 @@ pub struct MigrationApplyReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseVerifyReport {
     pub verified_at: String,
+    pub healthy: bool,
     pub storage: StorageDoctorReport,
     pub retrieval: RetrievalDoctorReport,
 }

@@ -86,13 +86,12 @@ impl<'a> RuntimeBootstrapService<'a> {
         let current_stamp = self.current_index_profile_stamp();
         let stored_stamp = self.app.state.get_system_value(INDEX_PROFILE_STAMP_KEY)?;
         let has_drift = self.has_index_state_drift()?;
-        let restored_search_documents = if stored_stamp.as_deref() == Some(current_stamp.as_str())
-            && !has_drift
-        {
-            self.restore_index_from_state()?
-        } else {
-            0
-        };
+        let restored_search_documents =
+            if stored_stamp.as_deref() == Some(current_stamp.as_str()) && !has_drift {
+                self.restore_index_from_state()?
+            } else {
+                0
+            };
         let plan = build_runtime_bootstrap_plan(
             current_stamp,
             stored_stamp,
@@ -129,12 +128,13 @@ impl<'a> RuntimeBootstrapService<'a> {
         // filesystem walk above. The resource table is the authoritative source for these fields.
         let resources = self.app.state.list_resources(ResourceQuery::default())?;
         let om_records = self.app.state.list_om_records()?;
-        self.execute_projection_repair(ProjectionRepairPlan { resources, om_records })?;
+        self.execute_projection_repair(ProjectionRepairPlan {
+            resources,
+            om_records,
+        })?;
 
-        let repair_plan = build_full_reindex_repair_plan(
-            self.current_index_profile_stamp(),
-            "full_reindex",
-        );
+        let repair_plan =
+            build_full_reindex_repair_plan(self.current_index_profile_stamp(), "full_reindex");
         self.persist_repair_plan(repair_plan, started_at)
     }
 
@@ -526,8 +526,12 @@ fn build_runtime_bootstrap_plan(
     has_index_state_drift: bool,
     restored_search_documents: usize,
 ) -> RuntimeBootstrapPlan {
-    let restore_decision =
-        decide_runtime_restore(current_stamp, stored_stamp, has_index_state_drift, restored_search_documents);
+    let restore_decision = decide_runtime_restore(
+        current_stamp,
+        stored_stamp,
+        has_index_state_drift,
+        restored_search_documents,
+    );
     RuntimeBootstrapPlan {
         ensure_scope_tiers: true,
         restore_decision,
@@ -606,15 +610,20 @@ fn is_om_event_type(rate: &crate::models::QueueDeadLetterRate) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        RuntimeRestoreDecision, build_full_reindex_repair_plan,
-        build_promotion_execution_plan, build_runtime_bootstrap_plan,
-        build_session_deletion_plan, build_session_scope_plan, decide_runtime_restore,
+        RuntimeRestoreDecision, build_full_reindex_repair_plan, build_promotion_execution_plan,
+        build_runtime_bootstrap_plan, build_session_deletion_plan, build_session_scope_plan,
+        decide_runtime_restore,
     };
     use crate::{AxiomUri, Scope};
 
     #[test]
     fn runtime_restore_decision_reindexes_when_stamp_changes() {
-        let decision = decide_runtime_restore("stamp-v2".to_string(), Some("stamp-v1".to_string()), false, 3);
+        let decision = decide_runtime_restore(
+            "stamp-v2".to_string(),
+            Some("stamp-v1".to_string()),
+            false,
+            3,
+        );
 
         assert_eq!(
             decision,
@@ -626,7 +635,12 @@ mod tests {
 
     #[test]
     fn runtime_restore_decision_restores_when_state_is_current_and_non_empty() {
-        let decision = decide_runtime_restore("stamp-v1".to_string(), Some("stamp-v1".to_string()), false, 2);
+        let decision = decide_runtime_restore(
+            "stamp-v1".to_string(),
+            Some("stamp-v1".to_string()),
+            false,
+            2,
+        );
 
         assert_eq!(
             decision,
@@ -680,7 +694,9 @@ mod tests {
 
     #[test]
     fn session_deletion_plan_skips_missing_sessions() {
-        let uri = AxiomUri::root(Scope::Session).join("s-missing").expect("uri");
+        let uri = AxiomUri::root(Scope::Session)
+            .join("s-missing")
+            .expect("uri");
         let plan = build_session_deletion_plan("s-missing", uri.clone(), false);
 
         assert_eq!(plan.session_scope.session_id, "s-missing");
