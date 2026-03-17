@@ -1,5 +1,5 @@
 use chrono::Utc;
-use rusqlite::{OptionalExtension, params, types::Type};
+use rusqlite::{OptionalExtension, Transaction, params, types::Type};
 
 use crate::error::Result;
 use crate::mime::infer_mime;
@@ -361,21 +361,16 @@ impl SqliteStateStore {
     }
 
     pub fn remove_search_documents_with_prefix(&self, uri_prefix: &str) -> Result<()> {
-        let like_pattern = format!("{uri_prefix}/%");
+        let escaped = super::escape_sql_like_pattern(uri_prefix);
+        let like_pat = format!("{escaped}/%");
         self.with_tx(|tx| {
             tx.execute(
-                r"
-                DELETE FROM search_doc_tags
-                WHERE doc_id IN (
-                    SELECT id FROM search_docs
-                    WHERE uri = ?1 OR uri LIKE ?2
-                )
-                ",
-                params![uri_prefix, &like_pattern],
+                "DELETE FROM search_doc_tags WHERE doc_id IN (SELECT id FROM search_docs WHERE uri = ?1 OR uri LIKE ?2 ESCAPE '\\')",
+                params![uri_prefix, &like_pat],
             )?;
             tx.execute(
-                "DELETE FROM search_docs WHERE uri = ?1 OR uri LIKE ?2",
-                params![uri_prefix, &like_pattern],
+                "DELETE FROM search_docs WHERE uri = ?1 OR uri LIKE ?2 ESCAPE '\\'",
+                params![uri_prefix, &like_pat],
             )?;
             Ok(())
         })
@@ -384,70 +379,206 @@ impl SqliteStateStore {
 
 impl SqliteStateStore {
     fn persist_projection(&self, record: &IndexRecord, meta: &SearchProjectionMeta) -> Result<()> {
-        let tags = normalize_tags(&record.tags);
-        let tags_text = tags.join(" ");
-        self.with_tx(|tx| {
-            let doc_id: i64 = tx.query_row(
-                r"
-                INSERT INTO search_docs(
-                    uri, parent_uri, is_leaf, context_type, name, abstract_text, content,
-                    tags_text, mime, updated_at, depth, namespace, kind, event_time,
-                    source_weight, freshness_bucket
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
-                ON CONFLICT(uri) DO UPDATE SET
-                  parent_uri=excluded.parent_uri,
-                  is_leaf=excluded.is_leaf,
-                  context_type=excluded.context_type,
-                  name=excluded.name,
-                  abstract_text=excluded.abstract_text,
-                  content=excluded.content,
-                  tags_text=excluded.tags_text,
-                  mime=excluded.mime,
-                  updated_at=excluded.updated_at,
-                  depth=excluded.depth,
-                  namespace=excluded.namespace,
-                  kind=excluded.kind,
-                  event_time=excluded.event_time,
-                  source_weight=excluded.source_weight,
-                  freshness_bucket=excluded.freshness_bucket
-                RETURNING id
-                ",
-                params![
-                    record.uri.as_str(),
-                    record.parent_uri.as_deref(),
-                    bool_to_i64(record.is_leaf),
-                    record.context_type.as_str(),
-                    record.name.as_str(),
-                    record.abstract_text.as_str(),
-                    record.content.as_str(),
-                    tags_text,
-                    meta.mime.as_deref(),
-                    record.updated_at.to_rfc3339(),
-                    super::usize_to_i64_saturating(record.depth),
-                    meta.namespace.as_deref(),
-                    meta.kind.as_deref(),
-                    meta.event_time,
-                    meta.source_weight,
-                    meta.freshness_bucket,
-                ],
-                |row| row.get(0),
-            )?;
+        self.with_tx(|tx| insert_search_doc_in_tx(tx, record, meta))
+    }
 
-            tx.execute(
-                "DELETE FROM search_doc_tags WHERE doc_id = ?1",
-                params![doc_id],
+    /// Appends `batch` to the `events` table and persists their search projections in a single
+    /// transaction, ensuring both writes succeed or neither does.
+    pub fn append_events_and_search_docs(&self, batch: &[EventRecord]) -> Result<usize> {
+        if batch.is_empty() {
+            return Ok(0);
+        }
+        self.with_tx(|tx| {
+            // Pure data: build projections before any IO.
+            let projections: Vec<Option<(IndexRecord, SearchProjectionMeta)>> = batch
+                .iter()
+                .map(|e| build_search_doc_from_event(e, &IngestProfile::for_kind(&e.kind)))
+                .collect();
+            // Single IN() query instead of N individual SELECTs (avoids N+1).
+            // `uri_tracker` is pre-seeded with DB-snapshotted previous URIs; within-batch
+            // updates overwrite entries in-place so one map serves both purposes.
+            let event_ids: Vec<&str> = batch.iter().map(|e| e.event_id.as_str()).collect();
+            let placeholders = build_in_placeholders(event_ids.len());
+            let sql =
+                format!("SELECT event_id, uri FROM events WHERE event_id IN ({placeholders})");
+            let mut stmt = tx.prepare(&sql)?;
+            let mut uri_tracker: std::collections::HashMap<String, String> = stmt
+                .query_map(
+                    rusqlite::params_from_iter(event_ids.iter().copied()),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<rusqlite::Result<_>>()?;
+            drop(stmt);
+
+            // IO: insert events.
+            let mut stmt = tx.prepare(
+                r"
+                INSERT INTO events(
+                    event_id, uri, namespace, kind, event_time, title, summary_text, severity,
+                    actor_uri, subject_uri, run_id, session_id, tags_json, attrs_json,
+                    object_uri, content_hash, tombstoned_at, created_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                ON CONFLICT(event_id) DO UPDATE SET
+                  uri = excluded.uri,
+                  namespace = excluded.namespace,
+                  kind = excluded.kind,
+                  event_time = excluded.event_time,
+                  title = excluded.title,
+                  summary_text = excluded.summary_text,
+                  severity = excluded.severity,
+                  actor_uri = excluded.actor_uri,
+                  subject_uri = excluded.subject_uri,
+                  run_id = excluded.run_id,
+                  session_id = excluded.session_id,
+                  tags_json = excluded.tags_json,
+                  attrs_json = excluded.attrs_json,
+                  object_uri = excluded.object_uri,
+                  content_hash = excluded.content_hash,
+                  tombstoned_at = excluded.tombstoned_at,
+                  created_at = excluded.created_at
+                ",
             )?;
-            for tag in &tags {
-                tx.execute(
-                    "INSERT OR IGNORE INTO search_doc_tags(doc_id, tag) VALUES (?1, ?2)",
-                    params![doc_id, tag],
-                )?;
+            let count = batch.iter().try_fold(0usize, |acc, event| {
+                let n = stmt.execute(params![
+                    event.event_id,
+                    event.uri.to_string(),
+                    event.namespace.as_path(),
+                    event.kind.as_str(),
+                    event.event_time,
+                    event.title,
+                    event.summary_text,
+                    event.severity,
+                    event.actor_uri.as_ref().map(ToString::to_string),
+                    event.subject_uri.as_ref().map(ToString::to_string),
+                    event.run_id,
+                    event.session_id,
+                    serde_json::to_string(&normalize_tags(&event.tags))?,
+                    serde_json::to_string(&event.attrs)?,
+                    event.object_uri.as_ref().map(ToString::to_string),
+                    event.content_hash,
+                    event.tombstoned_at,
+                    event.created_at,
+                ])?;
+                Ok::<usize, crate::error::AxiomError>(acc.saturating_add(n))
+            })?;
+
+            // IO: insert search projections.
+            //
+            // `uri_tracker` carries both the DB-snapshotted previous URIs (pre-seeded above)
+            // and within-batch URI changes (overwritten as each event is processed).  A single
+            // map replaces the former `previous_uris` Vec + `batch_uri_by_event_id` HashMap pair.
+            for (event, projection) in batch.iter().zip(projections.iter()) {
+                let current_uri = event.uri.to_string();
+
+                // Clone out the previous URI before mutating the map.
+                let effective_previous: Option<String> =
+                    uri_tracker.get(&event.event_id).cloned();
+
+                match projection {
+                    Some((index_record, meta)) => {
+                        insert_search_doc_in_tx(tx, index_record, meta)?;
+                    }
+                    None => {
+                        // Remove stale search doc if the event is no longer indexable.
+                        delete_search_doc_by_uri_in_tx(tx, &current_uri)?;
+                    }
+                }
+
+                if let Some(ref prev) = effective_previous {
+                    if prev.as_str() != current_uri.as_str() {
+                        delete_search_doc_by_uri_in_tx(tx, prev)?;
+                    }
+                }
+
+                uri_tracker.insert(event.event_id.clone(), current_uri);
             }
 
-            Ok(())
+            Ok(count)
         })
     }
+}
+
+/// Inserts or updates a search doc and its tags within an existing transaction.
+fn insert_search_doc_in_tx(
+    tx: &Transaction<'_>,
+    record: &IndexRecord,
+    meta: &SearchProjectionMeta,
+) -> Result<()> {
+    let tags = normalize_tags(&record.tags);
+    let tags_text = tags.join(" ");
+
+    let doc_id: i64 = tx.query_row(
+        r"
+        INSERT INTO search_docs(
+            uri, parent_uri, is_leaf, context_type, name, abstract_text, content,
+            tags_text, mime, updated_at, depth, namespace, kind, event_time,
+            source_weight, freshness_bucket
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+        ON CONFLICT(uri) DO UPDATE SET
+          parent_uri=excluded.parent_uri,
+          is_leaf=excluded.is_leaf,
+          context_type=excluded.context_type,
+          name=excluded.name,
+          abstract_text=excluded.abstract_text,
+          content=excluded.content,
+          tags_text=excluded.tags_text,
+          mime=excluded.mime,
+          updated_at=excluded.updated_at,
+          depth=excluded.depth,
+          namespace=excluded.namespace,
+          kind=excluded.kind,
+          event_time=excluded.event_time,
+          source_weight=excluded.source_weight,
+          freshness_bucket=excluded.freshness_bucket
+        RETURNING id
+        ",
+        params![
+            record.uri.as_str(),
+            record.parent_uri.as_deref(),
+            bool_to_i64(record.is_leaf),
+            record.context_type.as_str(),
+            record.name.as_str(),
+            record.abstract_text.as_str(),
+            record.content.as_str(),
+            tags_text,
+            meta.mime.as_deref(),
+            record.updated_at.to_rfc3339(),
+            super::usize_to_i64_saturating(record.depth),
+            meta.namespace.as_deref(),
+            meta.kind.as_deref(),
+            meta.event_time,
+            meta.source_weight,
+            meta.freshness_bucket,
+        ],
+        |row| row.get(0),
+    )?;
+
+    tx.execute("DELETE FROM search_doc_tags WHERE doc_id = ?1", params![doc_id])?;
+    for tag in &tags {
+        tx.execute(
+            "INSERT OR IGNORE INTO search_doc_tags(doc_id, tag) VALUES (?1, ?2)",
+            params![doc_id, tag],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn delete_search_doc_by_uri_in_tx(tx: &Transaction<'_>, uri: &str) -> Result<()> {
+    if let Some(doc_id) = tx
+        .query_row(
+            "SELECT id FROM search_docs WHERE uri = ?1",
+            params![uri],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+    {
+        tx.execute("DELETE FROM search_doc_tags WHERE doc_id = ?1", params![doc_id])?;
+        tx.execute("DELETE FROM search_docs WHERE id = ?1", params![doc_id])?;
+    }
+    Ok(())
 }
 
 fn build_in_placeholders(count: usize) -> String {
@@ -813,5 +944,289 @@ mod tests {
             )
             .expect("search");
         assert_eq!(hits, vec!["axiom://events/acme/incidents/1".to_string()]);
+    }
+
+    #[test]
+    fn append_events_and_search_docs_writes_both_tables_in_one_transaction() {
+        let temp = tempdir().expect("tempdir");
+        let store = SqliteStateStore::open(temp.path().join("state.db")).expect("open");
+        let now = Utc::now().timestamp();
+
+        let events = vec![
+            EventRecord {
+                event_id: "e1".to_string(),
+                uri: AxiomUri::parse("axiom://events/acme/incidents/1").expect("uri"),
+                namespace: NamespaceKey::parse("acme").expect("ns"),
+                kind: "incident".parse().expect("kind"),
+                event_time: now,
+                title: Some("prod outage".to_string()),
+                summary_text: Some("oauth service down".to_string()),
+                severity: Some("high".to_string()),
+                actor_uri: None,
+                subject_uri: None,
+                run_id: None,
+                session_id: None,
+                tags: vec!["oauth".to_string()],
+                attrs: serde_json::json!({}),
+                object_uri: None,
+                content_hash: None,
+                tombstoned_at: None,
+                created_at: now,
+            },
+            EventRecord {
+                event_id: "e2".to_string(),
+                uri: AxiomUri::parse("axiom://events/acme/deploys/2").expect("uri"),
+                namespace: NamespaceKey::parse("acme").expect("ns"),
+                kind: "deploy".parse().expect("kind"),
+                event_time: now - 60,
+                title: Some("deploy".to_string()),
+                summary_text: None,
+                severity: None,
+                actor_uri: None,
+                subject_uri: None,
+                run_id: None,
+                session_id: None,
+                tags: vec![],
+                attrs: serde_json::json!({}),
+                object_uri: None,
+                content_hash: None,
+                tombstoned_at: None,
+                created_at: now - 60,
+            },
+        ];
+
+        let count = store
+            .append_events_and_search_docs(&events)
+            .expect("append");
+        assert_eq!(count, 2, "must report 2 inserted events");
+
+        // Both events are in the events table.
+        let queried = store
+            .query_events(crate::models::EventQuery {
+                namespace_prefix: Some(NamespaceKey::parse("acme").expect("ns")),
+                kind: None,
+                start_time: None,
+                end_time: None,
+                limit: Some(10),
+                include_tombstoned: false,
+            })
+            .expect("query events");
+        assert_eq!(queried.len(), 2);
+
+        // Indexed kinds produce search docs.
+        let docs = store.list_search_documents().expect("list docs");
+        assert!(
+            docs.iter().any(|d| d.uri == "axiom://events/acme/incidents/1"),
+            "incident must have a search doc"
+        );
+    }
+
+    #[test]
+    fn append_events_and_search_docs_returns_zero_for_empty_batch() {
+        let temp = tempdir().expect("tempdir");
+        let store = SqliteStateStore::open(temp.path().join("state.db")).expect("open");
+
+        let count = store
+            .append_events_and_search_docs(&[])
+            .expect("empty batch");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn append_events_and_search_docs_is_idempotent_on_duplicate_event_id() {
+        let temp = tempdir().expect("tempdir");
+        let store = SqliteStateStore::open(temp.path().join("state.db")).expect("open");
+        let now = Utc::now().timestamp();
+
+        let event = EventRecord {
+            event_id: "e1".to_string(),
+            uri: AxiomUri::parse("axiom://events/acme/incidents/1").expect("uri"),
+            namespace: NamespaceKey::parse("acme").expect("ns"),
+            kind: "incident".parse().expect("kind"),
+            event_time: now,
+            title: Some("first".to_string()),
+            summary_text: None,
+            severity: None,
+            actor_uri: None,
+            subject_uri: None,
+            run_id: None,
+            session_id: None,
+            tags: vec![],
+            attrs: serde_json::json!({}),
+            object_uri: None,
+            content_hash: None,
+            tombstoned_at: None,
+            created_at: now,
+        };
+
+        store
+            .append_events_and_search_docs(std::slice::from_ref(&event))
+            .expect("first insert");
+
+        let updated = EventRecord {
+            title: Some("updated".to_string()),
+            ..event
+        };
+        store
+            .append_events_and_search_docs(std::slice::from_ref(&updated))
+            .expect("upsert");
+
+        let queried = store
+            .query_events(crate::models::EventQuery {
+                namespace_prefix: Some(NamespaceKey::parse("acme").expect("ns")),
+                kind: None,
+                start_time: None,
+                end_time: None,
+                limit: Some(10),
+                include_tombstoned: false,
+            })
+            .expect("query");
+        assert_eq!(queried.len(), 1, "duplicate event_id must upsert, not duplicate");
+        assert_eq!(queried[0].title.as_deref(), Some("updated"));
+    }
+
+    #[test]
+    fn append_events_and_search_docs_no_stale_doc_for_intra_batch_duplicate_event_id() {
+        // P1 regression: same event_id appears twice in one batch with different URIs.
+        // events table must end up with the second URI; search_docs must NOT retain the first.
+        let temp = tempdir().expect("tempdir");
+        let store = SqliteStateStore::open(temp.path().join("state.db")).expect("open");
+        let now = Utc::now().timestamp();
+
+        let mk = |uri: &str| EventRecord {
+            event_id: "e1".to_string(),
+            uri: AxiomUri::parse(uri).expect("uri"),
+            namespace: NamespaceKey::parse("acme").expect("ns"),
+            kind: "incident".parse().expect("kind"),
+            event_time: now,
+            title: Some("t".to_string()),
+            summary_text: Some("s".to_string()),
+            severity: None,
+            actor_uri: None,
+            subject_uri: None,
+            run_id: None,
+            session_id: None,
+            tags: vec![],
+            attrs: serde_json::json!({}),
+            object_uri: None,
+            content_hash: None,
+            tombstoned_at: None,
+            created_at: now,
+        };
+
+        let batch = vec![
+            mk("axiom://events/acme/incidents/1"),
+            mk("axiom://events/acme/incidents/2"),
+        ];
+        store
+            .append_events_and_search_docs(&batch)
+            .expect("append");
+
+        let docs = store.list_search_documents().expect("list docs");
+        assert_eq!(docs.len(), 1, "exactly one search doc must exist");
+        assert_eq!(
+            docs[0].uri, "axiom://events/acme/incidents/2",
+            "search doc must point to the last URI in the batch"
+        );
+    }
+
+    #[test]
+    fn append_events_and_search_docs_removes_stale_search_doc_when_event_uri_changes() {
+        let temp = tempdir().expect("tempdir");
+        let store = SqliteStateStore::open(temp.path().join("state.db")).expect("open");
+        let now = Utc::now().timestamp();
+
+        let original = EventRecord {
+            event_id: "e1".to_string(),
+            uri: AxiomUri::parse("axiom://events/acme/incidents/1").expect("uri"),
+            namespace: NamespaceKey::parse("acme").expect("ns"),
+            kind: "incident".parse().expect("kind"),
+            event_time: now,
+            title: Some("first".to_string()),
+            summary_text: Some("oauth".to_string()),
+            severity: None,
+            actor_uri: None,
+            subject_uri: None,
+            run_id: None,
+            session_id: None,
+            tags: vec!["oauth".to_string()],
+            attrs: serde_json::json!({}),
+            object_uri: None,
+            content_hash: None,
+            tombstoned_at: None,
+            created_at: now,
+        };
+
+        store
+            .append_events_and_search_docs(std::slice::from_ref(&original))
+            .expect("first insert");
+
+        let moved = EventRecord {
+            uri: AxiomUri::parse("axiom://events/acme/incidents/2").expect("uri"),
+            title: Some("moved".to_string()),
+            ..original
+        };
+        store
+            .append_events_and_search_docs(std::slice::from_ref(&moved))
+            .expect("upsert moved uri");
+
+        let docs = store.list_search_documents().expect("list docs");
+        assert!(
+            docs.iter()
+                .any(|doc| doc.uri == "axiom://events/acme/incidents/2"),
+            "new uri must be indexed"
+        );
+        assert!(
+            docs.iter()
+                .all(|doc| doc.uri != "axiom://events/acme/incidents/1"),
+            "old uri search doc must be removed after event moves"
+        );
+    }
+
+    #[test]
+    fn append_events_and_search_docs_removes_search_doc_when_event_is_tombstoned() {
+        let temp = tempdir().expect("tempdir");
+        let store = SqliteStateStore::open(temp.path().join("state.db")).expect("open");
+        let now = Utc::now().timestamp();
+
+        let event = EventRecord {
+            event_id: "e1".to_string(),
+            uri: AxiomUri::parse("axiom://events/acme/incidents/1").expect("uri"),
+            namespace: NamespaceKey::parse("acme").expect("ns"),
+            kind: "incident".parse().expect("kind"),
+            event_time: now,
+            title: Some("first".to_string()),
+            summary_text: Some("oauth".to_string()),
+            severity: None,
+            actor_uri: None,
+            subject_uri: None,
+            run_id: None,
+            session_id: None,
+            tags: vec!["oauth".to_string()],
+            attrs: serde_json::json!({}),
+            object_uri: None,
+            content_hash: None,
+            tombstoned_at: None,
+            created_at: now,
+        };
+
+        store
+            .append_events_and_search_docs(std::slice::from_ref(&event))
+            .expect("first insert");
+
+        let tombstoned = EventRecord {
+            tombstoned_at: Some(now + 1),
+            ..event
+        };
+        store
+            .append_events_and_search_docs(std::slice::from_ref(&tombstoned))
+            .expect("upsert tombstoned");
+
+        let docs = store.list_search_documents().expect("list docs");
+        assert!(
+            docs.iter()
+                .all(|doc| doc.uri != "axiom://events/acme/incidents/1"),
+            "tombstoned event search doc must be removed"
+        );
     }
 }

@@ -8,7 +8,6 @@ use walkdir::WalkDir;
 use crate::error::{AxiomError, Result};
 use crate::models::{
     AddResourceRequest, IngestProfile, RepoMountReport, RepoMountRequest, ResourceRecord,
-    UpsertResource,
 };
 
 use super::AxiomSync;
@@ -67,22 +66,7 @@ impl<'a> RepoService<'a> {
             created_at: now,
             updated_at: now,
         };
-        self.app.state.persist_resource(UpsertResource {
-            resource_id: resource.resource_id.clone(),
-            uri: resource.uri.clone(),
-            namespace: resource.namespace.clone(),
-            kind: resource.kind.clone(),
-            title: resource.title.clone(),
-            mime: resource.mime.clone(),
-            tags: resource.tags.clone(),
-            attrs: resource.attrs.clone(),
-            object_uri: resource.object_uri.clone(),
-            excerpt_text: resource.excerpt_text.clone(),
-            content_hash: resource.content_hash.clone(),
-            tombstoned_at: None,
-            created_at: resource.created_at,
-            updated_at: resource.updated_at,
-        })?;
+        self.app.state.persist_resource(resource.clone())?;
         self.persist_resource_and_sync_index(&resource)?;
 
         Ok(RepoMountReport {
@@ -207,10 +191,10 @@ fn is_ignored_dir(entry: &walkdir::DirEntry) -> bool {
 /// - Build artifact directories (`target/`, `node_modules/`)
 /// - Tier-generated files (`.abstract.md`, `.overview.md`)
 fn compute_repo_tree_digest(source_path: &Path) -> Result<String> {
-    // Pass 1: collect (rel_path, abs_path, file_len) triples sorted by rel_path.
-    // file_len is taken from WalkDir's cached DirEntry metadata to avoid a
-    // redundant fstat per file in Pass 2.
-    let mut entries: Vec<(String, std::path::PathBuf, u64)> = Vec::new();
+    // Collect rel_path → abs_path into a BTreeMap; keys are naturally sorted,
+    // so no separate sort step is needed.
+    let mut entries: std::collections::BTreeMap<String, std::path::PathBuf> =
+        std::collections::BTreeMap::new();
 
     for entry in WalkDir::new(source_path)
         .follow_links(false)
@@ -226,28 +210,33 @@ fn compute_repo_tree_digest(source_path: &Path) -> Result<String> {
         if EXCLUDED_FILE_NAMES.iter().any(|&s| name == s) {
             continue;
         }
-        let file_len = entry
-            .metadata()
-            .map_err(|e| AxiomError::Internal(format!("repo tree digest metadata error: {e}")))?
-            .len();
         let rel_path = entry
             .path()
             .strip_prefix(source_path)
             .map_err(|e| AxiomError::Internal(format!("repo tree digest path error: {e}")))?
             .to_string_lossy()
             .into_owned();
-        entries.push((rel_path, entry.path().to_owned(), file_len));
+        entries.insert(rel_path, entry.path().to_owned());
     }
 
-    entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-
-    // Pass 2: stream each file through the hasher in sorted path order.
-    // Read directly into a single stack buffer; no BufReader needed with a 64 KiB buffer.
+    // Stream each file through the hasher in sorted path order.
+    //
+    // Encoding per entry: path_bytes + NUL + file_len(u64 LE) + file_bytes
+    //
+    // The file_len field is a fixed-width (8-byte) length prefix, not a redundant
+    // copy of the content size. Without it the concatenated stream is ambiguous:
+    // e.g. {a→"b", cd→""} and {a→"bc", d→""} both produce `a\0bcd\0`.
+    // The length prefix makes the framing unambiguous because paths contain no NUL
+    // bytes and the content length is known before the content is hashed.
     let mut hasher = blake3::Hasher::new();
     let mut buf = [0u8; 65536];
-    for (rel_path, abs_path, file_len) in &entries {
+    for (rel_path, abs_path) in &entries {
         let mut file = std::fs::File::open(abs_path)
             .map_err(|e| AxiomError::Internal(format!("repo tree digest open error: {e}")))?;
+        let file_len = file
+            .metadata()
+            .map_err(|e| AxiomError::Internal(format!("repo tree digest metadata error: {e}")))?
+            .len();
         hasher.update(rel_path.as_bytes());
         hasher.update(b"\x00");
         hasher.update(&file_len.to_le_bytes());
@@ -320,6 +309,30 @@ mod tests {
         assert_ne!(
             hash_before, hash_after,
             "adding a file must change the digest"
+        );
+    }
+
+    #[test]
+    fn repo_tree_digest_distinguishes_ambiguous_concatenation_shapes() {
+        let temp = tempdir().expect("tempdir");
+        let repo_a = temp.path().join("repo-a");
+        let repo_b = temp.path().join("repo-b");
+        fs::create_dir_all(&repo_a).expect("mkdir a");
+        fs::create_dir_all(&repo_b).expect("mkdir b");
+
+        // Without a length prefix, both trees serialize to the same byte stream:
+        // `a\0bcd\0`. The digest must still distinguish them.
+        fs::write(repo_a.join("a"), "b").expect("write repo a /a");
+        fs::write(repo_a.join("cd"), "").expect("write repo a /cd");
+        fs::write(repo_b.join("a"), "bc").expect("write repo b /a");
+        fs::write(repo_b.join("d"), "").expect("write repo b /d");
+
+        let hash_a = compute_repo_tree_digest(&repo_a).expect("digest a");
+        let hash_b = compute_repo_tree_digest(&repo_b).expect("digest b");
+
+        assert_ne!(
+            hash_a, hash_b,
+            "length-prefixed framing must distinguish ambiguous concatenation shapes"
         );
     }
 

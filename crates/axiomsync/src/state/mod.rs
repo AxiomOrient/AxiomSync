@@ -156,6 +156,39 @@ impl SqliteStateStore {
         })
     }
 
+    /// Atomically upserts index state only when `content_hash` or `mtime` differ from the stored
+    /// values. Returns `true` if the row was inserted or updated (i.e., state actually changed).
+    ///
+    /// Using a conditional `ON CONFLICT … WHERE` clause makes the check-and-update atomic within
+    /// SQLite's single-writer model, eliminating the TOCTOU window that arises when callers do
+    /// a separate read then write.
+    pub fn upsert_index_state_if_changed(
+        &self,
+        uri: &str,
+        content_hash: &str,
+        mtime: i64,
+        status: &str,
+    ) -> Result<bool> {
+        let now = Utc::now().to_rfc3339();
+        self.with_conn(|conn| {
+            conn.execute(
+                r"
+                INSERT INTO index_state(uri, content_hash, mtime, indexed_at, status)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(uri) DO UPDATE SET
+                  content_hash = excluded.content_hash,
+                  mtime        = excluded.mtime,
+                  indexed_at   = excluded.indexed_at,
+                  status       = excluded.status
+                WHERE index_state.content_hash != excluded.content_hash
+                   OR index_state.mtime        != excluded.mtime
+                ",
+                params![uri, content_hash, mtime, now, status],
+            )?;
+            Ok(conn.changes() > 0)
+        })
+    }
+
     pub fn get_index_state_hash(&self, uri: &str) -> Result<Option<String>> {
         self.with_conn(|conn| {
             let value = conn
@@ -225,6 +258,48 @@ impl SqliteStateStore {
                 params![uri_prefix, format!("{escaped_prefix}/%")],
             )?;
             Ok(affected)
+        })
+    }
+
+    /// Deletes all state rows for URIs that equal `uri_prefix` or start with `uri_prefix/`,
+    /// in a single transaction covering all tables: search_doc_tags, search_docs, index_state,
+    /// events, resources, outbox, and links.
+    ///
+    /// Prefer this over individual `remove_*_with_prefix` calls when purging a URI subtree,
+    /// to reduce connection overhead and guarantee atomicity across tables.
+    pub fn purge_uri_prefix_state(&self, uri_prefix: &str) -> Result<()> {
+        let escaped = escape_sql_like_pattern(uri_prefix);
+        let like_pat = format!("{escaped}/%");
+        self.with_tx(|tx| {
+            tx.execute(
+                "DELETE FROM search_doc_tags WHERE doc_id IN (SELECT id FROM search_docs WHERE uri = ?1 OR uri LIKE ?2 ESCAPE '\\')",
+                params![uri_prefix, &like_pat],
+            )?;
+            tx.execute(
+                "DELETE FROM search_docs WHERE uri = ?1 OR uri LIKE ?2 ESCAPE '\\'",
+                params![uri_prefix, &like_pat],
+            )?;
+            tx.execute(
+                "DELETE FROM index_state WHERE uri = ?1 OR uri LIKE ?2 ESCAPE '\\'",
+                params![uri_prefix, &like_pat],
+            )?;
+            tx.execute(
+                "DELETE FROM events WHERE uri = ?1 OR uri LIKE ?2 ESCAPE '\\'",
+                params![uri_prefix, &like_pat],
+            )?;
+            tx.execute(
+                "DELETE FROM resources WHERE uri = ?1 OR uri LIKE ?2 ESCAPE '\\'",
+                params![uri_prefix, &like_pat],
+            )?;
+            tx.execute(
+                "DELETE FROM outbox WHERE uri = ?1 OR uri LIKE ?2 ESCAPE '\\'",
+                params![uri_prefix, &like_pat],
+            )?;
+            tx.execute(
+                "DELETE FROM links WHERE from_uri = ?1 OR from_uri LIKE ?2 ESCAPE '\\' OR to_uri = ?1 OR to_uri LIKE ?2 ESCAPE '\\'",
+                params![uri_prefix, &like_pat],
+            )?;
+            Ok(())
         })
     }
 
@@ -480,7 +555,7 @@ impl SqliteStateStore {
     }
 }
 
-fn escape_sql_like_pattern(raw: &str) -> String {
+pub(super) fn escape_sql_like_pattern(raw: &str) -> String {
     raw.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")

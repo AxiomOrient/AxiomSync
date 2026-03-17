@@ -1,11 +1,41 @@
 use chrono::Utc;
 
 use crate::error::{AxiomError, Result};
-use crate::models::{AddEventRequest, EventRecord, IngestProfile};
+use crate::models::{AddEventRequest, EventRecord};
 
 use super::AxiomSync;
 
 const EXTERNALIZE_INLINE_JSON_BYTES: usize = 4 * 1024;
+const MAX_EVENT_ID_BYTES: usize = 256;
+
+// ── Pure data functions ───────────────────────────────────────────────────────
+
+/// Returns `true` when `attrs` should be written to an external object store rather than
+/// stored inline in the database.  Pure predicate: no I/O, no side effects.
+fn needs_externalization(attrs: &serde_json::Value, serialized_len: usize) -> bool {
+    attrs.get("raw_payload").is_some() || serialized_len > EXTERNALIZE_INLINE_JSON_BYTES
+}
+
+/// Builds the trimmed inline attrs that replace the full payload after externalization.
+/// Removes `raw_payload` and inserts an `externalized` metadata object. Pure transform.
+fn build_externalized_attrs(
+    attrs: &serde_json::Value,
+    object_uri: &crate::AxiomUri,
+    bytes: usize,
+) -> serde_json::Value {
+    let mut trimmed = attrs.clone();
+    if let Some(obj) = trimmed.as_object_mut() {
+        obj.remove("raw_payload");
+        obj.insert(
+            "externalized".to_string(),
+            serde_json::json!({
+                "bytes": bytes,
+                "object_uri": object_uri.to_string(),
+            }),
+        );
+    }
+    trimmed
+}
 
 pub(super) struct EventService<'a> {
     app: &'a AxiomSync,
@@ -31,6 +61,14 @@ impl<'a> EventService<'a> {
         let records = batch
             .into_iter()
             .map(|req| -> Result<EventRecord> {
+                if req.event_id.is_empty() {
+                    return Err(AxiomError::Validation("event_id must not be empty".to_string()));
+                }
+                if req.event_id.len() > MAX_EVENT_ID_BYTES {
+                    return Err(AxiomError::Validation(format!(
+                        "event_id exceeds {MAX_EVENT_ID_BYTES} bytes"
+                    )));
+                }
                 let created_at = req.created_at.unwrap_or_else(|| Utc::now().timestamp());
                 let (attrs, object_uri, content_hash) = self.write_event_object_if_needed(
                     &req.namespace,
@@ -62,13 +100,7 @@ impl<'a> EventService<'a> {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        self.app.state.append_events(&records)?;
-        for record in &records {
-            let profile = IngestProfile::for_kind(&record.kind);
-            self.app
-                .state
-                .persist_event_search_document(record, &profile)?;
-        }
+        self.app.state.append_events_and_search_docs(&records)?;
         self.sync_runtime_index(&records)?;
         Ok(records)
     }
@@ -90,6 +122,17 @@ impl<'a> EventService<'a> {
         Ok(())
     }
 
+    /// Externalizes `attrs` to the object store when the payload is large or contains
+    /// `raw_payload`. Returns `(inline_attrs, object_uri, content_hash)`.
+    ///
+    /// The decision and data transformation are handled by the pure functions
+    /// `needs_externalization` and `build_externalized_attrs`; this method is
+    /// responsible only for the file-system write.
+    ///
+    /// When `existing_object_uri` is `Some`, the object was already written by the caller
+    /// (e.g. during a replay or re-import).  In that case the attrs are passed through
+    /// unchanged and no content_hash is re-derived — the caller is assumed to have already
+    /// provided a valid hash if needed.
     fn write_event_object_if_needed(
         &self,
         namespace: &crate::models::NamespaceKey,
@@ -102,11 +145,8 @@ impl<'a> EventService<'a> {
             return Ok((attrs.clone(), existing_object_uri, None));
         }
 
-        let raw_payload = attrs.get("raw_payload").cloned();
-        let serialized = serde_json::to_vec(attrs)?;
-        let should_externalize =
-            raw_payload.is_some() || serialized.len() > EXTERNALIZE_INLINE_JSON_BYTES;
-        if !should_externalize {
+        let payload = serde_json::to_vec(attrs)?;
+        if !needs_externalization(attrs, payload.len()) {
             return Ok((attrs.clone(), None, None));
         }
 
@@ -115,25 +155,12 @@ impl<'a> EventService<'a> {
             .map_err(|err| {
                 AxiomError::Internal(format!("failed to resolve event object uri: {err}"))
             })?;
-        self.app.fs.write_bytes(&object_uri, &serialized, true)?;
+        self.app.fs.write_bytes(&object_uri, &payload, true)?;
 
-        let mut trimmed = attrs.clone();
-        if let Some(object) = trimmed.as_object_mut() {
-            object.remove("raw_payload");
-            object.insert(
-                "externalized".to_string(),
-                serde_json::json!({
-                    "bytes": serialized.len(),
-                    "object_uri": object_uri.to_string(),
-                }),
-            );
-        }
+        let content_hash = blake3::hash(&payload).to_hex().to_string();
+        let inline_attrs = build_externalized_attrs(attrs, &object_uri, payload.len());
 
-        Ok((
-            trimmed,
-            Some(object_uri),
-            Some(blake3::hash(&serialized).to_hex().to_string()),
-        ))
+        Ok((inline_attrs, Some(object_uri), Some(content_hash)))
     }
 
     fn event_object_uri(

@@ -228,13 +228,6 @@ pub(super) fn collect_markdown_tail_heading_keys(path: &Path, limit: usize) -> R
     Ok(tail.into_iter().collect())
 }
 
-pub(super) fn index_state_changed(current: Option<&(String, i64)>, hash: &str, mtime: i64) -> bool {
-    match current {
-        Some((current_hash, current_mtime)) => current_hash != hash || *current_mtime != mtime,
-        None => true,
-    }
-}
-
 fn list_visible_tier_entries(path: &Path) -> Result<Vec<TierEntry>> {
     let mut entries = Vec::new();
     let read_dir = fs::read_dir(path)?;

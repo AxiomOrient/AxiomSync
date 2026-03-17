@@ -22,23 +22,8 @@ pub struct ResourceRecord {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpsertResource {
-    pub resource_id: String,
-    pub uri: AxiomUri,
-    pub namespace: NamespaceKey,
-    pub kind: Kind,
-    pub title: Option<String>,
-    pub mime: Option<String>,
-    pub tags: Vec<String>,
-    pub attrs: serde_json::Value,
-    pub object_uri: Option<AxiomUri>,
-    pub excerpt_text: Option<String>,
-    pub content_hash: String,
-    pub tombstoned_at: Option<i64>,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
+/// Alias retained for call-site compatibility; `ResourceRecord` is the single write+read type.
+pub type UpsertResource = ResourceRecord;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceQuery {

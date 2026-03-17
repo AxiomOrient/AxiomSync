@@ -195,9 +195,7 @@ impl AxiomSync {
         }
         self.fs.rm(&probe_uri, true, true)?;
         self.prune_index_prefix_from_memory(&probe_uri)?;
-        self.state
-            .remove_search_documents_with_prefix(probe_root_uri)?;
-        self.state.remove_index_state_with_prefix(probe_root_uri)?;
+        self.state.purge_uri_prefix_state(probe_root_uri)?;
         Ok(())
     }
 

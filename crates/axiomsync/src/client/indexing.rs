@@ -25,7 +25,7 @@ mod tests;
 use helpers::{
     MAX_INDEX_READ_BYTES, MAX_TRUNCATED_MARKDOWN_TAIL_HEADING_KEYS, TruncatedTextWindows,
     collect_markdown_tail_heading_keys, collect_truncated_text_windows, directory_record_name,
-    index_state_changed, is_markdown_file, metadata_mtime_nanos, metadata_mtime_utc,
+    is_markdown_file, metadata_mtime_nanos, metadata_mtime_utc,
     path_mtime_nanos, path_mtime_utc, read_index_source_bytes, should_skip_indexing_file,
     synthesize_directory_tiers,
 };
@@ -349,16 +349,23 @@ impl AxiomSync {
         outbox_kind: &str,
     ) -> Result<()> {
         let uri = record.uri.clone();
-        let current_state = self.state.get_index_state(&uri)?;
-        let state_changed = index_state_changed(current_state.as_ref(), hash, mtime);
-        let index_missing = self
-            .index
-            .read()
-            .map_err(|_| AxiomError::lock_poisoned("index"))?
-            .get(&uri)
-            .is_none();
-        let needs_upsert = state_changed || index_missing;
-        if !needs_upsert {
+
+        // Atomic check-and-update: returns true only if the row was inserted or the
+        // hash/mtime actually changed. This eliminates the TOCTOU window that exists
+        // when doing a separate get_index_state read followed by an upsert write.
+        let state_changed =
+            self.state
+                .upsert_index_state_if_changed(&uri, hash, mtime, "indexed")?;
+
+        let index_missing = !state_changed
+            && self
+                .index
+                .read()
+                .map_err(|_| AxiomError::lock_poisoned("index"))?
+                .get(&uri)
+                .is_none();
+
+        if !state_changed && !index_missing {
             return Ok(());
         }
 
@@ -369,8 +376,6 @@ impl AxiomSync {
             .upsert(record);
 
         if state_changed {
-            self.state
-                .upsert_index_state(&uri, hash, mtime, "indexed")?;
             let event_id =
                 self.state
                     .enqueue("upsert", &uri, serde_json::json!({"kind": outbox_kind}))?;

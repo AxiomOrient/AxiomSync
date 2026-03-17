@@ -16,6 +16,9 @@ pub trait ResourceStore {
 
 pub trait EventStore {
     fn append_events(&self, batch: &[EventRecord]) -> Result<usize>;
+    /// Appends events and their search projections atomically in a single transaction.
+    /// Prefer this over `append_events` for all production write paths.
+    fn append_events_and_search_docs(&self, batch: &[EventRecord]) -> Result<usize>;
     fn query_events(&self, query: EventQuery) -> Result<Vec<EventRecord>>;
     fn tombstone_event(&self, uri: &AxiomUri, tombstoned_at: i64) -> Result<bool>;
 }
@@ -80,6 +83,10 @@ impl ResourceStore for SqliteStateStore {
 impl EventStore for SqliteStateStore {
     fn append_events(&self, batch: &[EventRecord]) -> Result<usize> {
         SqliteStateStore::append_events(self, batch)
+    }
+
+    fn append_events_and_search_docs(&self, batch: &[EventRecord]) -> Result<usize> {
+        SqliteStateStore::append_events_and_search_docs(self, batch)
     }
 
     fn query_events(&self, query: EventQuery) -> Result<Vec<EventRecord>> {

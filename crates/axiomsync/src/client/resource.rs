@@ -509,10 +509,7 @@ impl AxiomSync {
 impl AxiomSync {
     pub(super) fn purge_uri_index(&self, uri: &AxiomUri) -> Result<()> {
         self.prune_index_prefix_from_memory(uri)?;
-        self.state
-            .remove_search_documents_with_prefix(&uri.to_string())?;
-        self.state
-            .remove_index_state_with_prefix(&uri.to_string())?;
+        self.state.purge_uri_prefix_state(&uri.to_string())?;
         Ok(())
     }
 

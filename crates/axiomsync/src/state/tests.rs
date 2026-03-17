@@ -3,8 +3,12 @@ use rusqlite::Connection;
 use tempfile::tempdir;
 
 use crate::error::AxiomError;
-use crate::models::{IndexRecord, OmReflectionApplyMetrics, QueueEventStatus, ReconcileRunStatus};
+use crate::models::{
+    EventRecord, IndexRecord, LinkRecord, NamespaceKey, OmReflectionApplyMetrics,
+    QueueEventStatus, ReconcileRunStatus, UpsertResource,
+};
 use crate::om::{OmObservationChunk, OmOriginType, OmRecord, OmScope};
+use crate::uri::AxiomUri;
 
 use super::*;
 
@@ -2074,4 +2078,215 @@ fn search_index_record(id: &str, uri: &str, spec: SearchIndexRecordSpec<'_>) -> 
         updated_at: Utc::now(),
         depth: spec.depth,
     }
+}
+
+// ── upsert_index_state_if_changed ────────────────────────────────────────────
+
+#[test]
+fn upsert_index_state_if_changed_returns_true_on_first_insert() {
+    let temp = tempdir().expect("tempdir");
+    let store = SqliteStateStore::open(temp.path().join("state.db")).expect("open");
+
+    let changed = store
+        .upsert_index_state_if_changed("axiom://resources/a/b", "hash1", 100, "indexed")
+        .expect("upsert");
+    assert!(changed, "first insert must return true");
+}
+
+#[test]
+fn upsert_index_state_if_changed_returns_false_when_unchanged() {
+    let temp = tempdir().expect("tempdir");
+    let store = SqliteStateStore::open(temp.path().join("state.db")).expect("open");
+    let uri = "axiom://resources/a/b";
+
+    store
+        .upsert_index_state_if_changed(uri, "hash1", 100, "indexed")
+        .expect("first upsert");
+
+    let changed = store
+        .upsert_index_state_if_changed(uri, "hash1", 100, "indexed")
+        .expect("second upsert same data");
+    assert!(!changed, "identical hash+mtime must return false");
+}
+
+#[test]
+fn upsert_index_state_if_changed_returns_true_when_hash_changes() {
+    let temp = tempdir().expect("tempdir");
+    let store = SqliteStateStore::open(temp.path().join("state.db")).expect("open");
+    let uri = "axiom://resources/a/b";
+
+    store
+        .upsert_index_state_if_changed(uri, "hash1", 100, "indexed")
+        .expect("first upsert");
+
+    let changed = store
+        .upsert_index_state_if_changed(uri, "hash2", 100, "indexed")
+        .expect("hash changed");
+    assert!(changed, "changed hash must return true");
+
+    let stored = store.get_index_state(uri).expect("get").expect("present");
+    assert_eq!(stored.0, "hash2", "stored hash must be updated");
+}
+
+#[test]
+fn upsert_index_state_if_changed_returns_true_when_mtime_changes() {
+    let temp = tempdir().expect("tempdir");
+    let store = SqliteStateStore::open(temp.path().join("state.db")).expect("open");
+    let uri = "axiom://resources/a/b";
+
+    store
+        .upsert_index_state_if_changed(uri, "hash1", 100, "indexed")
+        .expect("first upsert");
+
+    let changed = store
+        .upsert_index_state_if_changed(uri, "hash1", 200, "indexed")
+        .expect("mtime changed");
+    assert!(changed, "changed mtime must return true");
+
+    let stored = store.get_index_state(uri).expect("get").expect("present");
+    assert_eq!(stored.1, 200, "stored mtime must be updated");
+}
+
+// ── purge_uri_prefix_state ────────────────────────────────────────────────────
+
+/// Populates all seven affected tables for `uri`, then calls `purge_uri_prefix_state` and
+/// asserts every table is empty for that URI prefix.
+#[test]
+fn purge_uri_prefix_state_clears_all_tables_atomically() {
+    let temp = tempdir().expect("tempdir");
+    let store = SqliteStateStore::open(temp.path().join("state.db")).expect("open");
+
+    let prefix = "axiom://resources/acme/docs";
+    let uri = format!("{prefix}/readme");
+    let axiom_uri = AxiomUri::parse(&uri).expect("uri");
+    let ns = NamespaceKey::parse("acme").expect("ns");
+    let now = 1_710_000_000_i64;
+
+    // resources
+    store
+        .persist_resource(UpsertResource {
+            resource_id: "res-1".to_string(),
+            uri: axiom_uri.clone(),
+            namespace: ns.clone(),
+            kind: "doc".parse().expect("kind"),
+            title: None,
+            mime: None,
+            tags: vec![],
+            attrs: serde_json::json!({}),
+            object_uri: None,
+            excerpt_text: None,
+            content_hash: "h".to_string(),
+            tombstoned_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("persist resource");
+
+    // index_state
+    store
+        .upsert_index_state_if_changed(&uri, "h", now, "indexed")
+        .expect("index state");
+
+    // events — URI under the same prefix so the events DELETE path is exercised.
+    store
+        .append_events(&[EventRecord {
+            event_id: "evt-1".to_string(),
+            uri: axiom_uri.clone(),
+            namespace: ns.clone(),
+            kind: "log".parse().expect("kind"),
+            event_time: now,
+            title: None,
+            summary_text: None,
+            severity: None,
+            actor_uri: None,
+            subject_uri: None,
+            run_id: None,
+            session_id: None,
+            tags: vec![],
+            attrs: serde_json::json!({}),
+            object_uri: None,
+            content_hash: None,
+            tombstoned_at: None,
+            created_at: now,
+        }])
+        .expect("append event");
+
+    // links — from_uri points into prefix; to_uri is outside (must survive).
+    store
+        .persist_link(&LinkRecord {
+            link_id: "link-1".to_string(),
+            namespace: ns.clone(),
+            from_uri: axiom_uri.clone(),
+            relation: "references".to_string(),
+            to_uri: AxiomUri::parse("axiom://resources/acme/other/x").expect("to uri"),
+            weight: 1.0,
+            attrs: serde_json::json!({}),
+            created_at: now,
+        })
+        .expect("persist link");
+
+    // outbox
+    store
+        .enqueue("upsert", &uri, serde_json::json!({}))
+        .expect("enqueue");
+
+    // Verify data is present before purge.
+    assert_eq!(store.count_table("resources").expect("count"), 1);
+    assert_eq!(store.count_table("index_state").expect("count"), 1);
+    assert_eq!(store.count_table("events").expect("count"), 1);
+    assert_eq!(store.count_table("links").expect("count"), 1);
+    assert_eq!(store.count_table("outbox").expect("count"), 1);
+
+    store.purge_uri_prefix_state(prefix).expect("purge");
+
+    assert_eq!(store.count_table("resources").expect("count"), 0, "resources must be purged");
+    assert_eq!(store.count_table("index_state").expect("count"), 0, "index_state must be purged");
+    assert_eq!(store.count_table("events").expect("count"), 0, "events must be purged");
+    assert_eq!(store.count_table("links").expect("count"), 0, "links must be purged");
+    assert_eq!(store.count_table("outbox").expect("count"), 0, "outbox must be purged");
+}
+
+#[test]
+fn purge_uri_prefix_state_does_not_remove_sibling_uris() {
+    let temp = tempdir().expect("tempdir");
+    let store = SqliteStateStore::open(temp.path().join("state.db")).expect("open");
+
+    let ns = NamespaceKey::parse("acme").expect("ns");
+    let now = 1_710_000_000_i64;
+
+    // Two resources: one under the prefix, one sibling that must survive.
+    for (id, raw_uri) in [
+        ("res-target", "axiom://resources/acme/docs/readme"),
+        ("res-sibling", "axiom://resources/acme/docs-other/readme"),
+    ] {
+        let uri = AxiomUri::parse(raw_uri).expect("uri");
+        store
+            .persist_resource(UpsertResource {
+                resource_id: id.to_string(),
+                uri,
+                namespace: ns.clone(),
+                kind: "doc".parse().expect("kind"),
+                title: None,
+                mime: None,
+                tags: vec![],
+                attrs: serde_json::json!({}),
+                object_uri: None,
+                excerpt_text: None,
+                content_hash: "h".to_string(),
+                tombstoned_at: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .expect("persist");
+    }
+
+    store
+        .purge_uri_prefix_state("axiom://resources/acme/docs")
+        .expect("purge");
+
+    assert_eq!(
+        store.count_table("resources").expect("count"),
+        1,
+        "sibling resource must survive the purge"
+    );
 }

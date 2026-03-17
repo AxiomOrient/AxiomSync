@@ -148,8 +148,9 @@ impl SqliteStateStore {
             let mut stmt = tx.prepare(
                 r"
                 UPDATE events
-                SET attrs_json = ?2,
-                    object_uri = ?3
+                SET attrs_json   = ?2,
+                    object_uri   = ?3,
+                    content_hash = NULL
                 WHERE event_id = ?1
                 ",
             )?;
