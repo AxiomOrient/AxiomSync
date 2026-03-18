@@ -13,6 +13,8 @@
 - [APPLICATION_SERVICE_TEST_STRATEGY.md](./APPLICATION_SERVICE_TEST_STRATEGY.md): 테스트 범위, 의도, 커버 전략
 - [RELEASE_RUNBOOK.md](./RELEASE_RUNBOOK.md): 출시 전 체크리스트
 - [CODE_OWNERSHIP.md](./CODE_OWNERSHIP.md): 변경 시작점
+- [USER_SCENARIO_TEST_PLAYBOOK.md](./USER_SCENARIO_TEST_PLAYBOOK.md): 사용자 시나리오(유저/세션/리스크/이벤트) 테스트 실행 프롬프트
+- [run_quick_scenario_checks.sh](../scripts/run_quick_scenario_checks.sh): 랜덤 포함 핵심만 빠른 시나리오 점검
 
 ## Read By Need
 - Operator: Repository README

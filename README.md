@@ -24,6 +24,27 @@ cargo run -p axiomsync -- search "oauth flow"
 cargo run -p axiomsync -- session commit
 ```
 
+## Quick Scenario Checks
+
+실사용 점검을 위한 단일 진입점:
+
+```bash
+bash scripts/run_quick_scenario_checks.sh \
+  --iterations 5 \
+  --seed 20260318 \
+  --timeout 90 \
+  --scenario random \
+  --max-cold-ms 1200 \
+  --max-p95-ms 700 \
+  --min-queue-eps 50 \
+  --summary-format json \
+  --summary-out /tmp/axiomsync-quick-run-summary.json
+```
+
+- `--summary-format text`: 텍스트 요약 저장(기본값)
+- `--summary-format json`: JSON 요약 저장
+- `RESULT_WARNING counts_match=false`: 집계 불일치 경고(로그/이력 재점검 필요)
+
 ## Runtime Model
 - URI model: `axiom://{scope}/{path}`
 - State store: `context.db`
@@ -43,6 +64,8 @@ cargo run -p axiomsync -- session commit
 - [docs/RETRIEVAL_ARCHITECTURE.md](./docs/RETRIEVAL_ARCHITECTURE.md): retrieval path
 - [docs/RELEASE_RUNBOOK.md](./docs/RELEASE_RUNBOOK.md): release owner checklist
 - [docs/CODE_OWNERSHIP.md](./docs/CODE_OWNERSHIP.md): change routing
+- [docs/USER_SCENARIO_TEST_PLAYBOOK.md](./docs/USER_SCENARIO_TEST_PLAYBOOK.md): scenario prompts and user-facing test workflows
+- [scripts/run_quick_scenario_checks.sh](./scripts/run_quick_scenario_checks.sh): scenario check runner (bash 실행 권장)
 
 ## Quality And Release
 ```bash
