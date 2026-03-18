@@ -1,17 +1,18 @@
 use chrono::Utc;
 
 use crate::config::OmReflectorConfigSnapshot;
+use crate::config::{DEFAULT_LLM_ENDPOINT, DEFAULT_LLM_MODEL, TEST_OM_LLM_MODEL};
 use crate::om::{OmInferenceModelConfig, OmOriginType, OmReflectorRequest, OmScope};
 use crate::state::OmActiveEntry;
 
 use super::*;
 
-fn reflector_config(mode: OmReflectorMode, model_enabled: bool) -> OmReflectorConfig {
+fn reflector_config(mode: OmRuntimeMode, model_enabled: bool) -> OmReflectorConfig {
     OmReflectorConfig {
         mode,
         model_enabled,
-        llm_endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
-        llm_model: "qwen2.5:7b-instruct".to_string(),
+        llm_endpoint: DEFAULT_LLM_ENDPOINT.to_string(),
+        llm_model: DEFAULT_LLM_MODEL.to_string(),
         llm_timeout_ms: DEFAULT_OM_REFLECTOR_LLM_TIMEOUT_MS,
         llm_max_output_tokens: DEFAULT_OM_REFLECTOR_LLM_MAX_OUTPUT_TOKENS,
         llm_temperature_milli: DEFAULT_OM_REFLECTOR_LLM_TEMPERATURE_MILLI,
@@ -77,7 +78,7 @@ fn reflector_prompt_contract_json_contains_v2_contract_fields() {
         scope_key: "session:reflector-contract".to_string(),
         model: OmInferenceModelConfig {
             provider: "local-http".to_string(),
-            model: "qwen2.5:7b".to_string(),
+            model: TEST_OM_LLM_MODEL.to_string(),
             max_output_tokens: 512,
             temperature_milli: 0,
         },
@@ -517,7 +518,7 @@ fn deterministic_reflector_response_handles_empty_input() {
 #[test]
 fn reflector_model_feature_flag_off_forces_deterministic_output() {
     let record = om_record("line-1\nline-2");
-    let config = reflector_config(OmReflectorMode::Llm, false);
+    let config = reflector_config(OmRuntimeMode::Llm, false);
 
     let resolved = resolve_reflector_response_with_config(
         &record,
@@ -556,7 +557,7 @@ fn reflector_rollout_profile_overrides_model_enabled_flag() {
 fn prepare_reflector_attempt_input_buffered_uses_slice_plan() {
     let mut record = om_record("l1\nl2\nl3\nl4");
     record.observation_token_count = 100;
-    let mut config = reflector_config(OmReflectorMode::Deterministic, true);
+    let mut config = reflector_config(OmRuntimeMode::Deterministic, true);
     config.llm_target_observation_tokens = 80;
     config.llm_buffer_activation = 0.5;
 
@@ -570,7 +571,7 @@ fn prepare_reflector_attempt_input_buffered_uses_slice_plan() {
 #[test]
 fn prepare_reflector_attempt_input_default_uses_full_observations() {
     let record = om_record("line-1\nline-2");
-    let config = reflector_config(OmReflectorMode::Deterministic, true);
+    let config = reflector_config(OmRuntimeMode::Deterministic, true);
 
     let prepared =
         prepare_reflector_attempt_input(&record, OmReflectorCallOptions::DEFAULT, &config, &[]);

@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::TEST_OM_LLM_MODEL;
 
 fn write_ontology_schema(app: &AxiomSync, schema: &str) {
     let uri = AxiomUri::parse(crate::ontology::ONTOLOGY_SCHEMA_URI_V1).expect("schema uri parse");
@@ -128,7 +129,7 @@ fn episodic_api_probe_validates_om_contract() {
         scope_key: "thread:thread-1".to_string(),
         model: crate::om::OmInferenceModelConfig {
             provider: "local-http".to_string(),
-            model: "qwen2.5:7b".to_string(),
+            model: TEST_OM_LLM_MODEL.to_string(),
             max_output_tokens: 1024,
             temperature_milli: 0,
         },

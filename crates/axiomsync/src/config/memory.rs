@@ -1,4 +1,5 @@
 use crate::llm_io::parse_env_bool;
+use crate::text::normalize_token_or_default;
 
 use super::env::{
     read_env_u16, read_env_u32, read_env_u64, read_env_usize_optional, read_non_empty_env,
@@ -131,8 +132,9 @@ impl Default for MemoryDedupConfigSnapshot {
 
 #[must_use]
 fn parse_similarity_threshold(raw: Option<&str>) -> f32 {
-    let milli = raw
-        .and_then(|value| value.trim().parse::<u16>().ok())
+    let normalized = normalize_token_or_default(raw, "900");
+    let milli = normalized
+        .parse::<u16>()
         .unwrap_or(DEFAULT_MEMORY_DEDUP_SIMILARITY_MILLI);
     f32::from(milli.min(1000)) / 1000.0
 }

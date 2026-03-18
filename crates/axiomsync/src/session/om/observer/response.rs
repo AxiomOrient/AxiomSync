@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 
 use super::super::{
     MultiThreadObserverRunContext, ObserverThreadStateUpdate, OmInferenceUsage, OmObserverConfig,
-    OmObserverMessageCandidate, OmObserverMode, OmObserverResponse, OmPendingMessage, OmRecord,
+    OmObserverMessageCandidate, OmRuntimeMode, OmObserverResponse, OmPendingMessage, OmRecord,
     OmScope, ResolvedObserverOutput, Result, resolve_canonical_thread_id,
     select_observed_message_candidates, split_pending_and_other_conversation_candidates,
 };
@@ -75,14 +75,14 @@ pub(in crate::session::om) fn resolve_observer_response_with_config(
         ));
     }
     match config.mode {
-        OmObserverMode::Deterministic => Ok(deterministic_observer_output(
+        OmRuntimeMode::Deterministic => Ok(deterministic_observer_output(
             record,
             scope_key,
             selected,
             current_session_id,
             config.text_budget.observation_max_chars,
         )),
-        OmObserverMode::Llm => llm_observer_response(
+        OmRuntimeMode::Llm => llm_observer_response(
             record,
             scope_key,
             selected,
@@ -91,7 +91,7 @@ pub(in crate::session::om) fn resolve_observer_response_with_config(
             skip_continuation_hints,
             config,
         ),
-        OmObserverMode::Auto => {
+        OmRuntimeMode::Auto => {
             match llm_observer_response(
                 record,
                 scope_key,

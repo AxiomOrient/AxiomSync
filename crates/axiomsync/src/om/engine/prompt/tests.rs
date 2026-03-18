@@ -1,5 +1,6 @@
 use super::*;
 use crate::OmPendingMessage;
+use crate::config::TEST_OM_LLM_MODEL;
 
 #[test]
 fn observer_prompt_includes_required_sections() {
@@ -249,7 +250,7 @@ fn observer_prompt_contract_v2_snapshot_is_stable() {
         scope_key: "session:s-1".to_string(),
         model: crate::OmInferenceModelConfig {
             provider: "local-http".to_string(),
-            model: "qwen2.5:7b".to_string(),
+            model: TEST_OM_LLM_MODEL.to_string(),
             max_output_tokens: 1200,
             temperature_milli: 200,
         },
@@ -298,7 +299,7 @@ fn multi_thread_observer_prompt_contract_v2_sets_multi_request_kind() {
         scope_key: "resource:docs/om.md".to_string(),
         model: crate::OmInferenceModelConfig {
             provider: "local-http".to_string(),
-            model: "qwen2.5:7b".to_string(),
+            model: TEST_OM_LLM_MODEL.to_string(),
             max_output_tokens: 1200,
             temperature_milli: 200,
         },
@@ -334,7 +335,7 @@ fn reflector_prompt_contract_v2_disables_continuation_when_requested() {
         scope_key: "resource:docs/a.md".to_string(),
         model: crate::OmInferenceModelConfig {
             provider: "local-http".to_string(),
-            model: "qwen2.5:7b".to_string(),
+            model: TEST_OM_LLM_MODEL.to_string(),
             max_output_tokens: 1600,
             temperature_milli: 100,
         },
@@ -363,7 +364,7 @@ fn sample_observer_request() -> crate::OmObserverRequest {
         scope_key: "session:s-1".to_string(),
         model: crate::OmInferenceModelConfig {
             provider: "local-http".to_string(),
-            model: "qwen2.5:7b".to_string(),
+            model: TEST_OM_LLM_MODEL.to_string(),
             max_output_tokens: 1200,
             temperature_milli: 200,
         },
@@ -460,7 +461,7 @@ fn parse_reflector_prompt_contract_v2_reports_missing_required_field() {
         scope_key: "resource:docs/a.md".to_string(),
         model: crate::OmInferenceModelConfig {
             provider: "local-http".to_string(),
-            model: "qwen2.5:7b".to_string(),
+            model: TEST_OM_LLM_MODEL.to_string(),
             max_output_tokens: 1600,
             temperature_milli: 100,
         },

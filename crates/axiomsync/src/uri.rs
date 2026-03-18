@@ -77,6 +77,11 @@ impl AxiomUri {
 
     pub fn parse(value: &str) -> Result<Self> {
         if !value.starts_with("axiom://") {
+            if value.starts_with('/') {
+                return Err(AxiomError::InvalidUri(format!(
+                    "{value} (expected axiom URI, e.g. axiom://resources/path)"
+                )));
+            }
             return Err(AxiomError::InvalidUri(value.to_string()));
         }
         let tail = &value[8..];
@@ -242,6 +247,15 @@ mod tests {
         assert_eq!(uri.scope(), Scope::Resources);
         assert!(uri.is_root());
         assert_eq!(uri.to_string(), "axiom://resources");
+    }
+
+    #[test]
+    fn parse_absolute_path_uri_hint() {
+        let err = AxiomUri::parse("/").expect_err("must fail");
+        assert!(matches!(err, AxiomError::InvalidUri(_)));
+        let message = err.to_string();
+        assert!(message.contains("expected axiom URI"));
+        assert!(message.contains("axiom://resources/path"));
     }
 
     #[test]

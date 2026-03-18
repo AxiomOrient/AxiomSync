@@ -1,3 +1,5 @@
+use crate::text::parse_bool_like_flag;
+
 #[must_use]
 pub(super) fn read_non_empty_env(name: &str) -> Option<String> {
     std::env::var(name)
@@ -57,9 +59,5 @@ pub(super) fn read_env_f32(name: &str) -> Option<f32> {
 
 #[must_use]
 pub(super) fn parse_enabled_default_true(raw: Option<&str>) -> bool {
-    !matches!(
-        raw.map(|value| value.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("off" | "none" | "0" | "false")
-    )
+    parse_bool_like_flag(raw, true)
 }

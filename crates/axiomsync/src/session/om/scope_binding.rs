@@ -1,6 +1,7 @@
 use crate::config::OmScopeConfig;
 use crate::error::{AxiomError, Result};
 use crate::om::{OmScope, build_scope_key};
+use crate::text::{normalize_token_ascii_lower_or_default, normalize_token};
 
 use super::OmScopeBinding;
 
@@ -25,11 +26,7 @@ pub(super) fn resolve_om_scope_binding(
     thread_id: Option<&str>,
     resource_id: Option<&str>,
 ) -> Result<OmScopeBinding> {
-    let scope_token = scope_raw
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_OM_SCOPE)
-        .to_ascii_lowercase();
+    let scope_token = normalize_token_ascii_lower_or_default(scope_raw, DEFAULT_OM_SCOPE);
     let scope = match scope_token.as_str() {
         "session" => OmScope::Session,
         "thread" => OmScope::Thread,
@@ -76,20 +73,9 @@ pub(super) fn resolve_om_scope_binding_explicit(
 
 #[cfg(test)]
 pub(super) fn parse_env_enabled_default_true(raw: Option<&str>) -> bool {
-    let Some(raw) = raw.map(str::trim) else {
-        return true;
-    };
-    if raw.is_empty() {
-        return true;
-    }
-    !matches!(
-        raw.to_ascii_lowercase().as_str(),
-        "0" | "false" | "no" | "off" | "disabled"
-    )
+    crate::text::parse_bool_like_flag(raw, true)
 }
 
 fn normalize_scope_identifier(raw: Option<&str>) -> Option<String> {
-    raw.map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
+    normalize_token(raw)
 }

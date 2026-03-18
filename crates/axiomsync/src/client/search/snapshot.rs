@@ -5,6 +5,7 @@ use crate::om::{
     OmObservationOriginKind, OmObservationPriority,
 };
 use crate::state::OmActiveEntry;
+use crate::text::normalize_token;
 
 use super::{OM_HINT_SNAPSHOT_BUFFERED_TAIL_LIMIT, non_empty_trimmed};
 
@@ -46,17 +47,13 @@ pub(super) fn build_snapshot_buffered_entries(
         .iter()
         .rev()
         .filter_map(|chunk| {
-            let normalized = chunk.observations.trim();
-            if normalized.is_empty() {
-                None
-            } else {
-                Some((
-                    chunk.id.clone(),
-                    normalized.to_string(),
-                    chunk.message_ids.clone(),
-                    chunk.created_at.to_rfc3339(),
-                ))
-            }
+            let text = normalize_token(Some(&chunk.observations))?;
+            Some((
+                chunk.id.clone(),
+                text,
+                chunk.message_ids.clone(),
+                chunk.created_at.to_rfc3339(),
+            ))
         })
         .take(OM_HINT_SNAPSHOT_BUFFERED_TAIL_LIMIT)
         .collect::<Vec<_>>();
@@ -172,18 +169,27 @@ pub(super) fn snapshot_visible_entry_selection(
 
 pub(super) fn snapshot_visible_entry_source_key(entry_id: &str) -> String {
     if let Some(chunk_id) = entry_id.strip_prefix("observation:") {
-        return format!("chunk:{}", chunk_id.trim());
+        return format!(
+            "chunk:{}",
+            normalize_token(Some(chunk_id)).unwrap_or_else(|| chunk_id.to_string())
+        );
     }
     if let Some(buffered_tail) = entry_id.strip_prefix("buffered:")
         && let Some(chunk_id) = buffered_tail.rsplit(':').next()
     {
-        return format!("chunk:{}", chunk_id.trim());
+        return format!(
+            "chunk:{}",
+            normalize_token(Some(chunk_id)).unwrap_or_else(|| chunk_id.to_string())
+        );
     }
-    format!("entry:{}", entry_id.trim())
+    format!(
+        "entry:{}",
+        normalize_token(Some(entry_id)).unwrap_or_else(|| entry_id.to_string())
+    )
 }
 
 fn parse_observation_priority(value: &str) -> OmObservationPriority {
-    match value.trim().to_ascii_lowercase().as_str() {
+    match normalize_token(Some(value)).as_deref().unwrap_or_default() {
         "high" => OmObservationPriority::High,
         "low" => OmObservationPriority::Low,
         _ => OmObservationPriority::Medium,
@@ -191,7 +197,7 @@ fn parse_observation_priority(value: &str) -> OmObservationPriority {
 }
 
 fn parse_observation_origin(value: &str) -> OmObservationOriginKind {
-    match value.trim().to_ascii_lowercase().as_str() {
+    match normalize_token(Some(value)).as_deref().unwrap_or_default() {
         "reflection" => OmObservationOriginKind::Reflection,
         "chunk" => OmObservationOriginKind::Chunk,
         "summary" => OmObservationOriginKind::Summary,

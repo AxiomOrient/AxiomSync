@@ -52,6 +52,29 @@ pub(crate) use failure::{om_observer_error, om_reflector_error, om_status_kind};
 pub(crate) use rollout::{resolve_observer_model_enabled, resolve_reflector_model_enabled};
 pub use thread_identity::resolve_canonical_thread_id;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OmRuntimeMode {
+    Auto,
+    Deterministic,
+    Llm,
+}
+
+impl OmRuntimeMode {
+    #[must_use]
+    pub(crate) fn parse(raw: Option<&str>, default_mode: &str) -> Self {
+        match raw
+            .unwrap_or(default_mode)
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "deterministic" | "local" | "draft" => Self::Deterministic,
+            "llm" | "model" => Self::Llm,
+            _ => Self::Auto,
+        }
+    }
+}
+
 pub const OM_PROMPT_CONTRACT_NAME: &str = "axiomsync.om.prompt";
 
 #[must_use]

@@ -596,6 +596,7 @@ pub(in crate::session::om) fn parse_llm_multi_thread_observer_response(
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
+    use crate::config::TEST_OM_LLM_MODEL;
 
     use crate::om::{OmInferenceModelConfig, OmObserverRequest, OmObserverThreadMessages, OmScope};
 
@@ -636,7 +637,7 @@ mod tests {
             scope_key: "resource:r-threaded".to_string(),
             model: OmInferenceModelConfig {
                 provider: "local-http".to_string(),
-                model: "qwen2.5:7b".to_string(),
+                model: TEST_OM_LLM_MODEL.to_string(),
                 max_output_tokens: 512,
                 temperature_milli: 0,
             },

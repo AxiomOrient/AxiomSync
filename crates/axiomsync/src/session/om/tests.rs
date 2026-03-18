@@ -5,6 +5,7 @@ use chrono::Utc;
 use tempfile::tempdir;
 
 use crate::error::OmInferenceSource;
+use crate::config::{DEFAULT_LLM_ENDPOINT, DEFAULT_LLM_MODEL};
 use crate::fs::LocalContextFs;
 use crate::index::InMemoryIndex;
 use crate::state::SqliteStateStore;
@@ -39,14 +40,14 @@ fn msg_with_thread(
     }
 }
 
-fn observer_config(mode: OmObserverMode, model_enabled: bool) -> OmObserverConfig {
+fn observer_config(mode: OmRuntimeMode, model_enabled: bool) -> OmObserverConfig {
     let limits = crate::config::OmRuntimeLimitsConfig::default();
     OmObserverConfig {
         mode,
         model_enabled,
         llm: OmObserverLlmConfig {
-            endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
-            model: "qwen2.5:7b-instruct".to_string(),
+            endpoint: DEFAULT_LLM_ENDPOINT.to_string(),
+            model: DEFAULT_LLM_MODEL.to_string(),
             timeout_ms: DEFAULT_OM_OBSERVER_LLM_TIMEOUT_MS,
             max_output_tokens: DEFAULT_OM_OBSERVER_LLM_MAX_OUTPUT_TOKENS,
             temperature_milli: DEFAULT_OM_OBSERVER_LLM_TEMPERATURE_MILLI,
@@ -954,7 +955,7 @@ fn observer_model_feature_flag_off_forces_deterministic_output() {
     let selected = vec![msg("m1", "user", "important oauth detail")];
     let now = Utc::now();
     let record = new_session_om_record("s-flag", "session:s-flag", now);
-    let config = observer_config(OmObserverMode::Llm, false);
+    let config = observer_config(OmRuntimeMode::Llm, false);
 
     let resolved = resolve_observer_response_with_config(
         &record,
@@ -1108,7 +1109,7 @@ fn deterministic_fallback_populates_thread_states_for_resource_scope() {
     record.resource_id = Some("r-fallback-threads".to_string());
     record.thread_id = None;
 
-    let config = observer_config(OmObserverMode::Llm, false);
+    let config = observer_config(OmRuntimeMode::Llm, false);
     let resolved = resolve_observer_response_with_config(
         &record,
         &record.scope_key,

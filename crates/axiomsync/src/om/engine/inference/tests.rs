@@ -1,11 +1,12 @@
 use serde_json::json;
 
 use super::*;
+use crate::config::DEFAULT_LLM_MODEL;
 
 fn sample_model() -> OmInferenceModelConfig {
     OmInferenceModelConfig {
         provider: "local-http".to_string(),
-        model: "qwen2.5:7b-instruct".to_string(),
+        model: DEFAULT_LLM_MODEL.to_string(),
         max_output_tokens: 1200,
         temperature_milli: 300,
     }
@@ -38,7 +39,7 @@ fn observer_request_deserialization_defaults_optional_fields_to_none() {
         "scope_key": "session:s-1",
         "model": {
             "provider": "local-http",
-            "model": "qwen2.5:7b-instruct",
+            "model": DEFAULT_LLM_MODEL,
             "max_output_tokens": 800,
             "temperature_milli": 0
         },

@@ -3,12 +3,15 @@ use std::collections::{BTreeMap, HashSet};
 use chrono::{DateTime, Utc};
 
 use crate::config::{OmObserverConfigSnapshot, OmRuntimeLimitsConfig, OmScopeConfig};
+use crate::config::{DEFAULT_LLM_ENDPOINT, DEFAULT_LLM_MODEL};
 use crate::error::{AxiomError, OmInferenceFailureKind, Result};
+use crate::text::normalize_token;
 use crate::llm_io::{
     estimate_text_tokens, extract_json_fragment, extract_llm_content,
     parse_local_loopback_endpoint, parse_u32_value,
 };
 use crate::om::{
+    OmRuntimeMode,
     OmApplyAddon, OmCommand, OmInferenceModelConfig, OmInferenceUsage, OmObservationChunk,
     OmObserverMessageCandidate, OmObserverPromptInput, OmObserverRequest, OmObserverResponse,
     OmObserverThreadMessages, OmOriginType, OmPendingMessage, OmRecord, OmReflectionCommandType,
@@ -49,8 +52,6 @@ const ENV_OM_SCOPE: &str = scope_binding::ENV_OM_SCOPE;
 
 const DEFAULT_OM_ACTIVATION_RATIO: f32 = 0.8;
 const DEFAULT_OM_OBSERVER_MODE: &str = "auto";
-const DEFAULT_OM_OBSERVER_LLM_ENDPOINT: &str = "http://127.0.0.1:11434/api/chat";
-const DEFAULT_OM_OBSERVER_LLM_MODEL: &str = "qwen2.5:7b-instruct";
 const DEFAULT_OM_OBSERVER_LLM_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_OM_OBSERVER_LLM_MAX_OUTPUT_TOKENS: u32 = 1_200;
 const DEFAULT_OM_OBSERVER_LLM_TEMPERATURE_MILLI: u16 = 0;
@@ -70,31 +71,9 @@ const EVENT_OM_REFLECT_REQUESTED: &str = "om_reflect_requested";
 const OM_CONTINUATION_SOURCE_OBSERVER: &str = "observer";
 const OM_CONTINUATION_SOURCE_OBSERVER_INTERVAL: &str = "observer_interval";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OmObserverMode {
-    Auto,
-    Deterministic,
-    Llm,
-}
-
-impl OmObserverMode {
-    fn parse(raw: Option<&str>) -> Self {
-        match raw
-            .unwrap_or(DEFAULT_OM_OBSERVER_MODE)
-            .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "deterministic" | "local" | "draft" => Self::Deterministic,
-            "llm" | "model" => Self::Llm,
-            _ => Self::Auto,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct OmObserverConfig {
-    mode: OmObserverMode,
+    mode: OmRuntimeMode,
     model_enabled: bool,
     llm: OmObserverLlmConfig,
     text_budget: OmObserverTextBudget,
@@ -122,7 +101,7 @@ struct OmObserverTextBudget {
 impl OmObserverConfig {
     fn from_snapshot(snapshot: &OmObserverConfigSnapshot, limits: OmRuntimeLimitsConfig) -> Self {
         Self {
-            mode: OmObserverMode::parse(snapshot.mode.as_deref()),
+            mode: OmRuntimeMode::parse(snapshot.mode.as_deref(), DEFAULT_OM_OBSERVER_MODE),
             model_enabled: resolve_observer_model_enabled(
                 snapshot.explicit_model_enabled,
                 snapshot.rollout_profile.as_deref(),
@@ -131,11 +110,11 @@ impl OmObserverConfig {
                 endpoint: snapshot
                     .llm_endpoint
                     .clone()
-                    .unwrap_or_else(|| DEFAULT_OM_OBSERVER_LLM_ENDPOINT.to_string()),
+                    .unwrap_or_else(|| DEFAULT_LLM_ENDPOINT.to_string()),
                 model: snapshot
                     .llm_model
                     .clone()
-                    .unwrap_or_else(|| DEFAULT_OM_OBSERVER_LLM_MODEL.to_string()),
+                    .unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string()),
                 timeout_ms: snapshot
                     .llm_timeout_ms
                     .unwrap_or(DEFAULT_OM_OBSERVER_LLM_TIMEOUT_MS),
@@ -812,9 +791,7 @@ impl Session {
 mod tests;
 
 fn normalize_optional_continuation(raw: Option<&str>) -> Option<String> {
-    raw.map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
+    normalize_token(raw)
 }
 
 fn continuation_confidence(current_task: Option<&str>, suggested_response: Option<&str>) -> f64 {

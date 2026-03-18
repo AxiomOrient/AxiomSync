@@ -4,6 +4,49 @@ pub enum OutputTrimMode {
     Trim,
 }
 
+pub(crate) fn normalize_token(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+pub(crate) fn normalize_token_ascii_lower(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
+pub(crate) fn normalize_token_or_default(raw: Option<&str>, default: &str) -> String {
+    normalize_token(raw).unwrap_or_else(|| default.to_string())
+}
+
+pub(crate) fn normalize_token_ascii_lower_or_default(raw: Option<&str>, default: &str) -> String {
+    normalize_token_ascii_lower(raw).unwrap_or_else(|| default.to_string())
+}
+
+pub(crate) fn parse_with_default<T, F>(raw: Option<&str>, default: T, parse: F) -> T
+where
+    T: Copy,
+    F: FnMut(&str) -> Option<T>,
+{
+    normalize_token_ascii_lower(raw)
+        .as_deref()
+        .and_then(parse)
+        .unwrap_or(default)
+}
+
+pub(crate) fn parse_bool_like_flag(raw: Option<&str>, default: bool) -> bool {
+    if let Some(value) = normalize_token_ascii_lower(raw).as_deref() {
+        match value {
+            "0" | "false" | "no" | "off" | "disabled" => false,
+            "1" | "true" | "yes" | "on" | "enabled" => true,
+            _ => default,
+        }
+    } else {
+        default
+    }
+}
+
 #[must_use]
 pub fn first_non_empty_output(
     stdout: &str,
@@ -73,5 +116,40 @@ mod tests {
     #[test]
     fn truncate_text_returns_original_when_input_fits_limit() {
         assert_eq!(truncate_text("hello", 5), "hello");
+    }
+
+    #[test]
+    fn normalize_token_returns_none_for_blank_or_empty() {
+        assert_eq!(normalize_token(Some("  ")), None);
+        assert_eq!(normalize_token(Some("")), None);
+        assert_eq!(normalize_token(None), None);
+    }
+
+    #[test]
+    fn normalize_token_ascii_lower_trims_and_lowercases() {
+        assert_eq!(
+            normalize_token_ascii_lower(Some(" HeLLo ")).as_deref(),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn parse_with_default_uses_mapping_and_falls_back() {
+        let mode = parse_with_default(
+            Some("  ON "),
+            false,
+            |value| matches!(value, "on" | "true").then_some(true),
+        );
+        assert!(mode);
+
+        let fallback = parse_with_default(Some(" unknown "), false, |_| None);
+        assert!(!fallback);
+    }
+
+    #[test]
+    fn parse_bool_like_flag_handles_case_and_default() {
+        assert!(parse_bool_like_flag(Some(" TRUE "), false));
+        assert!(!parse_bool_like_flag(Some("OFF"), true));
+        assert!(parse_bool_like_flag(None, true));
     }
 }

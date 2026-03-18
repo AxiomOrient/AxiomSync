@@ -1,11 +1,10 @@
 use reqwest::Url;
 use serde_json::Value;
 
+use crate::text::parse_bool_like_flag;
+
 pub fn parse_env_bool(raw: Option<&str>) -> bool {
-    matches!(
-        raw.map(|value| value.trim().to_ascii_lowercase()),
-        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on")
-    )
+    parse_bool_like_flag(raw, false)
 }
 
 pub fn parse_local_loopback_endpoint(

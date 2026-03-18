@@ -18,6 +18,8 @@
 # AxiomSync Data & Runtime
 # ==============================================================================
 
+.agents/*
+
 # Context database storage
 /data/
 **/data/

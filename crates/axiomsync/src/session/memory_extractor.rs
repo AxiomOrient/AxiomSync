@@ -3,18 +3,18 @@ use std::collections::HashSet;
 use reqwest::blocking::Client;
 use serde_json::Value;
 
-use crate::config::MemoryExtractorConfigSnapshot;
+use crate::config::{
+    MemoryExtractorConfigSnapshot, DEFAULT_LLM_ENDPOINT, DEFAULT_LLM_MODEL,
+};
 use crate::error::{AxiomError, Result};
 use crate::llm_io::{extract_json_fragment, extract_llm_content, parse_local_loopback_endpoint};
 use crate::models::Message;
+use crate::text::{normalize_token_ascii_lower_or_default, parse_with_default};
 
 use super::commit::helpers::{
     build_memory_key, extract_memories_heuristically, normalize_memory_text,
 };
 
-const DEFAULT_MEMORY_EXTRACTOR_MODE: &str = "auto";
-const DEFAULT_MEMORY_LLM_ENDPOINT: &str = "http://127.0.0.1:11434/api/chat";
-const DEFAULT_MEMORY_LLM_MODEL: &str = "qwen2.5:7b-instruct";
 const DEFAULT_MEMORY_LLM_TIMEOUT_MS: u64 = 4_000;
 const DEFAULT_MEMORY_LLM_MAX_OUTPUT_TOKENS: u32 = 1_500;
 const DEFAULT_MEMORY_LLM_TEMPERATURE_MILLI: u16 = 0;
@@ -30,16 +30,15 @@ enum MemoryExtractorMode {
 
 impl MemoryExtractorMode {
     fn parse(raw: Option<&str>) -> Self {
-        match raw
-            .unwrap_or(DEFAULT_MEMORY_EXTRACTOR_MODE)
-            .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "heuristic" | "rules" | "rule" => Self::Heuristic,
-            "llm" | "model" => Self::Llm,
-            _ => Self::Auto,
-        }
+        parse_with_default(
+            raw,
+            Self::Auto,
+            |value| match value {
+                "heuristic" | "rules" | "rule" => Some(Self::Heuristic),
+                "llm" | "model" => Some(Self::Llm),
+                _ => None,
+            },
+        )
     }
 
     const fn as_str(self) -> &'static str {
@@ -71,11 +70,11 @@ impl MemoryExtractorConfig {
             llm_endpoint: snapshot
                 .llm_endpoint
                 .clone()
-                .unwrap_or_else(|| DEFAULT_MEMORY_LLM_ENDPOINT.to_string()),
+                .unwrap_or_else(|| DEFAULT_LLM_ENDPOINT.to_string()),
             llm_model: snapshot
                 .llm_model
                 .clone()
-                .unwrap_or_else(|| DEFAULT_MEMORY_LLM_MODEL.to_string()),
+                .unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string()),
             llm_timeout_ms: snapshot
                 .llm_timeout_ms
                 .unwrap_or(DEFAULT_MEMORY_LLM_TIMEOUT_MS),
@@ -443,7 +442,8 @@ fn merge_duplicate_memories(memories: Vec<ExtractedMemory>) -> Vec<ExtractedMemo
 }
 
 fn normalize_category(raw: &str) -> Option<&'static str> {
-    match raw.trim().to_ascii_lowercase().as_str() {
+    let normalized = normalize_token_ascii_lower_or_default(Some(raw), "");
+    match normalized.as_str() {
         "profile" | "persona" | "user_profile" => Some("profile"),
         "preference" | "preferences" | "likes" | "dislikes" => Some("preferences"),
         "entity" | "entities" | "fact" | "facts" => Some("entities"),

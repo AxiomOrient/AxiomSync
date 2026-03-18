@@ -1,4 +1,5 @@
 use crate::embedding::embed_text;
+use crate::config::{DEFAULT_LLM_ENDPOINT, DEFAULT_LLM_MODEL, MemoryDedupConfigSnapshot};
 use crate::uri::AxiomUri;
 
 use super::super::memory_extractor::ExtractedMemory;
@@ -30,7 +31,7 @@ fn dedup_config(mode: MemoryDedupMode, strict: bool, endpoint: &str) -> MemoryDe
         mode,
         similarity_threshold: 0.9,
         llm_endpoint: endpoint.to_string(),
-        llm_model: "qwen2.5:7b-instruct".to_string(),
+        llm_model: DEFAULT_LLM_MODEL.to_string(),
         llm_timeout_ms: DEFAULT_MEMORY_DEDUP_LLM_TIMEOUT_MS,
         llm_max_output_tokens: DEFAULT_MEMORY_DEDUP_LLM_MAX_OUTPUT_TOKENS,
         llm_temperature_milli: DEFAULT_MEMORY_DEDUP_LLM_TEMPERATURE_MILLI,
@@ -49,9 +50,42 @@ fn cosine_similarity_returns_expected_value() {
 }
 
 #[test]
-fn memory_dedup_mode_defaults_to_auto() {
-    assert_eq!(MemoryDedupMode::parse(None), MemoryDedupMode::Auto);
-    assert_eq!(MemoryDedupMode::parse(Some("")), MemoryDedupMode::Auto);
+fn memory_dedup_mode_parse_accepts_expected_values() {
+    let cases: &[(Option<&str>, MemoryDedupMode, bool)] = &[
+        (None, MemoryDedupMode::Auto, false),
+        (Some(""), MemoryDedupMode::Auto, false),
+        (Some("   "), MemoryDedupMode::Auto, false),
+        (Some("auto"), MemoryDedupMode::Auto, false),
+        (Some(" AUTO "), MemoryDedupMode::Auto, false),
+        (Some("llm"), MemoryDedupMode::Llm, false),
+        (Some("model"), MemoryDedupMode::Llm, false),
+        (Some("deterministic"), MemoryDedupMode::Deterministic, false),
+        (Some(" DeTeRmInIsTiC "), MemoryDedupMode::Deterministic, false),
+        (Some("invalid"), MemoryDedupMode::Auto, true),
+    ];
+
+    for &(raw, expected_mode, expected_warning) in cases {
+        assert_eq!(MemoryDedupMode::parse(raw), expected_mode);
+        let (mode, warned) = MemoryDedupMode::parse_with_warning(raw);
+        assert_eq!(mode, expected_mode);
+        assert_eq!(warned, expected_warning);
+    }
+}
+
+#[test]
+fn memory_dedup_mode_from_snapshot_falls_back_to_auto_with_warning() {
+    let mut snapshot = MemoryDedupConfigSnapshot::default();
+    snapshot.mode = Some("invalid".to_string());
+    snapshot.similarity_threshold = 0.77;
+    snapshot.llm_timeout_ms = Some(2_500);
+
+    let (config, warned) = MemoryDedupConfig::from_snapshot_with_warning(&snapshot);
+    assert!(warned);
+    assert_eq!(config.mode, MemoryDedupMode::Auto);
+    assert_eq!(config.similarity_threshold, 0.77);
+    assert_eq!(config.llm_endpoint, DEFAULT_LLM_ENDPOINT.to_string());
+    assert_eq!(config.llm_model, DEFAULT_LLM_MODEL.to_string());
+    assert_eq!(config.llm_timeout_ms, 2_500);
 }
 
 #[test]

@@ -1,5 +1,6 @@
 use crate::error::{AxiomError, Result};
 use crate::models::{ContextHit, FindResult, IndexRecord};
+use crate::text::parse_with_default;
 
 use super::AxiomSync;
 use super::result::{append_query_plan_note, sync_trace_final_topk};
@@ -57,14 +58,11 @@ struct DocSignals {
 }
 
 pub(super) fn resolve_reranker_mode(raw: Option<&str>) -> RerankerMode {
-    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
-        return RerankerMode::Off;
-    };
-    if value.eq_ignore_ascii_case("doc-aware-v1") {
-        RerankerMode::DocAwareV1
-    } else {
-        RerankerMode::Off
-    }
+    parse_with_default(
+        raw,
+        RerankerMode::Off,
+        |value| (value == "doc-aware-v1").then_some(RerankerMode::DocAwareV1),
+    )
 }
 
 fn classify_query_intent(query: &str, tokens: &[String]) -> QueryIntent {

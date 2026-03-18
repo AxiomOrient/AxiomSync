@@ -8,12 +8,16 @@ use crate::llm_io::parse_env_bool;
 mod env;
 mod indexing;
 mod memory;
+mod llm;
 mod om;
 mod search;
 
 pub(crate) use indexing::{
     IndexingConfig, InternalTierPolicy, TierSynthesisMode, should_persist_scope_tiers,
 };
+pub(crate) use llm::{DEFAULT_LLM_ENDPOINT, DEFAULT_LLM_MODEL};
+#[cfg(test)]
+pub(crate) use llm::TEST_OM_LLM_MODEL;
 #[cfg(test)]
 pub(crate) use indexing::{resolve_internal_tier_policy, resolve_tier_synthesis_mode};
 pub(crate) use memory::{MemoryConfig, MemoryDedupConfigSnapshot, MemoryExtractorConfigSnapshot};

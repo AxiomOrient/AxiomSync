@@ -1,10 +1,8 @@
-use crate::config::MemoryDedupConfigSnapshot;
+use crate::config::{DEFAULT_LLM_ENDPOINT, DEFAULT_LLM_MODEL, MemoryDedupConfigSnapshot};
 use crate::models::{MemoryPromotionFact, PromotionApplyMode};
 use crate::uri::AxiomUri;
+use crate::text::normalize_token_ascii_lower;
 
-pub(super) const DEFAULT_MEMORY_DEDUP_MODE: &str = "auto";
-pub(super) const DEFAULT_MEMORY_DEDUP_LLM_ENDPOINT: &str = "http://127.0.0.1:11434/api/chat";
-pub(super) const DEFAULT_MEMORY_DEDUP_LLM_MODEL: &str = "qwen2.5:7b-instruct";
 pub(super) const DEFAULT_MEMORY_DEDUP_LLM_TIMEOUT_MS: u64 = 2_000;
 pub(super) const DEFAULT_MEMORY_DEDUP_LLM_MAX_OUTPUT_TOKENS: u32 = 600;
 pub(super) const DEFAULT_MEMORY_DEDUP_LLM_TEMPERATURE_MILLI: u16 = 0;
@@ -60,15 +58,16 @@ pub(super) enum MemoryDedupMode {
 
 impl MemoryDedupMode {
     pub(super) fn parse(raw: Option<&str>) -> Self {
-        let normalized = raw
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(DEFAULT_MEMORY_DEDUP_MODE)
-            .to_ascii_lowercase();
-        match normalized.as_str() {
-            "llm" | "model" => Self::Llm,
-            "auto" => Self::Auto,
-            _ => Self::Deterministic,
+        Self::parse_with_warning(raw).0
+    }
+
+    pub(super) fn parse_with_warning(raw: Option<&str>) -> (Self, bool) {
+        match normalize_token_ascii_lower(raw).as_deref() {
+            Some("deterministic") => (Self::Deterministic, false),
+            Some("llm") | Some("model") => (Self::Llm, false),
+            Some("auto") => (Self::Auto, false),
+            Some(_) => (Self::Auto, true),
+            None => (Self::Auto, false),
         }
     }
 
@@ -96,31 +95,41 @@ pub(super) struct MemoryDedupConfig {
 
 impl MemoryDedupConfig {
     pub(super) fn from_snapshot(snapshot: &MemoryDedupConfigSnapshot) -> Self {
-        Self {
-            mode: MemoryDedupMode::parse(snapshot.mode.as_deref()),
-            similarity_threshold: snapshot.similarity_threshold,
-            llm_endpoint: snapshot
-                .llm_endpoint
-                .clone()
-                .unwrap_or_else(|| DEFAULT_MEMORY_DEDUP_LLM_ENDPOINT.to_string()),
-            llm_model: snapshot
-                .llm_model
-                .clone()
-                .unwrap_or_else(|| DEFAULT_MEMORY_DEDUP_LLM_MODEL.to_string()),
-            llm_timeout_ms: snapshot
-                .llm_timeout_ms
-                .unwrap_or(DEFAULT_MEMORY_DEDUP_LLM_TIMEOUT_MS),
-            llm_max_output_tokens: snapshot
-                .llm_max_output_tokens
-                .unwrap_or(DEFAULT_MEMORY_DEDUP_LLM_MAX_OUTPUT_TOKENS),
-            llm_temperature_milli: snapshot
-                .llm_temperature_milli
-                .unwrap_or(DEFAULT_MEMORY_DEDUP_LLM_TEMPERATURE_MILLI),
-            llm_strict: snapshot.llm_strict,
-            llm_max_matches: snapshot
-                .llm_max_matches
-                .unwrap_or(DEFAULT_MEMORY_DEDUP_LLM_MAX_MATCHES),
-        }
+        Self::from_snapshot_with_warning(snapshot).0
+    }
+
+    pub(super) fn from_snapshot_with_warning(
+        snapshot: &MemoryDedupConfigSnapshot,
+    ) -> (Self, bool) {
+        let (mode, mode_is_invalid) = MemoryDedupMode::parse_with_warning(snapshot.mode.as_deref());
+        (
+            Self {
+                mode,
+                similarity_threshold: snapshot.similarity_threshold,
+                llm_endpoint: snapshot
+                    .llm_endpoint
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_LLM_ENDPOINT.to_string()),
+                llm_model: snapshot
+                    .llm_model
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string()),
+                llm_timeout_ms: snapshot
+                    .llm_timeout_ms
+                    .unwrap_or(DEFAULT_MEMORY_DEDUP_LLM_TIMEOUT_MS),
+                llm_max_output_tokens: snapshot
+                    .llm_max_output_tokens
+                    .unwrap_or(DEFAULT_MEMORY_DEDUP_LLM_MAX_OUTPUT_TOKENS),
+                llm_temperature_milli: snapshot
+                    .llm_temperature_milli
+                    .unwrap_or(DEFAULT_MEMORY_DEDUP_LLM_TEMPERATURE_MILLI),
+                llm_strict: snapshot.llm_strict,
+                llm_max_matches: snapshot
+                    .llm_max_matches
+                    .unwrap_or(DEFAULT_MEMORY_DEDUP_LLM_MAX_MATCHES),
+            },
+            mode_is_invalid,
+        )
     }
 }
 

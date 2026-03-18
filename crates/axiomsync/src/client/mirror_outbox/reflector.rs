@@ -3,6 +3,7 @@ use reqwest::blocking::Client;
 use serde_json::Value;
 
 use crate::config::OmReflectorConfigSnapshot;
+use crate::config::{DEFAULT_LLM_ENDPOINT, DEFAULT_LLM_MODEL};
 use crate::error::{AxiomError, OmInferenceFailureKind, OmInferenceSource, Result};
 use crate::llm_io::{
     estimate_text_tokens, extract_json_fragment, extract_llm_content,
@@ -11,6 +12,7 @@ use crate::llm_io::{
 use crate::om::{
     DEFAULT_REFLECTOR_BUFFER_ACTIVATION, DEFAULT_REFLECTOR_OBSERVATION_TOKENS,
     OM_PROMPT_CONTRACT_NAME, OM_PROMPT_CONTRACT_VERSION, OM_PROTOCOL_VERSION,
+    OmRuntimeMode,
     OmInferenceModelConfig, OmInferenceUsage, OmReflectorPromptInput, OmReflectorRequest,
     OmReflectorResponse, build_reflection_draft, build_reflector_prompt_contract_v2,
     build_reflector_system_prompt, build_reflector_user_prompt, om_observer_error,
@@ -25,39 +27,15 @@ use crate::state::OmActiveEntry;
 use crate::uri::{AxiomUri, Scope};
 
 const DEFAULT_OM_REFLECTOR_MODE: &str = "auto";
-const DEFAULT_OM_REFLECTOR_LLM_ENDPOINT: &str = "http://127.0.0.1:11434/api/chat";
-const DEFAULT_OM_REFLECTOR_LLM_MODEL: &str = "qwen2.5:7b-instruct";
 const DEFAULT_OM_REFLECTOR_LLM_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_OM_REFLECTOR_LLM_MAX_OUTPUT_TOKENS: u32 = 1_200;
 const DEFAULT_OM_REFLECTOR_LLM_TEMPERATURE_MILLI: u16 = 0;
 #[cfg(test)]
 const DEFAULT_OM_REFLECTOR_MAX_CHARS: usize = 1_200;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OmReflectorMode {
-    Auto,
-    Deterministic,
-    Llm,
-}
-
-impl OmReflectorMode {
-    fn parse(raw: Option<&str>) -> Self {
-        match raw
-            .unwrap_or(DEFAULT_OM_REFLECTOR_MODE)
-            .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "deterministic" | "local" | "draft" => Self::Deterministic,
-            "llm" | "model" => Self::Llm,
-            _ => Self::Auto,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct OmReflectorConfig {
-    mode: OmReflectorMode,
+    mode: OmRuntimeMode,
     model_enabled: bool,
     llm_endpoint: String,
     llm_model: String,
@@ -95,7 +73,7 @@ impl OmReflectorCallOptions {
 impl OmReflectorConfig {
     fn from_snapshot(snapshot: &OmReflectorConfigSnapshot) -> Self {
         Self {
-            mode: OmReflectorMode::parse(snapshot.mode.as_deref()),
+            mode: OmRuntimeMode::parse(snapshot.mode.as_deref(), DEFAULT_OM_REFLECTOR_MODE),
             model_enabled: resolve_reflector_model_enabled(
                 snapshot.explicit_model_enabled,
                 snapshot.rollout_profile.as_deref(),
@@ -103,11 +81,11 @@ impl OmReflectorConfig {
             llm_endpoint: snapshot
                 .llm_endpoint
                 .clone()
-                .unwrap_or_else(|| DEFAULT_OM_REFLECTOR_LLM_ENDPOINT.to_string()),
+                .unwrap_or_else(|| DEFAULT_LLM_ENDPOINT.to_string()),
             llm_model: snapshot
                 .llm_model
                 .clone()
-                .unwrap_or_else(|| DEFAULT_OM_REFLECTOR_LLM_MODEL.to_string()),
+                .unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string()),
             llm_timeout_ms: snapshot
                 .llm_timeout_ms
                 .unwrap_or(DEFAULT_OM_REFLECTOR_LLM_TIMEOUT_MS),
@@ -198,8 +176,8 @@ fn resolve_reflector_response_with_config(
         return Ok(deterministic);
     }
     match config.mode {
-        OmReflectorMode::Deterministic => Ok(deterministic),
-        OmReflectorMode::Llm => llm_reflector_response(
+        OmRuntimeMode::Deterministic => Ok(deterministic),
+        OmRuntimeMode::Llm => llm_reflector_response(
             record,
             scope_key,
             expected_generation,
@@ -207,7 +185,7 @@ fn resolve_reflector_response_with_config(
             config,
             active_entries,
         ),
-        OmReflectorMode::Auto => {
+        OmRuntimeMode::Auto => {
             match llm_reflector_response(
                 record,
                 scope_key,

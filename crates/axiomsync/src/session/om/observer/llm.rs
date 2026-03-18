@@ -229,6 +229,7 @@ pub(in crate::session::om) fn select_messages_for_observer_llm(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::TEST_OM_LLM_MODEL;
     use crate::om::{OmInferenceModelConfig, OmPendingMessage, OmScope};
 
     #[test]
@@ -238,7 +239,7 @@ mod tests {
             scope_key: "session:s-contract".to_string(),
             model: OmInferenceModelConfig {
                 provider: "local-http".to_string(),
-                model: "qwen2.5:7b".to_string(),
+                model: TEST_OM_LLM_MODEL.to_string(),
                 max_output_tokens: 512,
                 temperature_milli: 0,
             },

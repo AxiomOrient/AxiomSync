@@ -7,6 +7,7 @@ use super::super::memory_extractor::ExtractedMemory;
 use super::Session;
 use super::dedup::{prefilter_existing_memory_matches, resolve_dedup_selection};
 use super::fallbacks::record_memory_dedup_fallback as record_memory_dedup_fallback_event;
+use super::fallbacks::record_memory_dedup_config_warning as record_memory_dedup_config_warning_event;
 use super::helpers::{build_memory_key, normalize_memory_text};
 use super::promotion::memory_uri_for_category_key;
 use super::read_path::list_existing_memory_facts;
@@ -21,7 +22,13 @@ impl Session {
     ) -> Result<Vec<ResolvedMemoryCandidate>> {
         let mut by_category = HashMap::<String, Vec<ExistingMemoryFact>>::new();
         let mut resolved = Vec::<ResolvedMemoryCandidate>::new();
-        let dedup_config = MemoryDedupConfig::from_snapshot(&self.config.memory.dedup);
+        let (dedup_config, invalid_dedup_mode) =
+            MemoryDedupConfig::from_snapshot_with_warning(&self.config.memory.dedup);
+        if invalid_dedup_mode {
+            if let Some(mode_requested) = self.config.memory.dedup.mode.as_deref() {
+                record_memory_dedup_config_warning_event(self, mode_requested);
+            }
+        }
         let mut dedup_fallback_logged = false;
 
         for candidate in extracted {
