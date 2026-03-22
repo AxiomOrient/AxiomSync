@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AxiomSync ChatGPT Capture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      }
+
+      body {
+        margin: 0;
+        width: 320px;
+        background: #f6f4ef;
+        color: #1b2622;
+      }
+
+      main {
+        padding: 14px;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: 16px;
+      }
+
+      label {
+        display: block;
+        margin-top: 10px;
+        margin-bottom: 6px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      input {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 9px 10px;
+        border: 1px solid #c7d1cb;
+        border-radius: 10px;
+        background: #ffffff;
+      }
+
+      button {
+        margin-top: 14px;
+        width: 100%;
+        padding: 10px 12px;
+        border: 0;
+        border-radius: 10px;
+        background: #0f6b5d;
+        color: #ffffff;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .meta {
+        margin-top: 14px;
+        padding: 12px;
+        border-radius: 12px;
+        background: #ffffff;
+        border: 1px solid #dde4de;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .status-line {
+        margin-top: 4px;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>AxiomSync Capture</h1>
+
+      <label for="endpoint">Endpoint</label>
+      <input id="endpoint" type="text" placeholder="http://127.0.0.1:4402/" />
+
+      <label for="tags">Default Tags</label>
+      <input id="tags" type="text" placeholder="keep, fix" />
+
+      <button id="save" type="button">Save</button>
+
+      <div class="meta">
+        <div class="status-line">Pending queue: <span id="queue-count">0</span></div>
+        <div class="status-line">Last success: <span id="last-delivery">none</span></div>
+        <div class="status-line">Last error: <span id="last-error">none</span></div>
+      </div>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,19 @@
+[chatgpt]
+enabled = true
+browser_extension_id = null
+poll_interval_ms = 3000
+
+[codex]
+enabled = false
+app_server_base_url = "http://127.0.0.1:4318"
+api_key = null
+repair_directory = "~/.codex"
+
+[claude_code]
+enabled = true
+hooks_server_port = 4402
+
+[gemini_cli]
+enabled = true
+watch_directory = "~/.gemini/tmp"
+poll_interval_ms = 3000

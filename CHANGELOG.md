@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- narrowed `client.rs` bootstrapping responsibilities and split resource ingest from filesystem convenience APIs
+- reduced the documentation entrypoints to active runtime, release, and testing references
+- aligned repository release metadata with the existing `v1.3.1` tag
+
+## v1.3.1 - 2026-03-18
+
+- release branch cut that included the pending workspace changes shipped as `v1.3.1`
+
 ## v1.3.0 - 2026-03-16
 
 - finalized release readiness gates with passing quality and strict release pack validation

@@ -1,81 +1,62 @@
 # AxiomSync
 
-Local-first context runtime and operator CLI for agentic systems.
+Conversation-native local kernel for capturing agent sessions into a single SQLite `context.db`, projecting them into canonical threads and episodes, and serving them over CLI, HTTP, MCP, and a Rust-rendered web UI.
 
-AxiomSync는 `axiom://` URI, `context.db`, 메모리 검색 런타임, 세션/OM 상태를 하나로 묶는 로컬 런타임입니다. 이 저장소는 런타임과 CLI만 소유합니다.
-
-## Release Line
-- Current repository release line: `v1.3.0`
-- Canonical local store: `<root>/context.db`
-- Retrieval policy: `memory_only`
-- Persistence policy: SQLite only
-
-## Repository Boundary
-- In this repository: `crates/axiomsync`, `docs/`, `scripts/`
-- Outside this repository: web companion, mobile FFI companion, app-specific frontend shells
+## Runtime Model
+- Domain state: single SQLite store at `<root>/context.db`
+- Auth grants: `<root>/auth.json`
+- Connector config: `<root>/connectors.toml`
+- Core pipeline: `Parse -> Normalize -> Plan -> Apply`
+- Determinism: IDs and hashes are derived from canonicalized input JSON
+- Public surfaces: CLI, HTTP API, MCP (`stdio` + HTTP), Maud web UI
+- Connectors: ChatGPT Web, Codex, Claude Code, Gemini CLI
 
 ## Quick Start
 ```bash
 cargo run -p axiomsync -- --help
 
 cargo run -p axiomsync -- init
-cargo run -p axiomsync -- add ./docs --target axiom://resources/docs
-cargo run -p axiomsync -- search "oauth flow"
-cargo run -p axiomsync -- session commit
+cargo run -p axiomsync -- connector ingest --connector codex --file /tmp/codex-events.json
+cargo run -p axiomsync -- project rebuild
+cargo run -p axiomsync -- derive
+cargo run -p axiomsync -- search "timeout error"
+cargo run -p axiomsync -- project auth-grant --workspace-root /repo/app --token secret-token
+cargo run -p axiomsync -- web --addr 127.0.0.1:4400
 ```
 
-## Quick Scenario Checks
+## Connector Flow
+- `connector ingest`: parse and normalize one JSON event or batch
+- `connector sync codex`: fetch Codex app-server events into `raw_event`
+- `connector watch gemini-cli --once`: import Gemini watch directory into `raw_event`
+- `connector serve chatgpt|claude-code`: run a local ingest daemon for extension/hooks payloads
+- `project rebuild`: regenerate `workspace`, `conv_session`, `conv_turn`, `conv_item`, `artifact`, `evidence_anchor`
+- `derive`: segment episodes, run LLM extraction, synthesize verifications, rebuild `episode`/`insight`/`verification`
+- `mcp serve`: expose `search_episodes`, `get_runbook`, `get_thread`, `get_evidence`, `search_commands`
 
-실사용 점검을 위한 단일 진입점:
+## Release Docs
+- Runtime/API: [`docs/API_CONTRACT.md`](./docs/API_CONTRACT.md)
+- Architecture: [`docs/RUNTIME_ARCHITECTURE.md`](./docs/RUNTIME_ARCHITECTURE.md)
+- Testing: [`docs/TESTING.md`](./docs/TESTING.md)
+- Release checklist: [`docs/RELEASE_RUNBOOK.md`](./docs/RELEASE_RUNBOOK.md)
+
+## Companion Asset
+- ChatGPT capture extension: [`extensions/chatgpt`](./extensions/chatgpt)
+
+## Verification
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace -- --nocapture
+cargo run -p axiomsync -- --help
+cargo run -p axiomsync -- connector --help
+cargo run -p axiomsync -- mcp serve --help
+```
+
+## ChatGPT Extension
+Run the local ingest daemon before loading the browser extension:
 
 ```bash
-bash scripts/run_quick_scenario_checks.sh \
-  --iterations 5 \
-  --seed 20260318 \
-  --timeout 90 \
-  --scenario random \
-  --max-cold-ms 1200 \
-  --max-p95-ms 700 \
-  --min-queue-eps 50 \
-  --summary-format json \
-  --summary-out /tmp/axiomsync-quick-run-summary.json
+cargo run -p axiomsync -- connector serve chatgpt --addr 127.0.0.1:4402
 ```
 
-- `--summary-format text`: 텍스트 요약 저장(기본값)
-- `--summary-format json`: JSON 요약 저장
-- `RESULT_WARNING counts_match=false`: 집계 불일치 경고(로그/이력 재점검 필요)
-
-## Runtime Model
-- URI model: `axiom://{scope}/{path}`
-- State store: `context.db`
-- Retrieval runtime: `memory_only`
-- Persisted retrieval state: `search_docs` + `search_docs_fts`
-- Canonical result shape: `FindResult.query_results` + `hit_buckets`
-- Compatibility JSON views: serialized `memories`, `resources`, `skills`
-- Derived bucket views: `FindResult.memories()`, `resources()`, `skills()`
-- Session/OM state: explicit and durable
-
-## Documentation Map
-- [docs/INDEX.md](./docs/INDEX.md): documentation entrypoint
-- [docs/BLUEPRINT.md](./docs/BLUEPRINT.md): product target state
-- [docs/IMPLEMENTATION_SPEC.md](./docs/IMPLEMENTATION_SPEC.md): implementation completion contract
-- [docs/API_CONTRACT.md](./docs/API_CONTRACT.md): stable contract
-- [docs/RUNTIME_ARCHITECTURE.md](./docs/RUNTIME_ARCHITECTURE.md): runtime structure
-- [docs/RETRIEVAL_ARCHITECTURE.md](./docs/RETRIEVAL_ARCHITECTURE.md): retrieval path
-- [docs/RELEASE_RUNBOOK.md](./docs/RELEASE_RUNBOOK.md): release owner checklist
-- [docs/CODE_OWNERSHIP.md](./docs/CODE_OWNERSHIP.md): change routing
-- [docs/USER_SCENARIO_TEST_PLAYBOOK.md](./docs/USER_SCENARIO_TEST_PLAYBOOK.md): scenario prompts and user-facing test workflows
-- [scripts/run_quick_scenario_checks.sh](./scripts/run_quick_scenario_checks.sh): scenario check runner (bash 실행 권장)
-
-## Quality And Release
-```bash
-bash scripts/quality_gates.sh
-bash scripts/release_pack_strict_gate.sh --workspace-dir "$(pwd)"
-```
-
-## Non-Negotiable Rules
-- Canonical URI protocol stays `axiom://`
-- Runtime startup is a hard cutover to `context.db`
-- Legacy DB filename discovery or migration is not supported
-- Retrieval backend remains `memory_only`; `sqlite` retrieval mode is rejected
-- Vendored pure-OM boundary remains explicit under `axiomsync::om`
+The extension posts selected ChatGPT message excerpts to `http://127.0.0.1:4402/` and retries failed deliveries from local extension storage.
