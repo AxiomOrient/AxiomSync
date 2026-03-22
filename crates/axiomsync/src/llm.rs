@@ -7,10 +7,8 @@ use crate::domain::{EpisodeExtraction, VerificationExtraction};
 use crate::error::{AxiomError, Result};
 use crate::ports::{LlmExtractionPort, SharedLlmExtractionPort};
 
-const EPISODE_PROMPT: &str =
-    include_str!("../assets/episode_extractor_v1.md");
-const VERIFICATION_PROMPT: &str =
-    include_str!("../assets/verification_synthesizer_v1.md");
+const EPISODE_PROMPT: &str = include_str!("../assets/episode_extractor_v1.md");
+const VERIFICATION_PROMPT: &str = include_str!("../assets/verification_synthesizer_v1.md");
 
 pub trait LlmClient: Send + Sync {
     fn extract_episode(&self, transcript: &str) -> Result<EpisodeExtraction>;

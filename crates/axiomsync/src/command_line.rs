@@ -4,13 +4,13 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::connectors::ConnectorAdapter;
 use crate::domain::ConnectorBatchInput;
 use crate::domain::{EpisodeStatus, SearchEpisodesFilter, SearchEpisodesRequest};
-use crate::print_json;
-use crate::connectors::ConnectorAdapter;
 use crate::http_api;
 use crate::kernel::AxiomSync;
 use crate::mcp;
+use crate::print_json;
 
 #[derive(Debug, Parser)]
 #[command(name = "axiomsync")]

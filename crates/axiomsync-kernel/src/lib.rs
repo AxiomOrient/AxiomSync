@@ -6,9 +6,9 @@ pub mod domain {
     pub use axiomsync_domain::domain::*;
 }
 
-pub mod ports;
-pub mod logic;
 pub mod kernel;
+pub mod logic;
+pub mod ports;
 
 pub use axiomsync_domain::{AxiomError, Result};
 pub use kernel::AxiomSync;

@@ -302,3 +302,87 @@ async fn mcp_http_binds_unscoped_tool_calls_to_authorized_workspace() {
         runbook.workspace_id.as_deref()
     );
 }
+
+#[test]
+fn mcp_lists_resources_tools_and_reads_episode_payload() {
+    let app = app_with_data();
+    let runbook = app.list_runbooks().expect("runbooks").remove(0);
+
+    let resources = mcp::handle_request(
+        &app,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/list"
+        }),
+        runbook.workspace_id.as_deref(),
+    )
+    .expect("resources");
+    let tools = mcp::handle_request(
+        &app,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list"
+        }),
+        runbook.workspace_id.as_deref(),
+    )
+    .expect("tools");
+    let episode = mcp::handle_request(
+        &app,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "resources/read",
+            "params": {"uri": format!("axiom://episode/{}", runbook.episode_id)}
+        }),
+        runbook.workspace_id.as_deref(),
+    )
+    .expect("episode");
+
+    let resource_rows = resources["result"].as_array().expect("resource array");
+    assert!(
+        resource_rows
+            .iter()
+            .any(|row| row["uri"] == "axiom://episode/{id}")
+    );
+    let tool_rows = tools["result"].as_array().expect("tool array");
+    assert!(tool_rows.iter().any(|row| row["name"] == "search_commands"));
+    assert_eq!(episode["result"]["episode_id"], runbook.episode_id);
+    assert_eq!(episode["result"]["problem"], runbook.problem);
+    assert!(episode["result"]["evidence"].is_array());
+}
+
+#[test]
+fn mcp_bound_search_commands_stays_in_workspace() {
+    let app = app_with_two_workspaces();
+    let runbook = app.list_runbooks().expect("runbooks").remove(0);
+    let response = mcp::handle_request(
+        &app,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "search_commands",
+                "arguments": {"query": "cargo", "limit": 10}
+            }
+        }),
+        runbook.workspace_id.as_deref(),
+    )
+    .expect("search commands");
+    let rows = response["result"].as_array().expect("rows");
+    assert!(!rows.is_empty());
+    let expected = app
+        .search_commands_in_workspace(
+            "cargo",
+            10,
+            runbook.workspace_id.as_deref().expect("workspace"),
+        )
+        .expect("expected");
+    assert_eq!(rows.len(), expected.len());
+    for (row, expected_row) in rows.iter().zip(expected.iter()) {
+        assert_eq!(row["episode_id"], expected_row.episode_id);
+        assert_eq!(row["command"], expected_row.command);
+    }
+}

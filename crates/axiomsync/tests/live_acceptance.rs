@@ -1,10 +1,10 @@
 use std::fs;
 use std::sync::Arc;
 
+use axiomsync::connectors::ConnectorAdapter;
 use axiomsync::domain::{EpisodeExtraction, VerificationExtraction};
 use axiomsync::kernel::AxiomSync;
 use axiomsync::llm::MockLlmClient;
-use axiomsync::connectors::ConnectorAdapter;
 use axiomsync::mcp;
 use axiomsync::ports::ConnectorPort;
 use serde_json::json;

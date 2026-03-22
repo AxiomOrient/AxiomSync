@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use axiomsync::domain::{
-    ConnectorBatchInput, CursorInput, EpisodeExtraction, RawEventInput, SearchEpisodesFilter,
-    SearchEpisodesRequest, VerificationExtraction, VerificationKind, VerificationStatus,
+    ConnectorBatchInput, ConvSessionRow, ConvTurnRow, CursorInput, DerivePlan, EpisodeExtraction,
+    EpisodeRow, EpisodeStatus, ProjectionPlan, RawEventInput, SearchDocRedactedRow,
+    SearchEpisodesFilter, SearchEpisodesRequest, VerificationExtraction, VerificationKind,
+    VerificationStatus, WorkspaceRow,
 };
 use axiomsync::kernel::AxiomSync;
 use axiomsync::llm::MockLlmClient;
@@ -224,6 +226,69 @@ fn connector_dedup_and_cursor_work_for_all_connectors() {
         assert_eq!(raw_count, 4, "{connector}");
         assert_eq!(cursor_count, 1, "{connector}");
     }
+}
+
+#[test]
+fn apply_projection_rejects_turn_without_item() {
+    let app = mock_app();
+    app.init().expect("init");
+    let invalid = ProjectionPlan {
+        workspaces: vec![WorkspaceRow {
+            stable_id: "ws_invalid".to_string(),
+            canonical_root: "/repo/app".to_string(),
+            repo_remote: None,
+            branch: None,
+            worktree_path: None,
+        }],
+        conv_sessions: vec![ConvSessionRow {
+            stable_id: "session_invalid".to_string(),
+            connector: "codex".to_string(),
+            native_session_id: "native-session".to_string(),
+            workspace_id: Some("ws_invalid".to_string()),
+            title: None,
+            transcript_uri: None,
+            status: "active".to_string(),
+            started_at_ms: Some(1),
+            ended_at_ms: Some(2),
+        }],
+        conv_turns: vec![ConvTurnRow {
+            stable_id: "turn_invalid".to_string(),
+            session_id: "session_invalid".to_string(),
+            native_turn_id: Some("turn-1".to_string()),
+            turn_index: 0,
+            actor: "user".to_string(),
+        }],
+        conv_items: vec![],
+        artifacts: vec![],
+        evidence_anchors: vec![],
+    };
+    assert!(app.apply_projection(&invalid).is_err());
+}
+
+#[test]
+fn apply_derivation_rejects_episode_without_member() {
+    let app = mock_app();
+    app.init().expect("init");
+    let invalid = DerivePlan {
+        episodes: vec![EpisodeRow {
+            stable_id: "episode_invalid".to_string(),
+            workspace_id: None,
+            problem_signature: "sig".to_string(),
+            status: EpisodeStatus::Open,
+            opened_at_ms: 1,
+            closed_at_ms: None,
+        }],
+        episode_members: vec![],
+        insights: vec![],
+        insight_anchors: vec![],
+        verifications: vec![],
+        search_docs_redacted: vec![SearchDocRedactedRow {
+            stable_id: "doc_invalid".to_string(),
+            episode_id: "episode_invalid".to_string(),
+            body: "problem: timeout".to_string(),
+        }],
+    };
+    assert!(app.apply_derivation(&invalid).is_err());
 }
 
 #[test]

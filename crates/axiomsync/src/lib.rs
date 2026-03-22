@@ -29,8 +29,8 @@ pub mod mcp {
     pub use axiomsync_mcp::*;
 }
 
-pub mod connectors;
 pub mod command_line;
+pub mod connectors;
 pub mod http_api;
 pub mod web_ui;
 
@@ -46,7 +46,10 @@ pub fn open(root: impl Into<PathBuf>) -> Result<AxiomSync> {
     open_with_llm(root, llm::default_llm_client())
 }
 
-pub fn with_llm(root: impl Into<PathBuf>, llm: ports::SharedLlmExtractionPort) -> Result<AxiomSync> {
+pub fn with_llm(
+    root: impl Into<PathBuf>,
+    llm: ports::SharedLlmExtractionPort,
+) -> Result<AxiomSync> {
     open_with_llm(root, llm)
 }
 

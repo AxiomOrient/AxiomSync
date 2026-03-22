@@ -244,6 +244,20 @@ pub struct SourceCursorRow {
     pub updated_at_ms: i64,
 }
 
+impl SourceCursorRow {
+    pub fn validate(&self) -> Result<()> {
+        if self.connector.trim().is_empty()
+            || self.cursor_key.trim().is_empty()
+            || self.cursor_value.trim().is_empty()
+        {
+            return Err(AxiomError::Validation(
+                "source_cursor requires connector, cursor_key, cursor_value".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImportJournalRow {
     pub stable_id: String,
@@ -279,6 +293,21 @@ pub struct ConvSessionRow {
     pub ended_at_ms: Option<i64>,
 }
 
+impl ConvSessionRow {
+    pub fn validate(&self) -> Result<()> {
+        if self.stable_id.trim().is_empty()
+            || self.connector.trim().is_empty()
+            || self.native_session_id.trim().is_empty()
+            || self.status.trim().is_empty()
+        {
+            return Err(AxiomError::Validation(
+                "conv_session requires stable_id, connector, native_session_id, status".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConvTurnRow {
     pub stable_id: String,
@@ -286,6 +315,20 @@ pub struct ConvTurnRow {
     pub native_turn_id: Option<String>,
     pub turn_index: usize,
     pub actor: String,
+}
+
+impl ConvTurnRow {
+    pub fn validate(&self) -> Result<()> {
+        if self.stable_id.trim().is_empty()
+            || self.session_id.trim().is_empty()
+            || self.actor.trim().is_empty()
+        {
+            return Err(AxiomError::Validation(
+                "conv_turn requires stable_id, session_id, actor".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -318,6 +361,17 @@ pub struct ArtifactRow {
     pub mime: Option<String>,
     pub sha256_hex: Option<String>,
     pub bytes: Option<u64>,
+}
+
+impl ArtifactRow {
+    pub fn validate(&self) -> Result<()> {
+        if self.stable_id.trim().is_empty() || self.item_id.trim().is_empty() {
+            return Err(AxiomError::Validation(
+                "artifact requires stable_id and item_id".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -395,10 +449,32 @@ pub struct EpisodeRow {
     pub closed_at_ms: Option<i64>,
 }
 
+impl EpisodeRow {
+    pub fn validate(&self) -> Result<()> {
+        if self.stable_id.trim().is_empty() || self.problem_signature.trim().is_empty() {
+            return Err(AxiomError::Validation(
+                "episode requires stable_id and problem_signature".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EpisodeMemberRow {
     pub episode_id: String,
     pub turn_id: String,
+}
+
+impl EpisodeMemberRow {
+    pub fn validate(&self) -> Result<()> {
+        if self.episode_id.trim().is_empty() || self.turn_id.trim().is_empty() {
+            return Err(AxiomError::Validation(
+                "episode_member requires episode_id and turn_id".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -437,6 +513,17 @@ impl InsightRow {
 pub struct InsightAnchorRow {
     pub insight_id: String,
     pub anchor_id: String,
+}
+
+impl InsightAnchorRow {
+    pub fn validate(&self) -> Result<()> {
+        if self.insight_id.trim().is_empty() || self.anchor_id.trim().is_empty() {
+            return Err(AxiomError::Validation(
+                "insight_anchor requires insight_id and anchor_id".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -624,6 +711,9 @@ impl IngestPlan {
         for add in &self.adds {
             add.row.validate()?;
         }
+        if let Some(cursor) = &self.cursor_update {
+            cursor.validate()?;
+        }
         if let Some(journal) = &self.journal {
             journal.validate()?;
         }
@@ -643,14 +733,89 @@ pub struct ProjectionPlan {
 
 impl ProjectionPlan {
     pub fn validate(&self) -> Result<()> {
+        let workspace_ids: HashSet<_> = self
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.stable_id.as_str())
+            .collect();
+        let session_ids: HashSet<_> = self
+            .conv_sessions
+            .iter()
+            .map(|session| session.stable_id.as_str())
+            .collect();
+        let turn_ids: HashSet<_> = self
+            .conv_turns
+            .iter()
+            .map(|turn| turn.stable_id.as_str())
+            .collect();
+        let item_ids: HashSet<_> = self
+            .conv_items
+            .iter()
+            .map(|item| item.stable_id.as_str())
+            .collect();
+
         for workspace in &self.workspaces {
             workspace.validate()?;
         }
+        for session in &self.conv_sessions {
+            session.validate()?;
+            if session
+                .workspace_id
+                .as_deref()
+                .is_some_and(|workspace_id| !workspace_ids.contains(workspace_id))
+            {
+                return Err(AxiomError::Validation(format!(
+                    "conv_session {} references unknown workspace {}",
+                    session.stable_id,
+                    session.workspace_id.as_deref().unwrap_or_default()
+                )));
+            }
+        }
+        for turn in &self.conv_turns {
+            turn.validate()?;
+            if !session_ids.contains(turn.session_id.as_str()) {
+                return Err(AxiomError::Validation(format!(
+                    "conv_turn {} references unknown session {}",
+                    turn.stable_id, turn.session_id
+                )));
+            }
+            if !self
+                .conv_items
+                .iter()
+                .any(|item| item.turn_id == turn.stable_id)
+            {
+                return Err(AxiomError::Validation(format!(
+                    "turn {} must contain at least one item",
+                    turn.stable_id
+                )));
+            }
+        }
         for item in &self.conv_items {
             item.validate()?;
+            if !turn_ids.contains(item.turn_id.as_str()) {
+                return Err(AxiomError::Validation(format!(
+                    "conv_item {} references unknown turn {}",
+                    item.stable_id, item.turn_id
+                )));
+            }
+        }
+        for artifact in &self.artifacts {
+            artifact.validate()?;
+            if !item_ids.contains(artifact.item_id.as_str()) {
+                return Err(AxiomError::Validation(format!(
+                    "artifact {} references unknown item {}",
+                    artifact.stable_id, artifact.item_id
+                )));
+            }
         }
         for anchor in &self.evidence_anchors {
             anchor.validate()?;
+            if !item_ids.contains(anchor.item_id.as_str()) {
+                return Err(AxiomError::Validation(format!(
+                    "evidence_anchor {} references unknown item {}",
+                    anchor.stable_id, anchor.item_id
+                )));
+            }
         }
         Ok(())
     }
@@ -668,13 +833,51 @@ pub struct DerivePlan {
 
 impl DerivePlan {
     pub fn validate(&self) -> Result<()> {
+        let episode_ids: HashSet<_> = self
+            .episodes
+            .iter()
+            .map(|episode| episode.stable_id.as_str())
+            .collect();
+        let insight_ids: HashSet<_> = self
+            .insights
+            .iter()
+            .map(|insight| insight.stable_id.as_str())
+            .collect();
         let anchored: HashSet<_> = self
             .insight_anchors
             .iter()
             .map(|row| row.insight_id.as_str())
             .collect();
+        for episode in &self.episodes {
+            episode.validate()?;
+            if !self
+                .episode_members
+                .iter()
+                .any(|member| member.episode_id == episode.stable_id)
+            {
+                return Err(AxiomError::Validation(format!(
+                    "episode {} is missing members",
+                    episode.stable_id
+                )));
+            }
+        }
+        for member in &self.episode_members {
+            member.validate()?;
+            if !episode_ids.contains(member.episode_id.as_str()) {
+                return Err(AxiomError::Validation(format!(
+                    "episode_member references unknown episode {}",
+                    member.episode_id
+                )));
+            }
+        }
         for insight in &self.insights {
             insight.validate()?;
+            if !episode_ids.contains(insight.episode_id.as_str()) {
+                return Err(AxiomError::Validation(format!(
+                    "insight {} references unknown episode {}",
+                    insight.stable_id, insight.episode_id
+                )));
+            }
             if !anchored.contains(insight.stable_id.as_str()) {
                 return Err(AxiomError::Validation(format!(
                     "insight {} is missing evidence anchor",
@@ -682,11 +885,32 @@ impl DerivePlan {
                 )));
             }
         }
+        for link in &self.insight_anchors {
+            link.validate()?;
+            if !insight_ids.contains(link.insight_id.as_str()) {
+                return Err(AxiomError::Validation(format!(
+                    "insight_anchor references unknown insight {}",
+                    link.insight_id
+                )));
+            }
+        }
         for verification in &self.verifications {
             verification.validate()?;
+            if !episode_ids.contains(verification.episode_id.as_str()) {
+                return Err(AxiomError::Validation(format!(
+                    "verification {} references unknown episode {}",
+                    verification.stable_id, verification.episode_id
+                )));
+            }
         }
         for doc in &self.search_docs_redacted {
             doc.validate()?;
+            if !episode_ids.contains(doc.episode_id.as_str()) {
+                return Err(AxiomError::Validation(format!(
+                    "search_doc_redacted {} references unknown episode {}",
+                    doc.stable_id, doc.episode_id
+                )));
+            }
         }
         Ok(())
     }

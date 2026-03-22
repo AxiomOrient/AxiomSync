@@ -24,10 +24,7 @@ impl FileConnectorConfigStore {
     pub fn ensure_default(&self) -> Result<()> {
         let path = self.path();
         if !path.exists() {
-            fs::write(
-                path,
-                include_str!("../assets/connectors.example.toml"),
-            )?;
+            fs::write(path, include_str!("../assets/connectors.example.toml"))?;
         }
         Ok(())
     }

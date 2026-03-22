@@ -8,14 +8,14 @@ use std::time::Duration;
 use reqwest::blocking::Client;
 use serde_json::Value;
 
+use crate::command_line::ConnectorName;
 use crate::domain::{ConnectorBatchInput, CursorInput, RawEventInput};
 use crate::error::{AxiomError, Result};
-use crate::command_line::ConnectorName;
-use crate::print_json;
 use crate::http_api;
 use crate::kernel::AxiomSync;
 use crate::logic::deterministic_directory_cursor;
 use crate::ports::ConnectorPort;
+use crate::print_json;
 
 #[derive(Debug, Clone)]
 pub enum ConnectorAdapter {
@@ -313,4 +313,3 @@ fn expand_home(raw: &str) -> String {
     }
     raw.to_string()
 }
-
