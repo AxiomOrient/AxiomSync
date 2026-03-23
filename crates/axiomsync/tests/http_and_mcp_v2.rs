@@ -1,10 +1,10 @@
-use axum::body::Body;
+use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
 use axiomsync::domain::{
-    AppendRawEventsRequest, SearchClaimsRequest, SearchFilter, SearchInsightsRequest,
-    SearchProceduresRequest, workspace_stable_id,
+    AppendRawEventsRequest, DerivePlan, ProjectionPlan, ReplayPlan, SearchClaimsRequest,
+    SearchFilter, SearchInsightsRequest, SearchProceduresRequest, workspace_stable_id,
 };
 use tempfile::tempdir;
 
@@ -24,6 +24,18 @@ struct SeededApp {
     run_id: String,
     document_id: String,
     evidence_id: String,
+}
+
+fn apply_replay_plan(app: &axiomsync::AxiomSync) {
+    let plan = app.build_replay_plan().expect("replay plan");
+    app.apply_replay(&plan).expect("apply replay plan");
+}
+
+async fn decode_json<T: serde::de::DeserializeOwned>(response: axum::response::Response) -> T {
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body bytes");
+    serde_json::from_slice(&bytes).expect("json body")
 }
 
 fn seed_app() -> SeededApp {
@@ -98,7 +110,7 @@ fn seed_app() -> SeededApp {
     .expect("request");
     let ingest = app.plan_append_raw_events(request).expect("plan ingest");
     app.apply_ingest_plan(&ingest).expect("apply ingest");
-    app.rebuild().expect("rebuild");
+    apply_replay_plan(&app);
 
     let workspace_token = "http-workspace-token".to_string();
     let admin_token = "http-admin-token".to_string();
@@ -350,6 +362,102 @@ async fn canonical_and_compat_http_routes_work_with_auth() {
         assert_eq!(response.status(), StatusCode::OK, "path {path}");
     }
 
+    let projection_plan_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/projection/plan")
+                .method("POST")
+                .header("authorization", format!("Bearer {}", seeded.admin_token))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(projection_plan_response.status(), StatusCode::OK);
+    let projection_plan: ProjectionPlan = decode_json(projection_plan_response).await;
+
+    let projection_apply = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/projection/apply")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", seeded.admin_token))
+                .body(Body::from(
+                    serde_json::to_vec(&projection_plan).expect("projection plan json"),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(projection_apply.status(), StatusCode::OK);
+
+    let derivation_plan_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/derivations/plan")
+                .method("POST")
+                .header("authorization", format!("Bearer {}", seeded.admin_token))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(derivation_plan_response.status(), StatusCode::OK);
+    let derivation_plan: DerivePlan = decode_json(derivation_plan_response).await;
+
+    let derivation_apply = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/derivations/apply")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", seeded.admin_token))
+                .body(Body::from(
+                    serde_json::to_vec(&derivation_plan).expect("derivation plan json"),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(derivation_apply.status(), StatusCode::OK);
+
+    let replay_plan_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/replay/plan")
+                .method("POST")
+                .header("authorization", format!("Bearer {}", seeded.admin_token))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(replay_plan_response.status(), StatusCode::OK);
+    let replay_plan: ReplayPlan = decode_json(replay_plan_response).await;
+
+    let replay_apply = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/replay/apply")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", seeded.admin_token))
+                .body(Body::from(
+                    serde_json::to_vec(&replay_plan).expect("replay plan json"),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(replay_apply.status(), StatusCode::OK);
+
     for path in [
         "/admin/rebuild/projection",
         "/admin/rebuild/derivations",
@@ -367,7 +475,7 @@ async fn canonical_and_compat_http_routes_work_with_auth() {
             )
             .await
             .expect("response");
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     assert_eq!(

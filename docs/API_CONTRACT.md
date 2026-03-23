@@ -28,7 +28,12 @@
 - `axiomsync sink apply-ingest-plan`
 - `axiomsync sink plan-upsert-source-cursor`
 - `axiomsync sink apply-source-cursor-plan`
-- `axiomsync project rebuild`
+- `axiomsync project plan-projection`
+- `axiomsync project apply-projection-plan`
+- `axiomsync project plan-derivations`
+- `axiomsync project apply-derivation-plan`
+- `axiomsync project plan-rebuild`
+- `axiomsync project apply-replay-plan`
 - `axiomsync project doctor`
 - `axiomsync project plan-auth-grant`
 - `axiomsync project plan-admin-grant`
@@ -67,9 +72,12 @@
 - `POST /sink/source-cursors/apply`
 
 ### Admin rebuild
-- `POST /admin/rebuild/projection`
-- `POST /admin/rebuild/derivations`
-- `POST /admin/rebuild/index`
+- `POST /admin/projection/plan`
+- `POST /admin/projection/apply`
+- `POST /admin/derivations/plan`
+- `POST /admin/derivations/apply`
+- `POST /admin/replay/plan`
+- `POST /admin/replay/apply`
 
 ### Canonical read
 - `GET /api/sessions/{id}`
@@ -156,6 +164,9 @@ compatibility noun은 `claims`, `cases`, `threads`, `runbooks`, `runs`, `tasks`,
 ## Sink Contract
 - raw append는 `AppendRawEventsRequest -> IngestPlan -> apply_ingest` 순서만 허용한다.
 - source cursor upsert는 `UpsertSourceCursorRequest -> SourceCursorUpsertPlan -> apply_source_cursor_upsert` 순서만 허용한다.
+- projection rebuild는 `build_projection_plan -> apply_projection_plan` 순서를 지원한다.
+- derivation rebuild는 `build_derivation_plan -> apply_derivation_plan` 순서를 지원한다.
+- full replay rebuild는 `build_replay_plan -> apply_replay` 순서를 지원한다.
 - `apply-*`는 original request가 아니라 validated plan payload만 받는다.
 - `source_cursor`는 kernel 내부 operator metadata이며, spool/retry/approval/run-state 정본은 아니다.
 - health 응답은 `pending_projection_count`, `pending_derived_count`, `pending_index_count`를 포함한다.

@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AxiomSyncKernelSinkContractV2",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "raw_events_plan_request": {
+      "type": "object",
+      "required": [
+        "events"
+      ],
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/rawEventInput"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "raw_events_plan_response": {
+      "type": "object",
+      "required": [
+        "adds",
+        "skipped_dedupe_keys"
+      ],
+      "properties": {
+        "adds": {
+          "type": "array"
+        },
+        "skipped_dedupe_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "journal": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    },
+    "raw_events_apply_request": {
+      "type": "object",
+      "required": [
+        "plan"
+      ],
+      "properties": {
+        "plan": {
+          "type": "object"
+        }
+      }
+    },
+    "source_cursor_plan_request": {
+      "$ref": "#/$defs/sourceCursorInput"
+    },
+    "source_cursor_plan_response": {
+      "type": "object",
+      "required": [
+        "row"
+      ],
+      "properties": {
+        "row": {
+          "$ref": "#/$defs/sourceCursorRow"
+        }
+      }
+    },
+    "source_cursor_apply_request": {
+      "type": "object",
+      "required": [
+        "plan"
+      ],
+      "properties": {
+        "plan": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "rawEventInput": {
+      "type": "object",
+      "required": [
+        "connector",
+        "native_schema_version",
+        "native_session_id",
+        "event_type",
+        "ts_ms",
+        "payload"
+      ],
+      "properties": {
+        "connector": {
+          "type": "string"
+        },
+        "native_schema_version": {
+          "type": "string"
+        },
+        "native_session_id": {
+          "type": "string"
+        },
+        "native_event_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event_type": {
+          "type": "string"
+        },
+        "ts_ms": {
+          "type": "integer"
+        },
+        "payload": {
+          "type": "object"
+        }
+      }
+    },
+    "sourceCursorInput": {
+      "type": "object",
+      "required": [
+        "connector",
+        "cursor_key",
+        "cursor_value",
+        "updated_at_ms"
+      ],
+      "properties": {
+        "connector": {
+          "type": "string"
+        },
+        "cursor_key": {
+          "type": "string"
+        },
+        "cursor_value": {
+          "type": "string"
+        },
+        "updated_at_ms": {
+          "type": "integer"
+        }
+      }
+    },
+    "sourceCursorRow": {
+      "type": "object",
+      "required": [
+        "connector",
+        "cursor_key",
+        "cursor_value",
+        "updated_at_ms"
+      ],
+      "properties": {
+        "connector": {
+          "type": "string"
+        },
+        "cursor_key": {
+          "type": "string"
+        },
+        "cursor_value": {
+          "type": "string"
+        },
+        "updated_at_ms": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

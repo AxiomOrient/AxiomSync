@@ -144,11 +144,6 @@ impl AxiomSync {
         self.repo.apply_replay(plan)
     }
 
-    pub fn rebuild(&self) -> Result<Value> {
-        let plan = self.build_replay_plan()?;
-        self.apply_replay(&plan)
-    }
-
     pub fn list_sessions(&self) -> Result<Vec<SessionRow>> {
         self.repo.load_sessions()
     }

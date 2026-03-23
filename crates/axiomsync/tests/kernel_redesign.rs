@@ -7,6 +7,11 @@ use axiomsync::domain::{
 use rusqlite::Connection;
 use tempfile::tempdir;
 
+fn apply_replay_plan(app: &axiomsync::AxiomSync) {
+    let plan = app.build_replay_plan().expect("replay plan");
+    app.apply_replay(&plan).expect("apply replay plan");
+}
+
 fn sample_request() -> AppendRawEventsRequest {
     serde_json::from_value(serde_json::json!({
         "request_id": "req-1",
@@ -103,7 +108,7 @@ fn redesign_pipeline_projects_and_derives_generic_kernel_rows() {
         .plan_append_raw_events(sample_request())
         .expect("plan ingest");
     app.apply_ingest_plan(&ingest).expect("apply ingest");
-    app.rebuild().expect("rebuild");
+    apply_replay_plan(&app);
 
     let sessions = app.list_sessions().expect("sessions");
     assert_eq!(sessions.len(), 4);
@@ -187,7 +192,7 @@ fn redesign_pipeline_projects_and_derives_generic_kernel_rows() {
         .expect("search procedures");
     assert!(!procedures_before.is_empty());
 
-    app.rebuild().expect("rebuild again");
+    apply_replay_plan(&app);
 
     let claims_after = app
         .search_claims(SearchClaimsRequest {
@@ -223,7 +228,7 @@ fn auth_grants_and_search_filters_are_workspace_scoped() {
         .plan_append_raw_events(sample_request())
         .expect("plan ingest");
     app.apply_ingest_plan(&ingest).expect("apply ingest");
-    app.rebuild().expect("rebuild");
+    apply_replay_plan(&app);
 
     let plan = app
         .plan_workspace_token_grant("/workspace/demo", "workspace-token")
@@ -327,7 +332,7 @@ fn replay_apply_is_atomic_when_derivation_write_fails() {
         .plan_append_raw_events(sample_request())
         .expect("plan ingest");
     app.apply_ingest_plan(&ingest).expect("apply ingest");
-    app.rebuild().expect("initial rebuild");
+    apply_replay_plan(&app);
 
     let conn = Connection::open(app.db_path()).expect("open sqlite");
     let session_count_before: i64 = conn
@@ -450,7 +455,7 @@ fn legacy_raw_event_table_is_backfilled_into_ingress_receipts() {
     drop(conn);
 
     let app = axiomsync::open(temp.path()).expect("app");
-    app.rebuild().expect("rebuild after migration");
+    apply_replay_plan(&app);
     let report = app.doctor_report().expect("doctor");
     assert_eq!(report.ingress_receipts, 1);
     assert!(fs::metadata(temp.path().join("context.db")).is_ok());

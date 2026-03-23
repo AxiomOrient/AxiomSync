@@ -9,6 +9,11 @@ use rusqlite::Connection;
 use serde_json::Value;
 use tempfile::tempdir;
 
+fn apply_replay_plan(app: &axiomsync::AxiomSync) {
+    let plan = app.build_replay_plan().expect("replay plan");
+    app.apply_replay(&plan).expect("apply replay plan");
+}
+
 fn fixture_request(name: &str) -> AppendRawEventsRequest {
     serde_json::from_value(fixture_value(name)).expect("fixture request")
 }
@@ -47,7 +52,7 @@ fn final_form_examples_are_accepted_projected_and_derived() {
     assert_eq!(report_before.pending_derived_count, 2);
     assert_eq!(report_before.pending_index_count, 2);
 
-    app.rebuild().expect("rebuild");
+    apply_replay_plan(&app);
 
     let report_after = app.doctor_report().expect("doctor after rebuild");
     assert_eq!(report_after.pending_projection_count, 0);
@@ -183,7 +188,7 @@ fn reusable_derivations_require_evidence_anchors() {
 
     let plan = app.plan_append_raw_events(request).expect("plan");
     app.apply_ingest_plan(&plan).expect("apply");
-    app.rebuild().expect("rebuild");
+    apply_replay_plan(&app);
 
     let report = app.doctor_report().expect("doctor");
     assert_eq!(report.episodes, 1);

@@ -11,9 +11,9 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use axiomsync_domain::domain::{
-    AppendRawEventsRequest, SearchClaimsRequest, SearchDocsRequest, SearchEntriesRequest,
-    SearchEpisodesRequest, SearchInsightsRequest, SearchProceduresRequest, SourceCursorUpsertPlan,
-    UpsertSourceCursorRequest,
+    AppendRawEventsRequest, DerivePlan, ProjectionPlan, ReplayPlan, SearchClaimsRequest,
+    SearchDocsRequest, SearchEntriesRequest, SearchEpisodesRequest, SearchInsightsRequest,
+    SearchProceduresRequest, SourceCursorUpsertPlan, UpsertSourceCursorRequest,
 };
 use axiomsync_kernel::{AxiomError, AxiomSync, Result};
 use axiomsync_mcp as mcp;
@@ -30,9 +30,12 @@ pub fn router(app: AxiomSync) -> Router {
         .route("/sink/raw-events/apply", post(apply_ingest_plan))
         .route("/sink/source-cursors/plan", post(plan_source_cursor_upsert))
         .route("/sink/source-cursors/apply", post(apply_source_cursor_plan))
-        .route("/admin/rebuild/projection", post(rebuild_projection))
-        .route("/admin/rebuild/derivations", post(rebuild_derivations))
-        .route("/admin/rebuild/index", post(rebuild_index))
+        .route("/admin/projection/plan", post(plan_projection))
+        .route("/admin/projection/apply", post(apply_projection))
+        .route("/admin/derivations/plan", post(plan_derivations))
+        .route("/admin/derivations/apply", post(apply_derivations))
+        .route("/admin/replay/plan", post(plan_replay))
+        .route("/admin/replay/apply", post(apply_replay))
         .route("/api/sessions/{id}", get(get_session))
         .route("/api/entries/{id}", get(get_entry))
         .route("/api/artifacts/{id}", get(get_artifact))
@@ -131,30 +134,58 @@ async fn apply_source_cursor_plan(
     Ok(Json(state.app.apply_source_cursor_plan(&plan)?))
 }
 
-async fn rebuild_projection(
+async fn plan_projection(
     headers: HeaderMap,
     State(state): State<AppState>,
 ) -> HttpResult<Json<Value>> {
     authorize_admin(&state.app, &headers)?;
-    let plan = state.app.build_projection_plan()?;
+    Ok(Json(serde_json::to_value(
+        state.app.build_projection_plan()?,
+    )?))
+}
+
+async fn apply_projection(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    payload: std::result::Result<Json<ProjectionPlan>, JsonRejection>,
+) -> HttpResult<Json<Value>> {
+    authorize_admin(&state.app, &headers)?;
+    let Json(plan) = payload.map_err(|error| AxiomError::Validation(error.body_text()))?;
     Ok(Json(state.app.apply_projection_plan(&plan)?))
 }
 
-async fn rebuild_derivations(
+async fn plan_derivations(
     headers: HeaderMap,
     State(state): State<AppState>,
 ) -> HttpResult<Json<Value>> {
     authorize_admin(&state.app, &headers)?;
-    let plan = state.app.build_derivation_plan()?;
+    Ok(Json(serde_json::to_value(
+        state.app.build_derivation_plan()?,
+    )?))
+}
+
+async fn apply_derivations(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    payload: std::result::Result<Json<DerivePlan>, JsonRejection>,
+) -> HttpResult<Json<Value>> {
+    authorize_admin(&state.app, &headers)?;
+    let Json(plan) = payload.map_err(|error| AxiomError::Validation(error.body_text()))?;
     Ok(Json(state.app.apply_derivation_plan(&plan)?))
 }
 
-async fn rebuild_index(
+async fn plan_replay(headers: HeaderMap, State(state): State<AppState>) -> HttpResult<Json<Value>> {
+    authorize_admin(&state.app, &headers)?;
+    Ok(Json(serde_json::to_value(state.app.build_replay_plan()?)?))
+}
+
+async fn apply_replay(
     headers: HeaderMap,
     State(state): State<AppState>,
+    payload: std::result::Result<Json<ReplayPlan>, JsonRejection>,
 ) -> HttpResult<Json<Value>> {
     authorize_admin(&state.app, &headers)?;
-    let plan = state.app.build_replay_plan()?;
+    let Json(plan) = payload.map_err(|error| AxiomError::Validation(error.body_text()))?;
     Ok(Json(state.app.apply_replay(&plan)?))
 }
 

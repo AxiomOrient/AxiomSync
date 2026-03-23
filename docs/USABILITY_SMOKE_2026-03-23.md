@@ -20,18 +20,20 @@
    - ingest plan이 stdout JSON으로 정상 출력됐다.
 5. `cargo run -p axiomsync -- --root <tmp_root> sink apply-ingest-plan --file <tmp_root>/ingest-plan.json`
    - receipt 1건이 정상 반영됐다.
-6. `cargo run -p axiomsync -- --root <tmp_root> project rebuild`
+6. `cargo run -p axiomsync -- --root <tmp_root> project plan-rebuild > <tmp_root>/replay-plan.json`
+   - replay plan이 stdout JSON으로 정상 출력됐다.
+7. `cargo run -p axiomsync -- --root <tmp_root> project apply-replay-plan --file <tmp_root>/replay-plan.json`
    - projection 1 session/1 entry/1 anchor, derivation 1 episode/2 insights/1 verification이 생성됐다.
-7. `cargo run -p axiomsync -- --root <tmp_root> project doctor`
+8. `cargo run -p axiomsync -- --root <tmp_root> project doctor`
    - pending counts가 모두 0으로 수렴했다.
-8. `cargo run -p axiomsync -- --root <tmp_root> query search-docs --file <tmp_root>/search-docs.json`
+9. `cargo run -p axiomsync -- --root <tmp_root> query search-docs --file <tmp_root>/search-docs.json`
    - `"narrow sink contract"` 조회가 evidence preview와 함께 정상 반환됐다.
-9. `cargo run -p axiomsync -- --root <tmp_root> serve --addr 127.0.0.1:4410`
+10. `cargo run -p axiomsync -- --root <tmp_root> serve --addr 127.0.0.1:4410`
    - `curl http://127.0.0.1:4410/health`가 `status=ok`와 zero pending counts를 반환했다.
 
 ## Friction Found
 - `sink`/`query` 하위 명령 help가 `--file <FILE>`만 보여 줘서 처음 사용하는 사람이 JSON shape를 추측해야 했다.
-- `project rebuild`와 `project doctor`를 병렬로 실행하면 사용자는 rebuild 완료 전 상태를 볼 수 있어 pending 수치 해석을 잘못할 수 있다.
+- `project plan-rebuild`와 `project apply-replay-plan`이 분리되면서, 사용자는 계획 생성과 실제 적용을 명시적으로 구분해야 한다.
 - 루트 help에는 canonical quick start가 있었지만 실제 stdout redirection 기반 사용 예시는 없었다.
 
 ## Self-Improvement Applied
@@ -40,5 +42,5 @@
 - `query` 계열 help에 공통 search request JSON 예시를 추가했다.
 
 ## Follow-up Candidates
-- `project rebuild`가 끝난 뒤 `doctor`를 바로 이어서 보여 주는 `project sync` 또는 `project rebuild --doctor` 같은 합성 UX를 고려할 수 있다.
+- `project plan-rebuild > replay-plan.json`와 `project apply-replay-plan --file replay-plan.json` 예시를 README와 smoke 문서에서 같이 유지하는 편이 첫 사용 마찰을 줄인다.
 - README quick start에 example JSON 파일 위치를 직접 연결하면 첫 사용 마찰이 더 줄어든다.

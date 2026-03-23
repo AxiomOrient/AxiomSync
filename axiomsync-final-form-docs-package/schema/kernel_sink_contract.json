@@ -12,6 +12,10 @@
       "type": "string",
       "minLength": 1
     },
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
     "source": {
       "type": "object",
       "required": [
@@ -21,12 +25,7 @@
       "properties": {
         "source_kind": {
           "type": "string",
-          "enum": [
-            "axiomrelay",
-            "axiomrams",
-            "manual",
-            "import"
-          ]
+          "minLength": 1
         },
         "connector_name": {
           "type": "string",
@@ -41,20 +40,20 @@
       "items": {
         "type": "object",
         "required": [
+          "native_session_id",
+          "native_entry_id",
           "event_type",
           "observed_at_ms",
-          "dedupe_key",
           "payload"
         ],
         "properties": {
-          "raw_event_id": {
-            "type": "string"
-          },
           "native_session_id": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "native_entry_id": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "event_type": {
             "type": "string",
@@ -71,30 +70,14 @@
             "minLength": 1
           },
           "content_hash": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "payload": {
             "type": "object"
           },
           "hints": {
             "type": "object",
-            "properties": {
-              "session_kind": {
-                "type": "string",
-                "enum": [
-                  "conversation",
-                  "run",
-                  "task",
-                  "import"
-                ]
-              },
-              "entry_kind": {
-                "type": "string"
-              },
-              "workspace_root": {
-                "type": "string"
-              }
-            },
             "additionalProperties": true
           }
         },

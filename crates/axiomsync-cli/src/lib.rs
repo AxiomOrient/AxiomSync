@@ -6,9 +6,10 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use axiomsync_domain::domain::{
-    AdminTokenPlan, AppendRawEventsRequest, IngestPlan, SearchClaimsRequest, SearchDocsRequest,
-    SearchEntriesRequest, SearchEpisodesRequest, SearchInsightsRequest, SearchProceduresRequest,
-    SourceCursorUpsertPlan, UpsertSourceCursorRequest, WorkspaceTokenPlan,
+    AdminTokenPlan, AppendRawEventsRequest, DerivePlan, IngestPlan, ProjectionPlan, ReplayPlan,
+    SearchClaimsRequest, SearchDocsRequest, SearchEntriesRequest, SearchEpisodesRequest,
+    SearchInsightsRequest, SearchProceduresRequest, SourceCursorUpsertPlan,
+    UpsertSourceCursorRequest, WorkspaceTokenPlan,
 };
 use axiomsync_kernel::AxiomSync;
 
@@ -17,10 +18,11 @@ Quick start:
   axiomsync init
   axiomsync sink plan-append-raw-events --file raw-events.json > ingest-plan.json
   axiomsync sink apply-ingest-plan --file ingest-plan.json
-  axiomsync project rebuild
+  axiomsync project plan-rebuild > replay-plan.json
+  axiomsync project apply-replay-plan --file replay-plan.json
   axiomsync project doctor
 
-See `axiomsync sink <command> --help` and `axiomsync query <command> --help` for request JSON examples.";
+See `axiomsync sink <command> --help`, `axiomsync project <command> --help`, and `axiomsync query <command> --help` for request JSON examples.";
 
 const PLAN_APPEND_RAW_EVENTS_AFTER_HELP: &str = r#"Input JSON example:
 {
@@ -71,6 +73,21 @@ Writes a source cursor upsert plan JSON document to stdout."#;
 
 const APPLY_SOURCE_CURSOR_AFTER_HELP: &str =
     "Input must be the JSON plan previously returned by `plan-upsert-source-cursor`.";
+
+const PLAN_PROJECTION_AFTER_HELP: &str = "Builds a projection plan from the current raw ledger and writes the serialized plan JSON to stdout.";
+
+const APPLY_PROJECTION_AFTER_HELP: &str =
+    "Input must be the JSON plan previously returned by `project plan-projection`.";
+
+const PLAN_DERIVATIONS_AFTER_HELP: &str = "Builds a derivation plan from the current projected rows and writes the serialized plan JSON to stdout.";
+
+const APPLY_DERIVATION_AFTER_HELP: &str =
+    "Input must be the JSON plan previously returned by `project plan-derivations`.";
+
+const PLAN_REBUILD_AFTER_HELP: &str = "Builds a replay plan that contains both projection and derivation work and writes the serialized plan JSON to stdout.";
+
+const APPLY_REPLAY_AFTER_HELP: &str =
+    "Input must be the JSON plan previously returned by `project plan-rebuild`.";
 
 const SEARCH_AFTER_HELP: &str = r#"Input JSON example:
 {
@@ -136,7 +153,27 @@ pub struct ProjectArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ProjectCommand {
-    Rebuild,
+    #[command(after_long_help = PLAN_PROJECTION_AFTER_HELP)]
+    PlanProjection,
+    #[command(after_long_help = APPLY_PROJECTION_AFTER_HELP)]
+    ApplyProjectionPlan {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    #[command(after_long_help = PLAN_DERIVATIONS_AFTER_HELP)]
+    PlanDerivations,
+    #[command(after_long_help = APPLY_DERIVATION_AFTER_HELP)]
+    ApplyDerivationPlan {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    #[command(after_long_help = PLAN_REBUILD_AFTER_HELP)]
+    PlanRebuild,
+    #[command(after_long_help = APPLY_REPLAY_AFTER_HELP)]
+    ApplyReplayPlan {
+        #[arg(long)]
+        file: PathBuf,
+    },
     Doctor,
     PlanAuthGrant {
         #[arg(long)]
@@ -287,8 +324,26 @@ where
             }
         },
         Command::Project(args) => match args.command {
-            ProjectCommand::Rebuild => {
-                print_json(&app.rebuild()?)?;
+            ProjectCommand::PlanProjection => {
+                print_json(&serde_json::to_value(app.build_projection_plan()?)?)?;
+            }
+            ProjectCommand::ApplyProjectionPlan { file } => {
+                let plan: ProjectionPlan = load_json_file(&file)?;
+                print_json(&app.apply_projection_plan(&plan)?)?;
+            }
+            ProjectCommand::PlanDerivations => {
+                print_json(&serde_json::to_value(app.build_derivation_plan()?)?)?;
+            }
+            ProjectCommand::ApplyDerivationPlan { file } => {
+                let plan: DerivePlan = load_json_file(&file)?;
+                print_json(&app.apply_derivation_plan(&plan)?)?;
+            }
+            ProjectCommand::PlanRebuild => {
+                print_json(&serde_json::to_value(app.build_replay_plan()?)?)?;
+            }
+            ProjectCommand::ApplyReplayPlan { file } => {
+                let plan: ReplayPlan = load_json_file(&file)?;
+                print_json(&app.apply_replay(&plan)?)?;
             }
             ProjectCommand::Doctor => {
                 print_json(&serde_json::to_value(app.doctor_report()?)?)?;

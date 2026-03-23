@@ -36,7 +36,8 @@ cargo run -p axiomsync -- sink plan-append-raw-events --file /tmp/raw-events.jso
 cargo run -p axiomsync -- sink apply-ingest-plan --file /tmp/ingest-plan.json
 cargo run -p axiomsync -- sink plan-upsert-source-cursor --file /tmp/cursor.json
 cargo run -p axiomsync -- sink apply-source-cursor-plan --file /tmp/cursor-plan.json
-cargo run -p axiomsync -- project rebuild
+cargo run -p axiomsync -- project plan-rebuild > /tmp/replay-plan.json
+cargo run -p axiomsync -- project apply-replay-plan --file /tmp/replay-plan.json
 cargo run -p axiomsync -- project doctor
 cargo run -p axiomsync -- query search-docs --file /tmp/search-docs.json
 cargo run -p axiomsync -- query search-insights --file /tmp/search-insights.json
@@ -57,7 +58,9 @@ cargo run -p axiomsync -- serve --addr 127.0.0.1:4400
 - external collectors and edge runtimes integrate only through these `sink` routes or equivalent CLI commands
 
 ## Kernel Flow
-- `project rebuild`: replay projection and derivation from the raw ledger
+- `project plan-projection` / `project apply-projection-plan`: rebuild canonical projection through an explicit plan
+- `project plan-derivations` / `project apply-derivation-plan`: rebuild derived rows through an explicit plan
+- `project plan-rebuild` / `project apply-replay-plan`: rebuild projection and derivation from the raw ledger through one replay plan
 - `project doctor`: report counts for receipts, projected rows, derived rows, and pending projection/derivation/index work
 - `mcp serve`: expose canonical session/episode/insight/procedure resources plus compatibility aliases
 
