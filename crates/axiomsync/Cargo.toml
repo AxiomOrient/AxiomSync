@@ -31,7 +31,9 @@ tower = { workspace = true }
 axiomsync-domain = { workspace = true }
 axiomsync-store-sqlite = { workspace = true }
 axiomsync-kernel = { workspace = true }
+axiomsync-http = { workspace = true }
 axiomsync-mcp = { workspace = true }
+axiomsync-cli = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

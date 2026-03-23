@@ -3,7 +3,9 @@ members = [
     "crates/axiomsync-domain",
     "crates/axiomsync-store-sqlite",
     "crates/axiomsync-kernel",
+    "crates/axiomsync-http",
     "crates/axiomsync-mcp",
+    "crates/axiomsync-cli",
     "crates/axiomsync",
 ]
 resolver = "2"
@@ -44,7 +46,9 @@ tower = "0.5.2"
 axiomsync-domain = { path = "crates/axiomsync-domain" }
 axiomsync-store-sqlite = { path = "crates/axiomsync-store-sqlite" }
 axiomsync-kernel = { path = "crates/axiomsync-kernel" }
+axiomsync-http = { path = "crates/axiomsync-http" }
 axiomsync-mcp = { path = "crates/axiomsync-mcp" }
+axiomsync-cli = { path = "crates/axiomsync-cli" }
 
 [profile.dev]
 debug = 0

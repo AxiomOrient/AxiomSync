@@ -79,7 +79,7 @@ pub fn handle_request(
         "initialize" => json!({
             "serverInfo": {
                 "name": "axiomsync",
-                "version": crate::domain::RENEWAL_SCHEMA_VERSION,
+                "version": crate::domain::KERNEL_SCHEMA_VERSION,
             }
         }),
         "roots/list" => app.mcp_roots(bound_workspace_id)?,

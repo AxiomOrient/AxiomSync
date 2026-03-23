@@ -1,14 +1,13 @@
 # API Contract
 
-이 문서는 현재 릴리스 라인이 실제로 보장하는 public surface만 적습니다.
+이 문서는 현재 릴리스가 실제로 제공하는 public contract만 설명한다.
 
 ## Repository Boundary
-- 이 저장소는 AxiomSync kernel, CLI, HTTP API, MCP server, local web UI를 소유한다.
-- canonical write contract는 raw-only `sink` surface다.
-- canonical read model은 `record -> view -> knowledge` 3층이다.
-- capture extension, edge daemon, spool, retry, approval, fallback worker는 별도 외부 레포가 소유하며 이 저장소의 릴리스 범위 밖이다.
-- 외부 시스템은 이 저장소와 `sink` contract로만 통합된다고 가정한다.
-- 과거 v3 resource/event/link runtime, migration, release-pack surface는 현재 릴리스 범위에 포함되지 않는다.
+- 이 저장소는 knowledge kernel, SQLite store, CLI, HTTP API, MCP server를 소유한다.
+- canonical write contract는 raw-event sink 하나다.
+- canonical read model은 `ingress_receipts -> sessions/entries/artifacts/anchors -> episodes/claims/procedures`다.
+- capture, spool, retry, approval, edge runtime 정본은 외부 시스템이 소유한다.
+- compatibility read surface는 한 릴리스 동안만 유지되는 adapter이며 정본 모델이 아니다.
 
 ## Runtime Files
 - canonical store: `<root>/context.db`
@@ -16,10 +15,11 @@
 
 ## Core Contract
 - 모든 결정 로직은 `Parse -> Normalize -> Plan -> Apply` 순서를 따른다.
-- `dry-run`은 apply를 실행하지 않고 plan payload만 반환한다.
-- stable id/hash/path는 canonicalized input에서 결정론적으로 계산한다.
-- raw transcript 전체를 직접 FTS하지 않고 `search_doc_redacted`와 evidence fallback을 사용한다.
-- raw ledger는 agent-semantic record를 보존하고, projection은 query-worthy state만 materialize한다.
+- dry-run은 apply를 호출하지 않고 plan payload만 반환한다.
+- stable id/hash는 canonicalized input만으로 결정론적으로 계산한다.
+- sink writer는 raw ledger만 append하고, projection/derivation은 rebuild 가능해야 한다.
+- sink write route는 loopback source address만 허용한다.
+- 외부 writer 호환을 위해 `source|connector`, `native_session_id`, `native_event_id`, `event_type`, `ts_ms` alias를 유지한다.
 
 ## CLI Surface
 - `axiomsync init`
@@ -27,57 +27,70 @@
 - `axiomsync sink apply-ingest-plan`
 - `axiomsync sink plan-upsert-source-cursor`
 - `axiomsync sink apply-source-cursor-plan`
-- `axiomsync project plan-rebuild`
-- `axiomsync project apply-replay-plan`
-- `axiomsync project plan-purge`
-- `axiomsync project apply-purge-plan`
+- `axiomsync project rebuild`
 - `axiomsync project doctor`
 - `axiomsync project plan-auth-grant`
 - `axiomsync project plan-admin-grant`
 - `axiomsync project apply-auth-grant-plan`
 - `axiomsync project apply-admin-grant-plan`
-- `axiomsync derive plan`
-- `axiomsync derive apply-plan`
-- `axiomsync search`
-- `axiomsync runbook`
+- `axiomsync query search-entries`
+- `axiomsync query search-episodes`
+- `axiomsync query search-claims`
+- `axiomsync query search-procedures`
+- `axiomsync query get-session`
+- `axiomsync query get-entry`
+- `axiomsync query get-artifact`
+- `axiomsync query get-anchor`
+- `axiomsync query get-episode`
+- `axiomsync query get-claim`
+- `axiomsync query get-procedure`
+- `axiomsync compat get-case`
+- `axiomsync compat get-thread`
+- `axiomsync compat get-runbook`
+- `axiomsync compat get-task`
 - `axiomsync mcp serve`
-- `axiomsync web`
-
-`sink *`는 canonical kernel write surface다.
-`runbook`은 legacy compatibility surface다.
+- `axiomsync serve`
 
 ## HTTP Surface
-### Main router
+### Canonical write
 - `GET /health`
-- `GET /`
-- `GET /cases/{id}`
-- `GET /episodes/{id}`
 - `POST /sink/raw-events/plan`
 - `POST /sink/raw-events/apply`
 - `POST /sink/source-cursors/plan`
 - `POST /sink/source-cursors/apply`
-- `POST /project/rebuild/plan`
-- `POST /project/rebuild/apply`
-- `POST /project/purge/plan`
-- `POST /project/purge/apply`
-- `POST /derive/plan`
-- `POST /derive/apply`
-- `GET /api/cases`
+
+### Admin rebuild
+- `POST /admin/rebuild/projection`
+- `POST /admin/rebuild/derivations`
+- `POST /admin/rebuild/index`
+
+### Canonical read
+- `GET /api/sessions/{id}`
+- `GET /api/entries/{id}`
+- `GET /api/artifacts/{id}`
+- `GET /api/anchors/{id}`
+- `GET /api/episodes/{id}`
+- `GET /api/claims/{id}`
+- `GET /api/procedures/{id}`
+- `POST /api/query/search-entries`
+- `POST /api/query/search-episodes`
+- `POST /api/query/search-claims`
+- `POST /api/query/search-procedures`
+
+### Compatibility read
 - `GET /api/cases/{id}`
-- `GET /api/episodes`
-- `GET /api/runbooks/{id}`
 - `GET /api/threads/{id}`
+- `GET /api/runbooks/{id}`
 - `GET /api/runs`
 - `GET /api/runs/{id}`
 - `GET /api/tasks/{id}`
-- `GET /api/documents`
 - `GET /api/documents/{id}`
 - `GET /api/evidence/{id}`
 - `POST /mcp`
 
-canonical read nouns는 `cases`, `threads`, `runs`, `tasks`, `documents`, `evidence`다.
-`episodes`와 `runbooks`는 compatibility route로 유지된다.
-이 문서는 kernel/query surface만 다루며 external edge repository의 capture/admin API는 포함하지 않는다.
+canonical noun은 `sessions`, `entries`, `artifacts`, `anchors`, `episodes`, `claims`, `procedures`다.
+compatibility noun은 `cases`, `threads`, `runbooks`, `runs`, `tasks`, `documents`, `evidence`다.
+`task` compatibility id는 독립 정본이 아니라 `session_kind == "task"`인 session id를 그대로 사용한다.
 
 ## MCP Surface
 - transports: `stdio`, HTTP
@@ -89,39 +102,42 @@ canonical read nouns는 `cases`, `threads`, `runs`, `tasks`, `documents`, `evide
   - `tools/list`
   - `tools/call`
 - canonical resources:
+  - `axiom://sessions/{id}`
+  - `axiom://entries/{id}`
+  - `axiom://artifacts/{id}`
+  - `axiom://anchors/{id}`
+  - `axiom://episodes/{id}`
+  - `axiom://claims/{id}`
+  - `axiom://procedures/{id}`
+- compatibility resources:
   - `axiom://cases/{id}`
   - `axiom://threads/{id}`
-  - `axiom://runs/{id}`
-  - `axiom://documents/{id}`
-  - `axiom://evidence/{id}`
-- compatibility resources:
-  - `axiom://episode/{id}`
-  - `axiom://thread/{id}`
+  - `axiom://runbooks/{id}`
+  - `axiom://tasks/{id}`
 - canonical tools:
-  - `search_cases`
+  - `search_entries`
+  - `search_episodes`
+  - `search_claims`
+  - `search_procedures`
+  - `get_session`
+  - `get_entry`
+  - `get_artifact`
+  - `get_anchor`
+- compatibility tools:
   - `get_case`
   - `get_thread`
-  - `get_evidence`
-  - `search_commands`
-  - `list_runs`
-  - `get_run`
-  - `get_task`
-  - `list_documents`
-  - `get_document`
-- compatibility tools:
-  - `search_episodes`
   - `get_runbook`
+  - `get_task`
 
 ## Sink Contract
-- `plan-*` route/command는 mutation 없이 plan payload만 반환한다.
-- `apply-*` route/command는 original request가 아니라 validated plan payload만 입력으로 받는다.
-- raw append는 `AppendRawEventsRequest -> ConnectorBatchInput -> IngestPlan -> apply_ingest` 순서만 허용한다.
+- raw append는 `AppendRawEventsRequest -> IngestPlan -> apply_ingest` 순서만 허용한다.
 - source cursor upsert는 `UpsertSourceCursorRequest -> SourceCursorUpsertPlan -> apply_source_cursor_upsert` 순서만 허용한다.
-- canonical universal envelope는 `native_schema_version = "agent-record-v1"`를 허용한다.
+- `apply-*`는 original request가 아니라 validated plan payload만 받는다.
+- `source_cursor`는 kernel 내부 operator metadata이며, spool/retry/approval/run-state 정본은 아니다.
 
 ## Auth And Scope
-- workspace-scoped HTTP read surface requires workspace bearer auth
-- admin HTTP and web surface requires global admin bearer auth
-- MCP HTTP binding enforces workspace scope
-- sink write routes는 bearer auth를 요구하지 않지만 loopback source address만 허용한다
-- `auth.json` stores hashed workspace grants and hashed global admin tokens, and is written with owner-only permissions on Unix
+- workspace-scoped HTTP read surface는 workspace bearer token을 요구한다.
+- admin rebuild surface와 admin MCP call은 global admin bearer token을 요구한다.
+- MCP HTTP binding은 resource/tool별 workspace requirement를 강제한다.
+- sink write surface는 bearer token 없이 loopback source address만 허용한다.
+- `auth.json`에는 hashed workspace grants와 hashed admin token만 저장한다.

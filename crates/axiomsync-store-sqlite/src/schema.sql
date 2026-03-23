@@ -1,231 +1,167 @@
-create table if not exists workspace (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  canonical_root text not null,
-  repo_remote text,
-  branch text,
-  worktree_path text
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys=ON;
+
+CREATE TABLE IF NOT EXISTS ingress_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  batch_id TEXT NOT NULL,
+  source_kind TEXT NOT NULL,
+  connector TEXT NOT NULL,
+  session_kind TEXT NOT NULL,
+  external_session_key TEXT,
+  external_entry_key TEXT,
+  event_kind TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  captured_at TEXT,
+  workspace_root TEXT,
+  content_hash TEXT NOT NULL,
+  dedupe_key TEXT,
+  payload_json TEXT NOT NULL,
+  raw_payload_json TEXT,
+  artifacts_json TEXT NOT NULL DEFAULT '[]',
+  inserted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-create table if not exists raw_event (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  connector text not null,
-  native_schema_version text,
-  native_session_id text not null,
-  native_event_id text,
-  event_type text not null,
-  ts_ms integer not null,
-  payload_json text not null,
-  payload_sha256 blob not null
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ingress_receipts_dedupe
+  ON ingress_receipts(dedupe_key)
+  WHERE dedupe_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS source_cursor (
+  connector TEXT NOT NULL,
+  cursor_key TEXT NOT NULL,
+  cursor_value TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (connector, cursor_key)
 );
 
-create table if not exists source_cursor (
-  connector text not null,
-  cursor_key text not null,
-  cursor_value text not null,
-  updated_at_ms integer not null,
-  primary key (connector, cursor_key)
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id TEXT PRIMARY KEY,
+  session_kind TEXT NOT NULL,
+  connector TEXT NOT NULL,
+  external_session_key TEXT,
+  title TEXT,
+  workspace_root TEXT,
+  opened_at TEXT,
+  closed_at TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
-create table if not exists import_journal (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  connector text not null,
-  imported_events integer not null,
-  skipped_events integer not null,
-  cursor_key text,
-  cursor_value text,
-  applied_at_ms integer not null
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_external
+  ON sessions(session_kind, connector, external_session_key)
+  WHERE external_session_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS actors (
+  actor_id TEXT PRIMARY KEY,
+  actor_kind TEXT NOT NULL,
+  stable_key TEXT,
+  display_name TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
-create table if not exists conv_session (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  connector text not null,
-  native_session_id text not null,
-  workspace_id integer references workspace(id) on delete set null,
-  title text,
-  transcript_uri text,
-  status text not null,
-  started_at_ms integer not null,
-  ended_at_ms integer
+CREATE TABLE IF NOT EXISTS entries (
+  entry_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+  seq_no INTEGER NOT NULL,
+  entry_kind TEXT NOT NULL,
+  actor_id TEXT REFERENCES actors(actor_id) ON DELETE SET NULL,
+  parent_entry_id TEXT REFERENCES entries(entry_id) ON DELETE SET NULL,
+  external_entry_key TEXT,
+  text_body TEXT,
+  started_at TEXT,
+  ended_at TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
-create table if not exists conv_turn (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  session_id integer not null references conv_session(id) on delete cascade,
-  native_turn_id text,
-  turn_index integer not null,
-  actor text not null
+CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_session_seq
+  ON entries(session_id, seq_no);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+  artifact_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+  entry_id TEXT REFERENCES entries(entry_id) ON DELETE SET NULL,
+  artifact_kind TEXT NOT NULL,
+  uri TEXT NOT NULL,
+  mime_type TEXT,
+  sha256 TEXT,
+  size_bytes INTEGER,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
-create table if not exists conv_item (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  turn_id integer not null references conv_turn(id) on delete cascade,
-  item_type text not null,
-  tool_name text,
-  body_text text,
-  payload_json text
+CREATE TABLE IF NOT EXISTS anchors (
+  anchor_id TEXT PRIMARY KEY,
+  entry_id TEXT REFERENCES entries(entry_id) ON DELETE CASCADE,
+  artifact_id TEXT REFERENCES artifacts(artifact_id) ON DELETE CASCADE,
+  anchor_kind TEXT NOT NULL,
+  locator_json TEXT NOT NULL,
+  preview_text TEXT,
+  fingerprint TEXT
 );
 
-create table if not exists artifact (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  item_id integer not null references conv_item(id) on delete cascade,
-  uri text,
-  mime text,
-  sha256 blob,
-  bytes integer
+CREATE TABLE IF NOT EXISTS episodes (
+  episode_id TEXT PRIMARY KEY,
+  session_id TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
+  episode_kind TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  status TEXT,
+  confidence REAL NOT NULL DEFAULT 0.0,
+  extractor_version TEXT NOT NULL,
+  stale INTEGER NOT NULL DEFAULT 0
 );
 
-create table if not exists evidence_anchor (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  item_id integer not null references conv_item(id) on delete cascade,
-  selector_type text not null,
-  selector_json text not null,
-  quoted_text text
+CREATE TABLE IF NOT EXISTS claims (
+  claim_id TEXT PRIMARY KEY,
+  episode_id TEXT REFERENCES episodes(episode_id) ON DELETE CASCADE,
+  claim_kind TEXT NOT NULL,
+  statement TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.0,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
-create table if not exists execution_run (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  run_id text not null,
-  workspace_id text,
-  producer text not null,
-  mission_id text,
-  flow_id text,
-  mode text,
-  status text not null,
-  started_at_ms integer not null,
-  updated_at_ms integer not null,
-  last_event_type text not null
+CREATE TABLE IF NOT EXISTS claim_evidence (
+  claim_id TEXT NOT NULL REFERENCES claims(claim_id) ON DELETE CASCADE,
+  anchor_id TEXT NOT NULL REFERENCES anchors(anchor_id) ON DELETE CASCADE,
+  support_kind TEXT NOT NULL,
+  PRIMARY KEY (claim_id, anchor_id)
 );
 
-create table if not exists execution_task (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  run_id text not null,
-  task_id text not null,
-  workspace_id text,
-  producer text not null,
-  title text,
-  status text not null,
-  owner_role text,
-  updated_at_ms integer not null
+CREATE TABLE IF NOT EXISTS procedures (
+  procedure_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  goal TEXT,
+  steps_json TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.0,
+  extractor_version TEXT NOT NULL,
+  stale INTEGER NOT NULL DEFAULT 0
 );
 
-create table if not exists execution_check (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  run_id text not null,
-  task_id text,
-  name text not null,
-  status text not null,
-  details text,
-  updated_at_ms integer not null
+CREATE TABLE IF NOT EXISTS procedure_evidence (
+  procedure_id TEXT NOT NULL REFERENCES procedures(procedure_id) ON DELETE CASCADE,
+  anchor_id TEXT NOT NULL REFERENCES anchors(anchor_id) ON DELETE CASCADE,
+  support_kind TEXT NOT NULL,
+  PRIMARY KEY (procedure_id, anchor_id)
 );
 
-create table if not exists execution_approval (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  run_id text not null,
-  task_id text,
-  approval_id text not null,
-  kind text,
-  status text not null,
-  resume_token text,
-  updated_at_ms integer not null
+CREATE VIRTUAL TABLE IF NOT EXISTS entry_search_fts USING fts5(
+  entry_id UNINDEXED,
+  session_id UNINDEXED,
+  entry_kind UNINDEXED,
+  text_body
 );
 
-create table if not exists execution_event (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  raw_event_id text not null,
-  run_id text not null,
-  task_id text,
-  producer text not null,
-  role text,
-  event_type text not null,
-  status text,
-  body_text text,
-  occurred_at_ms integer not null
+CREATE VIRTUAL TABLE IF NOT EXISTS episode_search_fts USING fts5(
+  episode_id UNINDEXED,
+  episode_kind UNINDEXED,
+  summary
 );
 
-create table if not exists document_record (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  document_id text not null,
-  workspace_id text,
-  producer text not null,
-  kind text not null,
-  path text,
-  title text,
-  body_text text,
-  artifact_uri text,
-  artifact_mime text,
-  artifact_sha256 blob,
-  artifact_bytes integer,
-  updated_at_ms integer not null,
-  raw_event_id text not null
+CREATE VIRTUAL TABLE IF NOT EXISTS claim_search_fts USING fts5(
+  claim_id UNINDEXED,
+  claim_kind UNINDEXED,
+  statement
 );
 
-create table if not exists episode (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  workspace_id integer references workspace(id) on delete set null,
-  problem_signature text not null,
-  status text not null,
-  opened_at_ms integer not null,
-  closed_at_ms integer
-);
-
-create table if not exists episode_member (
-  episode_id integer not null references episode(id) on delete cascade,
-  turn_id integer not null references conv_turn(id) on delete cascade,
-  primary key (episode_id, turn_id)
-);
-
-create table if not exists insight (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  episode_id integer not null references episode(id) on delete cascade,
-  kind text not null,
-  summary text not null,
-  normalized_text text not null,
-  extractor_version text not null,
-  confidence real not null,
-  stale integer not null default 0
-);
-
-create virtual table if not exists insight_fts using fts5(
-  summary,
-  content='insight',
-  content_rowid='id'
-);
-
-create table if not exists verification (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  episode_id integer not null references episode(id) on delete cascade,
-  kind text not null,
-  status text not null,
-  summary text,
-  evidence_id integer references evidence_anchor(id) on delete set null
-);
-
-create table if not exists search_doc_redacted (
-  id integer primary key autoincrement,
-  stable_id text not null default '',
-  episode_id integer not null references episode(id) on delete cascade,
-  body text not null
-);
-
-create virtual table if not exists search_doc_redacted_fts using fts5(
-  body,
-  content='search_doc_redacted',
-  content_rowid='id'
+CREATE VIRTUAL TABLE IF NOT EXISTS procedure_search_fts USING fts5(
+  procedure_id UNINDEXED,
+  title,
+  goal,
+  steps_text
 );
