@@ -107,10 +107,22 @@ fn redesign_pipeline_projects_and_derives_generic_kernel_rows() {
 
     let sessions = app.list_sessions().expect("sessions");
     assert_eq!(sessions.len(), 4);
-    assert!(sessions.iter().any(|session| session.session_kind == "conversation"));
+    assert!(
+        sessions
+            .iter()
+            .any(|session| session.session_kind == "conversation")
+    );
     assert!(sessions.iter().any(|session| session.session_kind == "run"));
-    assert!(sessions.iter().any(|session| session.session_kind == "task"));
-    assert!(sessions.iter().any(|session| session.session_kind == "import"));
+    assert!(
+        sessions
+            .iter()
+            .any(|session| session.session_kind == "task")
+    );
+    assert!(
+        sessions
+            .iter()
+            .any(|session| session.session_kind == "import")
+    );
 
     let conversation_id = sessions
         .iter()
@@ -145,7 +157,17 @@ fn redesign_pipeline_projects_and_derives_generic_kernel_rows() {
     assert_eq!(imported.entries.len(), 1);
     assert_eq!(imported.entries[0].artifacts.len(), 1);
 
-    let episode_id = app.list_cases().expect("cases")[0].case_id.clone();
+    let episode_id = app
+        .list_cases()
+        .expect("cases")
+        .into_iter()
+        .find(|case| {
+            case.commands
+                .iter()
+                .any(|command| command.contains("cargo test -q"))
+        })
+        .expect("case with command")
+        .case_id;
 
     let claims_before = app
         .search_claims(SearchClaimsRequest {
@@ -186,10 +208,11 @@ fn redesign_pipeline_projects_and_derives_generic_kernel_rows() {
 
     let case = app.get_case(&episode_id).expect("case");
     assert_eq!(case.workspace_root.as_deref(), Some("/workspace/demo"));
-    assert!(case
-        .commands
-        .iter()
-        .any(|command| command.contains("cargo test -q")));
+    assert!(
+        case.commands
+            .iter()
+            .any(|command| command.contains("cargo test -q"))
+    );
 }
 
 #[test]
@@ -237,14 +260,16 @@ fn duplicate_dedupe_and_source_cursor_upsert_are_idempotent() {
         .plan_append_raw_events(sample_request())
         .expect("first ingest plan");
     assert_eq!(first_plan.skipped_dedupe_keys.len(), 0);
-    app.apply_ingest_plan(&first_plan).expect("apply first ingest");
+    app.apply_ingest_plan(&first_plan)
+        .expect("apply first ingest");
 
     let second_plan = app
         .plan_append_raw_events(sample_request())
         .expect("second ingest plan");
     assert_eq!(second_plan.receipts.len(), 0);
     assert_eq!(second_plan.skipped_dedupe_keys.len(), 5);
-    app.apply_ingest_plan(&second_plan).expect("apply second ingest");
+    app.apply_ingest_plan(&second_plan)
+        .expect("apply second ingest");
 
     let cursor_request: UpsertSourceCursorRequest = serde_json::from_value(serde_json::json!({
         "connector": "relay",
@@ -265,7 +290,9 @@ fn duplicate_dedupe_and_source_cursor_upsert_are_idempotent() {
 
     let conn = Connection::open(app.db_path()).expect("open sqlite");
     let receipt_count: i64 = conn
-        .query_row("select count(*) from ingress_receipts", [], |row| row.get(0))
+        .query_row("select count(*) from ingress_receipts", [], |row| {
+            row.get(0)
+        })
         .expect("receipt count");
     assert_eq!(receipt_count, 5);
 
@@ -281,6 +308,14 @@ fn duplicate_dedupe_and_source_cursor_upsert_are_idempotent() {
         )
         .expect("cursor value");
     assert_eq!(cursor_value, "cursor-1");
+    let cursor_metadata: String = conn
+        .query_row(
+            "select metadata_json from source_cursor where connector = 'relay' and cursor_key = 'chat'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("cursor metadata");
+    assert_eq!(cursor_metadata, "{}");
 }
 
 #[test]
@@ -297,8 +332,11 @@ fn schema_contains_only_new_projection_tables() {
         "artifacts",
         "anchors",
         "episodes",
+        "insights",
+        "verifications",
         "claims",
         "procedures",
+        "search_docs",
     ] {
         let exists: i64 = conn
             .query_row(
@@ -368,4 +406,27 @@ fn legacy_raw_event_table_is_backfilled_into_ingress_receipts() {
     let report = app.doctor_report().expect("doctor");
     assert_eq!(report.ingress_receipts, 1);
     assert!(fs::metadata(temp.path().join("context.db")).is_ok());
+}
+
+#[test]
+fn derivation_plan_materializes_search_docs_before_apply() {
+    let temp = tempdir().expect("tempdir");
+    let app = axiomsync::open(temp.path()).expect("app");
+    let ingest = app
+        .plan_append_raw_events(sample_request())
+        .expect("plan ingest");
+    app.apply_ingest_plan(&ingest).expect("apply ingest");
+
+    let projection = app.build_projection_plan().expect("projection plan");
+    app.apply_projection_plan(&projection)
+        .expect("apply projection plan");
+
+    let derivation = app.build_derivation_plan().expect("derivation plan");
+    assert!(!derivation.search_docs.is_empty());
+    assert!(
+        derivation
+            .search_docs
+            .iter()
+            .any(|doc| doc.subject_kind == "insight")
+    );
 }

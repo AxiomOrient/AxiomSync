@@ -1,8 +1,9 @@
 use axiomsync_domain::domain::{
-    AppendRawEventsRequest, IngestPlan, IngressReceiptRow, SourceCursorRow, SourceCursorUpsertPlan,
-    UpsertSourceCursorRequest, canonical_json_string, stable_id,
+    AppendRawEventsRequest, IngestPlan, IngressReceiptRow, RawArtifactInput, SourceCursorRow,
+    SourceCursorUpsertPlan, UpsertSourceCursorRequest, canonical_json_string, stable_id,
 };
 use axiomsync_domain::error::Result;
+use serde_json::{Value, json};
 
 pub fn plan_append_raw_events(
     request: &AppendRawEventsRequest,
@@ -16,40 +17,55 @@ pub fn plan_append_raw_events(
     let mut receipts = Vec::new();
     let mut skipped = Vec::new();
     for event in &request.events {
-        let dedupe_key = event
-            .dedupe_key
+        let connector = event.resolved_connector(request.source.as_ref())?;
+        let source_kind = event.resolved_source_kind(request.source.as_ref())?;
+        let workspace_root = event
+            .workspace_root
             .clone()
-            .or_else(|| {
-                Some(stable_id(
-                    "dedupe",
-                    &(
-                        event.normalized_source_kind(),
-                        event.normalized_session_kind(),
-                        event.normalized_session_key().ok(),
-                        event.external_entry_key.as_deref(),
-                        event.normalized_event_kind().ok(),
-                        event.normalized_observed_at().ok(),
-                        event.normalized_content_hash().ok(),
-                    ),
-                ))
-            });
+            .or_else(|| hint_string(&event.hints, "workspace_root"));
+        let artifacts = normalized_artifacts(event)?;
+        let dedupe_key = event.dedupe_key.clone().or_else(|| {
+            Some(stable_id(
+                "dedupe",
+                &(
+                    source_kind.as_str(),
+                    event.normalized_session_kind(),
+                    event.normalized_session_key().ok(),
+                    event.external_entry_key.as_deref(),
+                    event.normalized_event_kind().ok(),
+                    event.normalized_observed_at().ok(),
+                    event.normalized_content_hash().ok(),
+                ),
+            ))
+        });
         if let Some(key) = dedupe_key.as_ref()
             && existing_dedupe_keys.iter().any(|existing| existing == key)
         {
             skipped.push(key.clone());
             continue;
         }
-        let artifacts_json = serde_json::to_string(&event.artifacts)?;
+        let artifacts_json = serde_json::to_string(&artifacts)?;
         let payload_json = canonical_json_string(&event.payload);
-        let raw_payload_json = event
-            .raw_payload
-            .as_ref()
-            .map(canonical_json_string);
+        let normalized_json = canonical_json_string(&json!({
+            "source_kind": source_kind.clone(),
+            "connector_name": connector.clone(),
+            "session_kind": event.normalized_session_kind(),
+            "workspace_root": workspace_root.clone(),
+            "event_kind": event.normalized_event_kind()?,
+            "external_session_key": event.normalized_session_key()?,
+            "external_entry_key": event.external_entry_key.clone(),
+            "observed_at": event.normalized_observed_at()?,
+            "captured_at": event.normalized_captured_at()?,
+            "payload": event.payload.clone(),
+            "hints": event.hints.clone(),
+            "artifacts": artifacts.clone(),
+        }));
+        let raw_payload_json = event.raw_payload.as_ref().map(canonical_json_string);
         let receipt_id = stable_id(
             "receipt",
             &(
                 batch_id.as_str(),
-                event.normalized_source_kind(),
+                source_kind.as_str(),
                 event.normalized_session_key()?,
                 event.external_entry_key.as_deref(),
                 event.normalized_event_kind()?,
@@ -60,20 +76,24 @@ pub fn plan_append_raw_events(
         receipts.push(IngressReceiptRow {
             receipt_id,
             batch_id: batch_id.clone(),
-            source_kind: event.normalized_source_kind().to_string(),
-            connector: event.source.clone(),
+            source_kind,
+            connector,
             session_kind: event.normalized_session_kind().to_string(),
             external_session_key: Some(event.normalized_session_key()?),
             external_entry_key: event.external_entry_key.clone(),
             event_kind: event.normalized_event_kind()?,
             observed_at: event.normalized_observed_at()?,
-            captured_at: event.captured_at.clone(),
-            workspace_root: event.workspace_root.clone(),
+            captured_at: event.normalized_captured_at()?,
+            workspace_root,
             content_hash: event.normalized_content_hash()?,
             dedupe_key,
             payload_json,
             raw_payload_json,
             artifacts_json,
+            normalized_json,
+            projection_state: "pending".to_string(),
+            derived_state: "pending".to_string(),
+            index_state: "pending".to_string(),
         });
     }
     Ok(IngestPlan {
@@ -93,6 +113,61 @@ pub fn plan_source_cursor_upsert(
             cursor_key: request.cursor.cursor_key.clone(),
             cursor_value: request.cursor.cursor_value.clone(),
             updated_at: request.cursor.normalized_updated_at()?,
+            metadata_json: request.cursor.metadata.clone(),
         },
     })
+}
+
+fn hint_string(hints: &Value, key: &str) -> Option<String> {
+    hints
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn normalized_artifacts(
+    event: &axiomsync_domain::domain::RawEventInput,
+) -> Result<Vec<RawArtifactInput>> {
+    let mut artifacts = event.artifacts.clone();
+    if let Some(values) = event.payload.get("artifacts").and_then(Value::as_array) {
+        for value in values {
+            let artifact_kind = value
+                .get("artifact_kind")
+                .and_then(Value::as_str)
+                .filter(|raw| !raw.trim().is_empty())
+                .unwrap_or("file")
+                .to_string();
+            let uri = value
+                .get("uri")
+                .or_else(|| value.get("path"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if uri.trim().is_empty() {
+                continue;
+            }
+            let artifact = RawArtifactInput {
+                artifact_kind,
+                uri,
+                mime_type: value
+                    .get("mime_type")
+                    .or_else(|| value.get("mime"))
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                sha256: value
+                    .get("sha256")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                size_bytes: value
+                    .get("size_bytes")
+                    .or_else(|| value.get("bytes"))
+                    .and_then(Value::as_i64),
+                metadata_json: value.clone(),
+            };
+            artifact.validate()?;
+            artifacts.push(artifact);
+        }
+    }
+    Ok(artifacts)
 }

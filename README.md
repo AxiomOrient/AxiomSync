@@ -18,6 +18,8 @@ Universal agent memory kernel for recording immutable raw records into a single 
 - Public surfaces: CLI, HTTP API, MCP (`stdio` + HTTP), Maud web UI
 - Canonical HTTP base: `http://127.0.0.1:4400`
 - Canonical sink paths: `/sink/raw-events/plan`, `/sink/raw-events/apply`, `/sink/source-cursors/plan`, `/sink/source-cursors/apply`
+- Canonical query helpers: `search_insights`, `find_fix`, `find_decision`, `find_runbook`, `get_evidence_bundle`
+- Unified retrieval helper: `search_docs`
 
 ## Security Notes
 - `auth.json` stores hashed workspace grants plus hashed global admin tokens and is written with owner-only permissions on Unix.
@@ -34,14 +36,15 @@ cargo run -p axiomsync -- sink plan-append-raw-events --file /tmp/raw-events.jso
 cargo run -p axiomsync -- sink apply-ingest-plan --file /tmp/ingest-plan.json
 cargo run -p axiomsync -- sink plan-upsert-source-cursor --file /tmp/cursor.json
 cargo run -p axiomsync -- sink apply-source-cursor-plan --file /tmp/cursor-plan.json
-cargo run -p axiomsync -- project plan-rebuild
-cargo run -p axiomsync -- project apply-replay-plan --file /tmp/replay-plan.json
-cargo run -p axiomsync -- derive plan
-cargo run -p axiomsync -- derive apply-plan --file /tmp/derive-plan.json
-cargo run -p axiomsync -- search "timeout error"
+cargo run -p axiomsync -- project rebuild
+cargo run -p axiomsync -- project doctor
+cargo run -p axiomsync -- query search-docs --file /tmp/search-docs.json
+cargo run -p axiomsync -- query search-insights --file /tmp/search-insights.json
+cargo run -p axiomsync -- query find-fix --file /tmp/find-fix.json
+cargo run -p axiomsync -- query get-evidence-bundle --subject-kind insight --subject-id insight_123
 cargo run -p axiomsync -- project plan-auth-grant --workspace-root /repo/app --token secret-token
 cargo run -p axiomsync -- project plan-admin-grant --token admin-secret-token
-cargo run -p axiomsync -- web --addr 127.0.0.1:4400
+cargo run -p axiomsync -- serve --addr 127.0.0.1:4400
 ```
 
 ## Canonical Sink Flow
@@ -49,20 +52,20 @@ cargo run -p axiomsync -- web --addr 127.0.0.1:4400
 - `sink apply-ingest-plan`: apply a previously serialized `IngestPlan`
 - `sink plan-upsert-source-cursor`: build `SourceCursorUpsertPlan` without mutating the store
 - `sink apply-source-cursor-plan`: apply a previously serialized cursor plan
-- `web`: serves `GET /health`, query/admin routes, and `/sink/*` on one server
+- sink input accepts both the legacy flat event shape and the final-form envelope shape with root `source.{source_kind,connector_name}` plus `events[]`
+- `serve`: serves `GET /health`, query/admin routes, and `/sink/*` on one server
 - external collectors and edge runtimes integrate only through these `sink` routes or equivalent CLI commands
 
 ## Kernel Flow
-- `project plan-rebuild`: produce `ReplayPlan` from current raw ledger plus collected enrichment
-- `project apply-replay-plan`: apply a previously serialized `ReplayPlan`
-- `derive plan`: collect derivation enrichment and produce `DerivePlan`
-- `derive apply-plan`: apply a previously serialized `DerivePlan`
-- `mcp serve`: expose canonical `search_cases`, `get_case`, `get_thread`, `get_evidence`, `list_runs`, `get_run`, `list_documents`, `get_document`
+- `project rebuild`: replay projection and derivation from the raw ledger
+- `project doctor`: report counts for receipts, projected rows, derived rows, and pending projection/derivation/index work
+- `mcp serve`: expose canonical session/episode/insight/procedure resources plus compatibility aliases
 
 ## Canonical Query Model
-- canonical nouns: `case`, `thread`, `run`, `task`, `document`, `evidence`
-- legacy aliases remain available for compatibility: `episode`, `runbook`
-- record ingestion accepts multiple producers such as `codex`, `claude_code`, `gemini_cli`, and internal runtimes
+- canonical nouns: `session`, `entry`, `artifact`, `anchor`, `episode`, `insight`, `procedure`
+- compatibility aliases remain available: `claim`, `case`, `thread`, `runbook`, `task`, `document`, `evidence`
+- derived knowledge is centered on `episodes + insights + verifications + procedures`; `claims` remains a compatibility read model
+- record ingestion accepts multiple producers such as `codex`, `claude_code`, `gemini_cli`, AxiomRelay, and AxiomRams
 
 ## Release Docs
 - Runtime/API: [`docs/API_CONTRACT.md`](./docs/API_CONTRACT.md)
@@ -78,6 +81,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace -- --nocapture
 cargo run -p axiomsync -- --help
 cargo run -p axiomsync -- sink --help
-cargo run -p axiomsync -- web --help
+cargo run -p axiomsync -- serve --help
 cargo run -p axiomsync -- mcp serve --help
 ```

@@ -25,10 +25,12 @@
 
 Sink routes live on the main `web` server. Default base URL is `http://127.0.0.1:4400`.
 These routes are intentionally unauthenticated but are enforced as loopback-only by source address.
+Canonical server entrypoint is `axiomsync serve`.
 
 ## Request Shapes
 
 ### `POST /sink/raw-events/plan`
+Legacy flat event shape:
 ```json
 {
   "request_id": "req-1",
@@ -46,6 +48,32 @@ These routes are intentionally unauthenticated but are enforced as loopback-only
 }
 ```
 
+Final-form compatible envelope shape:
+```json
+{
+  "batch_id": "relay-2026-03-23T12:00:00Z-001",
+  "source": {
+    "source_kind": "axiomrelay",
+    "connector_name": "chatgpt_web_selection"
+  },
+  "events": [
+    {
+      "native_session_id": "chatgpt:abc123",
+      "native_entry_id": "msg_42",
+      "event_type": "selection_captured",
+      "captured_at_ms": 1710000000000,
+      "observed_at_ms": 1710000000123,
+      "payload": {},
+      "hints": {
+        "session_kind": "conversation",
+        "entry_kind": "message",
+        "workspace_root": "/workspace/demo"
+      }
+    }
+  ]
+}
+```
+
 ### `POST /sink/raw-events/apply`
 Request body is a serialized `IngestPlan`.
 
@@ -56,7 +84,10 @@ Request body is a serialized `IngestPlan`.
   "cursor": {
     "cursor_key": "events",
     "cursor_value": "cursor-1",
-    "updated_at_ms": 1710000000000
+    "updated_at_ms": 1710000000000,
+    "metadata": {
+      "checkpoint": "spool-offset-1"
+    }
   }
 }
 ```
@@ -69,7 +100,7 @@ Request body is a serialized `SourceCursorUpsertPlan`.
 - `/sink/raw-events/apply` returns the apply transaction result
 - `/sink/source-cursors/plan` returns `SourceCursorUpsertPlan`
 - `/sink/source-cursors/apply` returns the apply transaction result
-- `/health` returns main runtime health metadata with DB path
+- `/health` returns main runtime health metadata with DB path plus pending projection/derivation/index counts
 
 ## Error Semantics
 - invalid payload: `400`

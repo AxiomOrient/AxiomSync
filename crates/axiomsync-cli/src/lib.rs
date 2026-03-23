@@ -6,9 +6,9 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use axiomsync_domain::domain::{
-    AdminTokenPlan, AppendRawEventsRequest, IngestPlan, SearchClaimsRequest, SearchEntriesRequest,
-    SearchEpisodesRequest, SearchProceduresRequest, SourceCursorUpsertPlan,
-    UpsertSourceCursorRequest, WorkspaceTokenPlan,
+    AdminTokenPlan, AppendRawEventsRequest, IngestPlan, SearchClaimsRequest, SearchDocsRequest,
+    SearchEntriesRequest, SearchEpisodesRequest, SearchInsightsRequest, SearchProceduresRequest,
+    SourceCursorUpsertPlan, UpsertSourceCursorRequest, WorkspaceTokenPlan,
 };
 use axiomsync_kernel::AxiomSync;
 
@@ -94,8 +94,14 @@ pub struct QueryArgs {
 pub enum QueryCommand {
     SearchEntries(SearchFileArg),
     SearchEpisodes(SearchFileArg),
+    SearchDocs(SearchFileArg),
+    SearchInsights(SearchFileArg),
     SearchClaims(SearchFileArg),
     SearchProcedures(SearchFileArg),
+    FindFix(SearchFileArg),
+    FindDecision(SearchFileArg),
+    FindRunbook(SearchFileArg),
+    GetEvidenceBundle(EvidenceBundleArg),
     GetSession(IdArg),
     GetEntry(IdArg),
     GetArtifact(IdArg),
@@ -114,6 +120,14 @@ pub struct SearchFileArg {
 #[derive(Debug, Args)]
 pub struct IdArg {
     pub id: String,
+}
+
+#[derive(Debug, Args)]
+pub struct EvidenceBundleArg {
+    #[arg(long)]
+    pub subject_kind: String,
+    #[arg(long)]
+    pub subject_id: String,
 }
 
 #[derive(Debug, Args)]
@@ -180,7 +194,9 @@ where
             }
             SinkCommand::PlanUpsertSourceCursor(file) => {
                 let request: UpsertSourceCursorRequest = load_json_file(&file.file)?;
-                print_json(&serde_json::to_value(app.plan_source_cursor_upsert(request)?)?)?;
+                print_json(&serde_json::to_value(
+                    app.plan_source_cursor_upsert(request)?,
+                )?)?;
             }
             SinkCommand::ApplySourceCursorPlan(file) => {
                 let plan: SourceCursorUpsertPlan = load_json_file(&file.file)?;
@@ -223,6 +239,14 @@ where
                 let request: SearchEpisodesRequest = load_json_file(&file.file)?;
                 print_json(&serde_json::to_value(app.search_episodes(request)?)?)?;
             }
+            QueryCommand::SearchDocs(file) => {
+                let request: SearchDocsRequest = load_json_file(&file.file)?;
+                print_json(&serde_json::to_value(app.search_docs(request)?)?)?;
+            }
+            QueryCommand::SearchInsights(file) => {
+                let request: SearchInsightsRequest = load_json_file(&file.file)?;
+                print_json(&serde_json::to_value(app.search_insights(request)?)?)?;
+            }
             QueryCommand::SearchClaims(file) => {
                 let request: SearchClaimsRequest = load_json_file(&file.file)?;
                 print_json(&serde_json::to_value(app.search_claims(request)?)?)?;
@@ -230,6 +254,23 @@ where
             QueryCommand::SearchProcedures(file) => {
                 let request: SearchProceduresRequest = load_json_file(&file.file)?;
                 print_json(&serde_json::to_value(app.search_procedures(request)?)?)?;
+            }
+            QueryCommand::FindFix(file) => {
+                let request: SearchInsightsRequest = load_json_file(&file.file)?;
+                print_json(&serde_json::to_value(app.find_fix(request)?)?)?;
+            }
+            QueryCommand::FindDecision(file) => {
+                let request: SearchInsightsRequest = load_json_file(&file.file)?;
+                print_json(&serde_json::to_value(app.find_decision(request)?)?)?;
+            }
+            QueryCommand::FindRunbook(file) => {
+                let request: SearchProceduresRequest = load_json_file(&file.file)?;
+                print_json(&serde_json::to_value(app.find_runbook(request)?)?)?;
+            }
+            QueryCommand::GetEvidenceBundle(arg) => {
+                print_json(&serde_json::to_value(
+                    app.get_evidence_bundle(&arg.subject_kind, &arg.subject_id)?,
+                )?)?;
             }
             QueryCommand::GetSession(id) => {
                 print_json(&serde_json::to_value(app.get_session(&id.id)?)?)?;
@@ -273,7 +314,9 @@ where
                 addr,
                 workspace_id,
             } => match transport {
-                McpTransport::Stdio => runtime()?.block_on(axiomsync_mcp::serve_stdio(app, workspace_id.as_deref()))?,
+                McpTransport::Stdio => {
+                    runtime()?.block_on(axiomsync_mcp::serve_stdio(app, workspace_id.as_deref()))?
+                }
                 McpTransport::Http => runtime()?.block_on(axiomsync_http::serve(app, addr))?,
             },
         },

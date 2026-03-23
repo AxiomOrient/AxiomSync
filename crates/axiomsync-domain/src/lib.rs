@@ -1,7 +1,7 @@
 pub mod error;
 
-mod model;
 pub mod domain;
+mod model;
 
-pub use model::*;
 pub use error::{AxiomError, Result};
+pub use model::*;

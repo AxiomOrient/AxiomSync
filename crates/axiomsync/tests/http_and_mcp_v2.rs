@@ -2,7 +2,10 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-use axiomsync::domain::{AppendRawEventsRequest, SearchClaimsRequest, SearchProceduresRequest, SearchFilter, workspace_stable_id};
+use axiomsync::domain::{
+    AppendRawEventsRequest, SearchClaimsRequest, SearchFilter, SearchInsightsRequest,
+    SearchProceduresRequest, workspace_stable_id,
+};
 use tempfile::tempdir;
 
 struct SeededApp {
@@ -14,6 +17,7 @@ struct SeededApp {
     artifact_id: String,
     anchor_id: String,
     episode_id: String,
+    insight_id: String,
     claim_id: String,
     procedure_id: String,
     task_id: String,
@@ -142,6 +146,15 @@ fn seed_app() -> SeededApp {
         .expect("claims")[0]
         .id
         .clone();
+    let insight_id = app
+        .search_insights(SearchInsightsRequest {
+            query: "rebuild".to_string(),
+            limit: 10,
+            filter: SearchFilter::default(),
+        })
+        .expect("insights")[0]
+        .id
+        .clone();
     let procedure_id = app
         .search_procedures(SearchProceduresRequest {
             query: "cargo test".to_string(),
@@ -166,6 +179,7 @@ fn seed_app() -> SeededApp {
         artifact_id: artifact_id.clone(),
         anchor_id: anchor_id.clone(),
         episode_id,
+        insight_id,
         claim_id,
         procedure_id,
         task_id,
@@ -179,6 +193,18 @@ fn seed_app() -> SeededApp {
 async fn canonical_and_compat_http_routes_work_with_auth() {
     let seeded = seed_app();
     let router = axiomsync::http_api::router(seeded.app.clone());
+
+    let health = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(health.status(), StatusCode::OK);
 
     for uri in [
         format!("/api/sessions/{}", seeded.session_id),
@@ -200,7 +226,10 @@ async fn canonical_and_compat_http_routes_work_with_auth() {
             .oneshot(
                 Request::builder()
                     .uri(uri)
-                    .header("authorization", format!("Bearer {}", seeded.workspace_token))
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", seeded.workspace_token),
+                    )
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -238,6 +267,8 @@ async fn canonical_and_compat_http_routes_work_with_auth() {
     for path in [
         "/api/query/search-entries",
         "/api/query/search-episodes",
+        "/api/query/search-docs",
+        "/api/query/search-insights",
         "/api/query/search-claims",
         "/api/query/search-procedures",
     ] {
@@ -248,7 +279,10 @@ async fn canonical_and_compat_http_routes_work_with_auth() {
                     .uri(path)
                     .method("POST")
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {}", seeded.workspace_token))
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", seeded.workspace_token),
+                    )
                     .body(Body::from(
                         serde_json::json!({
                             "query": "rebuild",
@@ -262,6 +296,58 @@ async fn canonical_and_compat_http_routes_work_with_auth() {
             .await
             .expect("response");
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    for (path, payload) in [
+        (
+            "/api/query/find-fix",
+            serde_json::json!({
+                "query": "rebuild",
+                "limit": 10,
+                "filter": { "workspace_root": "/workspace/http" }
+            }),
+        ),
+        (
+            "/api/query/find-decision",
+            serde_json::json!({
+                "query": "sink narrow",
+                "limit": 10,
+                "filter": { "workspace_root": "/workspace/http" }
+            }),
+        ),
+        (
+            "/api/query/find-runbook",
+            serde_json::json!({
+                "query": "cargo test",
+                "limit": 10,
+                "filter": { "workspace_root": "/workspace/http" }
+            }),
+        ),
+        (
+            "/api/query/evidence-bundle",
+            serde_json::json!({
+                "subject_kind": "insight",
+                "subject_id": seeded.insight_id
+            }),
+        ),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", seeded.workspace_token),
+                    )
+                    .body(Body::from(payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK, "path {path}");
     }
 
     for path in [
@@ -302,6 +388,10 @@ fn mcp_exposes_canonical_resources_and_compat_aliases() {
     let workspace_id = workspace_stable_id("/workspace/http");
 
     for uri in [
+        format!("session://{}", seeded.session_id),
+        format!("episode://{}", seeded.episode_id),
+        format!("insight://{}", seeded.insight_id),
+        format!("procedure://{}", seeded.procedure_id),
         format!("axiom://sessions/{}", seeded.session_id),
         format!("axiom://entries/{}", seeded.entry_id),
         format!("axiom://artifacts/{}", seeded.artifact_id),
@@ -351,7 +441,13 @@ fn mcp_exposes_canonical_resources_and_compat_aliases() {
         .iter()
         .map(|resource| resource["uri"].as_str().unwrap_or_default().to_string())
         .collect::<Vec<_>>();
-    assert!(resource_uris.iter().any(|uri| uri == "axiom://sessions/{id}"));
+    assert!(
+        resource_uris
+            .iter()
+            .any(|uri| uri == "axiom://sessions/{id}")
+    );
+    assert!(resource_uris.iter().any(|uri| uri == "session://{id}"));
+    assert!(resource_uris.iter().any(|uri| uri == "insight://{id}"));
     assert!(resource_uris.iter().any(|uri| uri == "axiom://tasks/{id}"));
 
     let tools = axiomsync::mcp::handle_request(
@@ -367,6 +463,12 @@ fn mcp_exposes_canonical_resources_and_compat_aliases() {
         .map(|tool| tool["name"].as_str().unwrap_or_default().to_string())
         .collect::<Vec<_>>();
     assert!(tool_names.iter().any(|name| name == "search_entries"));
+    assert!(tool_names.iter().any(|name| name == "search_docs"));
+    assert!(tool_names.iter().any(|name| name == "search_insights"));
+    assert!(tool_names.iter().any(|name| name == "find_fix"));
+    assert!(tool_names.iter().any(|name| name == "find_decision"));
+    assert!(tool_names.iter().any(|name| name == "find_runbook"));
+    assert!(tool_names.iter().any(|name| name == "get_evidence_bundle"));
     assert!(tool_names.iter().any(|name| name == "get_task"));
 
     let task_tool = axiomsync::mcp::handle_request(
@@ -394,4 +496,73 @@ fn mcp_exposes_canonical_resources_and_compat_aliases() {
     )
     .expect("runbook tool");
     assert!(procedure_tool.get("result").is_some());
+
+    for (id, name, arguments) in [
+        (
+            7,
+            "search_docs",
+            serde_json::json!({
+                "query": "rebuild",
+                "limit": 10,
+                "filter": { "workspace_root": "/workspace/http" }
+            }),
+        ),
+        (
+            8,
+            "search_insights",
+            serde_json::json!({
+                "query": "rebuild",
+                "limit": 10,
+                "filter": { "workspace_root": "/workspace/http" }
+            }),
+        ),
+        (
+            9,
+            "find_fix",
+            serde_json::json!({
+                "query": "rebuild",
+                "limit": 10,
+                "filter": { "workspace_root": "/workspace/http" }
+            }),
+        ),
+        (
+            10,
+            "find_decision",
+            serde_json::json!({
+                "query": "sink narrow",
+                "limit": 10,
+                "filter": { "workspace_root": "/workspace/http" }
+            }),
+        ),
+        (
+            11,
+            "find_runbook",
+            serde_json::json!({
+                "query": "cargo test",
+                "limit": 10,
+                "filter": { "workspace_root": "/workspace/http" }
+            }),
+        ),
+        (
+            12,
+            "get_evidence_bundle",
+            serde_json::json!({
+                "subject_kind": "insight",
+                "subject_id": seeded.insight_id
+            }),
+        ),
+    ] {
+        let response = axiomsync::mcp::handle_request(
+            &seeded.app,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": { "name": name, "arguments": arguments }
+            }),
+            Some(&workspace_id),
+        )
+        .expect("canonical tool");
+        assert!(response.get("result").is_some(), "tool {name}");
+    }
 }

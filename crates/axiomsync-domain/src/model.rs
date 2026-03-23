@@ -92,6 +92,23 @@ impl RawArtifactInput {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchSourceInput {
+    pub source_kind: String,
+    pub connector_name: String,
+}
+
+impl BatchSourceInput {
+    pub fn validate(&self) -> Result<()> {
+        if self.source_kind.trim().is_empty() || self.connector_name.trim().is_empty() {
+            return Err(AxiomError::Validation(
+                "batch source requires source_kind and connector_name".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RawEventInput {
     #[serde(default, rename = "source", alias = "connector")]
@@ -103,7 +120,7 @@ pub struct RawEventInput {
     pub session_kind: Option<String>,
     #[serde(default, alias = "native_session_id")]
     pub external_session_key: Option<String>,
-    #[serde(default, alias = "native_event_id")]
+    #[serde(default, alias = "native_event_id", alias = "native_entry_id")]
     pub external_entry_key: Option<String>,
     #[serde(default, alias = "event_type")]
     pub event_kind: Option<String>,
@@ -119,26 +136,58 @@ pub struct RawEventInput {
     pub dedupe_key: Option<String>,
     #[serde(default)]
     pub ts_ms: Option<i64>,
+    #[serde(default)]
+    pub observed_at_ms: Option<i64>,
+    #[serde(default)]
+    pub captured_at_ms: Option<i64>,
     #[serde(default = "empty_object")]
     pub payload: Value,
     #[serde(default)]
     pub raw_payload: Option<Value>,
     #[serde(default)]
     pub artifacts: Vec<RawArtifactInput>,
+    #[serde(default = "empty_object")]
+    pub hints: Value,
 }
 
 impl RawEventInput {
-    pub fn normalized_source_kind(&self) -> &str {
+    pub fn resolved_connector(&self, batch_source: Option<&BatchSourceInput>) -> Result<String> {
+        if !self.source.trim().is_empty() {
+            Ok(self.source.clone())
+        } else if let Some(source) = batch_source {
+            Ok(source.connector_name.clone())
+        } else {
+            Err(AxiomError::Validation(
+                "raw event input requires source/connector or batch.source.connector_name"
+                    .to_string(),
+            ))
+        }
+    }
+
+    pub fn resolved_source_kind(&self, batch_source: Option<&BatchSourceInput>) -> Result<String> {
         self.source_kind
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or(self.source.as_str())
+            .map(ToOwned::to_owned)
+            .or_else(|| batch_source.map(|source| source.source_kind.clone()))
+            .or_else(|| (!self.source.trim().is_empty()).then(|| self.source.clone()))
+            .ok_or_else(|| {
+                AxiomError::Validation(
+                    "raw event input requires source_kind or batch.source.source_kind".to_string(),
+                )
+            })
     }
 
     pub fn normalized_session_kind(&self) -> &str {
         self.session_kind
             .as_deref()
             .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                self.hints
+                    .get("session_kind")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+            })
             .unwrap_or("conversation")
     }
 
@@ -160,23 +209,50 @@ impl RawEventInput {
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .map(ToOwned::to_owned)
-            .ok_or_else(|| AxiomError::Validation("raw event input requires event_kind".to_string()))
+            .ok_or_else(|| {
+                AxiomError::Validation("raw event input requires event_kind".to_string())
+            })
     }
 
     pub fn normalized_observed_at(&self) -> Result<String> {
-        if let Some(value) = self.observed_at.as_deref().filter(|value| !value.trim().is_empty()) {
+        if let Some(value) = self
+            .observed_at
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             return Ok(value.to_string());
+        }
+        if let Some(ts_ms) = self.observed_at_ms {
+            return ts_ms_to_rfc3339(ts_ms);
         }
         if let Some(ts_ms) = self.ts_ms {
             return ts_ms_to_rfc3339(ts_ms);
         }
         Err(AxiomError::Validation(
-            "raw event input requires observed_at or ts_ms".to_string(),
+            "raw event input requires observed_at, observed_at_ms, or ts_ms".to_string(),
         ))
     }
 
+    pub fn normalized_captured_at(&self) -> Result<Option<String>> {
+        if let Some(value) = self
+            .captured_at
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            return Ok(Some(value.to_string()));
+        }
+        if let Some(ts_ms) = self.captured_at_ms {
+            return Ok(Some(ts_ms_to_rfc3339(ts_ms)?));
+        }
+        self.ts_ms.map(ts_ms_to_rfc3339).transpose()
+    }
+
     pub fn normalized_content_hash(&self) -> Result<String> {
-        if let Some(hash) = self.content_hash.as_deref().filter(|value| !value.trim().is_empty()) {
+        if let Some(hash) = self
+            .content_hash
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             return Ok(hash.to_string());
         }
         let mut hasher = Sha256::new();
@@ -187,12 +263,9 @@ impl RawEventInput {
         Ok(hex::encode(hasher.finalize()))
     }
 
-    pub fn validate(&self) -> Result<()> {
-        if self.source.trim().is_empty() {
-            return Err(AxiomError::Validation(
-                "raw event input requires source".to_string(),
-            ));
-        }
+    pub fn validate(&self, batch_source: Option<&BatchSourceInput>) -> Result<()> {
+        self.resolved_connector(batch_source)?;
+        self.resolved_source_kind(batch_source)?;
         self.normalized_session_key()?;
         self.normalized_event_kind()?;
         self.normalized_observed_at()?;
@@ -208,6 +281,8 @@ pub struct AppendRawEventsRequest {
     pub request_id: Option<String>,
     #[serde(default)]
     pub batch_id: Option<String>,
+    #[serde(default)]
+    pub source: Option<BatchSourceInput>,
     pub events: Vec<RawEventInput>,
 }
 
@@ -218,14 +293,17 @@ impl AppendRawEventsRequest {
                 "append_raw_events requires at least one event".to_string(),
             ));
         }
+        if let Some(source) = &self.source {
+            source.validate()?;
+        }
         for event in &self.events {
-            event.validate()?;
+            event.validate(self.source.as_ref())?;
         }
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CursorInput {
     pub cursor_key: String,
     pub cursor_value: String,
@@ -233,11 +311,17 @@ pub struct CursorInput {
     pub updated_at: Option<String>,
     #[serde(default)]
     pub updated_at_ms: Option<i64>,
+    #[serde(default = "empty_object")]
+    pub metadata: Value,
 }
 
 impl CursorInput {
     pub fn normalized_updated_at(&self) -> Result<String> {
-        if let Some(value) = self.updated_at.as_deref().filter(|value| !value.trim().is_empty()) {
+        if let Some(value) = self
+            .updated_at
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             return Ok(value.to_string());
         }
         if let Some(ts_ms) = self.updated_at_ms {
@@ -259,7 +343,7 @@ impl CursorInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UpsertSourceCursorRequest {
     #[serde(rename = "source", alias = "connector")]
     pub source: String,
@@ -295,14 +379,20 @@ pub struct IngressReceiptRow {
     pub payload_json: String,
     pub raw_payload_json: Option<String>,
     pub artifacts_json: String,
+    pub normalized_json: String,
+    pub projection_state: String,
+    pub derived_state: String,
+    pub index_state: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SourceCursorRow {
     pub connector: String,
     pub cursor_key: String,
     pub cursor_value: String,
     pub updated_at: String,
+    #[serde(default = "empty_object")]
+    pub metadata_json: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -333,7 +423,7 @@ impl IngestPlan {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SourceCursorUpsertPlan {
     pub cursor: SourceCursorRow,
 }
@@ -425,6 +515,38 @@ pub struct EpisodeRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InsightRow {
+    pub insight_id: String,
+    pub episode_id: Option<String>,
+    pub insight_kind: String,
+    pub statement: String,
+    pub confidence: f64,
+    #[serde(default = "empty_object")]
+    pub scope_json: Value,
+    #[serde(default = "empty_object")]
+    pub metadata_json: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InsightAnchorRow {
+    pub insight_id: String,
+    pub anchor_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VerificationRow {
+    pub verification_id: String,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub method: String,
+    pub status: String,
+    pub checked_at: String,
+    pub checker: Option<String>,
+    #[serde(default = "empty_object")]
+    pub details_json: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClaimRow {
     pub claim_id: String,
     pub episode_id: Option<String>,
@@ -449,6 +571,7 @@ pub struct ProcedureRow {
     pub goal: Option<String>,
     #[serde(default)]
     pub steps_json: Value,
+    pub status: Option<String>,
     pub confidence: f64,
     pub extractor_version: String,
     pub stale: bool,
@@ -464,10 +587,14 @@ pub struct ProcedureEvidenceRow {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DerivePlan {
     pub episodes: Vec<EpisodeRow>,
+    pub insights: Vec<InsightRow>,
+    pub insight_anchors: Vec<InsightAnchorRow>,
+    pub verifications: Vec<VerificationRow>,
     pub claims: Vec<ClaimRow>,
     pub claim_evidence: Vec<ClaimEvidenceRow>,
     pub procedures: Vec<ProcedureRow>,
     pub procedure_evidence: Vec<ProcedureEvidenceRow>,
+    pub search_docs: Vec<SearchDocsRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -511,12 +638,42 @@ pub struct SearchClaimsRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SearchInsightsRequest {
+    pub query: String,
+    #[serde(default)]
+    pub limit: usize,
+    #[serde(default)]
+    pub filter: SearchFilter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SearchDocsRequest {
+    pub query: String,
+    #[serde(default)]
+    pub limit: usize,
+    #[serde(default)]
+    pub filter: SearchFilter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SearchProceduresRequest {
     pub query: String,
     #[serde(default)]
     pub limit: usize,
     #[serde(default)]
     pub filter: SearchFilter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvidencePreview {
+    pub anchor_id: String,
+    pub preview_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerificationSummary {
+    pub status: String,
+    pub method: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -526,6 +683,8 @@ pub struct SearchHit {
     pub title: String,
     pub snippet: String,
     pub score: f64,
+    #[serde(default)]
+    pub evidence: Vec<EvidencePreview>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -567,6 +726,8 @@ pub type EvidenceView = AnchorView;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EpisodeView {
     pub episode: EpisodeRow,
+    pub insights: Vec<InsightRow>,
+    pub verifications: Vec<VerificationRow>,
     pub claims: Vec<ClaimRow>,
     pub procedures: Vec<ProcedureRow>,
 }
@@ -579,6 +740,8 @@ pub struct CaseRecord {
     pub root_cause: Option<String>,
     pub resolution: Option<String>,
     pub commands: Vec<String>,
+    #[serde(default)]
+    pub verification: Vec<VerificationSummary>,
     pub evidence: Vec<String>,
 }
 
@@ -590,7 +753,33 @@ pub struct RunbookRecord {
     pub root_cause: Option<String>,
     pub fix: Option<String>,
     pub commands: Vec<String>,
+    #[serde(default)]
+    pub verification: Vec<VerificationSummary>,
     pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SearchDocsRow {
+    pub doc_id: String,
+    pub doc_kind: String,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub title: Option<String>,
+    pub body: String,
+    #[serde(default = "empty_object")]
+    pub metadata_json: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvidenceBundle {
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub verification: Vec<VerificationSummary>,
+    #[serde(default)]
+    pub evidence: Vec<EvidencePreview>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -637,8 +826,13 @@ pub struct DoctorReport {
     pub sessions: usize,
     pub entries: usize,
     pub episodes: usize,
+    pub insights: usize,
+    pub verifications: usize,
     pub claims: usize,
     pub procedures: usize,
+    pub pending_projection_count: usize,
+    pub pending_derived_count: usize,
+    pub pending_index_count: usize,
 }
 
 pub fn empty_object() -> Value {

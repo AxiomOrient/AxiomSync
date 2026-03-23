@@ -18,6 +18,10 @@ CREATE TABLE IF NOT EXISTS ingress_receipts (
   payload_json TEXT NOT NULL,
   raw_payload_json TEXT,
   artifacts_json TEXT NOT NULL DEFAULT '[]',
+  normalized_json TEXT NOT NULL DEFAULT '{}',
+  projection_state TEXT NOT NULL DEFAULT 'pending',
+  derived_state TEXT NOT NULL DEFAULT 'pending',
+  index_state TEXT NOT NULL DEFAULT 'pending',
   inserted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -30,6 +34,7 @@ CREATE TABLE IF NOT EXISTS source_cursor (
   cursor_key TEXT NOT NULL,
   cursor_value TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
   PRIMARY KEY (connector, cursor_key)
 );
 
@@ -107,6 +112,33 @@ CREATE TABLE IF NOT EXISTS episodes (
   stale INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS insights (
+  insight_id TEXT PRIMARY KEY,
+  episode_id TEXT REFERENCES episodes(episode_id) ON DELETE CASCADE,
+  insight_kind TEXT NOT NULL,
+  statement TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.0,
+  scope_json TEXT NOT NULL DEFAULT '{}',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS insight_anchors (
+  insight_id TEXT NOT NULL REFERENCES insights(insight_id) ON DELETE CASCADE,
+  anchor_id TEXT NOT NULL REFERENCES anchors(anchor_id) ON DELETE CASCADE,
+  PRIMARY KEY (insight_id, anchor_id)
+);
+
+CREATE TABLE IF NOT EXISTS verifications (
+  verification_id TEXT PRIMARY KEY,
+  subject_kind TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  method TEXT NOT NULL,
+  status TEXT NOT NULL,
+  checked_at TEXT NOT NULL,
+  checker TEXT,
+  details_json TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE TABLE IF NOT EXISTS claims (
   claim_id TEXT PRIMARY KEY,
   episode_id TEXT REFERENCES episodes(episode_id) ON DELETE CASCADE,
@@ -128,6 +160,7 @@ CREATE TABLE IF NOT EXISTS procedures (
   title TEXT NOT NULL,
   goal TEXT,
   steps_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
   confidence REAL NOT NULL DEFAULT 0.0,
   extractor_version TEXT NOT NULL,
   stale INTEGER NOT NULL DEFAULT 0
@@ -159,9 +192,34 @@ CREATE VIRTUAL TABLE IF NOT EXISTS claim_search_fts USING fts5(
   statement
 );
 
+CREATE VIRTUAL TABLE IF NOT EXISTS insight_search_fts USING fts5(
+  insight_id UNINDEXED,
+  insight_kind UNINDEXED,
+  statement
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS procedure_search_fts USING fts5(
   procedure_id UNINDEXED,
   title,
   goal,
   steps_text
+);
+
+CREATE TABLE IF NOT EXISTS search_docs (
+  doc_id TEXT PRIMARY KEY,
+  doc_kind TEXT NOT NULL,
+  subject_kind TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  title TEXT,
+  body TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS search_docs_fts USING fts5(
+  doc_id UNINDEXED,
+  doc_kind UNINDEXED,
+  subject_kind UNINDEXED,
+  subject_id UNINDEXED,
+  title,
+  body
 );

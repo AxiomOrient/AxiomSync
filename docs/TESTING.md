@@ -9,16 +9,26 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace -- --nocapture
 cargo run -p axiomsync -- --help
 cargo run -p axiomsync -- sink --help
-cargo run -p axiomsync -- web --help
+cargo run -p axiomsync -- serve --help
 cargo run -p axiomsync -- mcp serve --help
 ```
 
 ## Regression Suites
-- `crates/axiomsync/tests/renewal_kernel.rs`
-- `crates/axiomsync/tests/sink_contract.rs`
-- `crates/axiomsync/tests/http_and_mcp.rs`
-- `crates/axiomsync/tests/domain_contracts.rs`
-- `crates/axiomsync/tests/process_contract.rs`
+- `crates/axiomsync/tests/kernel_redesign.rs`
+- `crates/axiomsync/tests/final_form_compat.rs`
+- `crates/axiomsync/tests/http_and_mcp_v2.rs`
+
+## Final-form Fixture Coverage
+- `axiomsync-final-form-docs-package/examples/raw_event.chatgpt_selection.json`
+- `axiomsync-final-form-docs-package/examples/raw_event.axiomrams_run_summary.json`
+- 검증 포인트:
+  - `kernel_sink_contract.json` schema validation
+  - root `source` envelope ingest
+  - nested payload projection (`selection.text`, `source_message.role`, `payload.artifacts`, `hints.entry_kind`)
+  - evidence-first derivation
+  - unified `search_docs` retrieval with evidence preview
+  - canonical HTTP/MCP helper surface
+  - pending projection/derivation/index counts
 
 ## Release Smoke
 ```bash

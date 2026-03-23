@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 
 use axiomsync_domain::domain::{
     AnchorRow, ArtifactRow, ClaimEvidenceRow, ClaimRow, DerivePlan, DoctorReport, EntryRow,
-    EpisodeRow, IngestPlan, IngressReceiptRow, ProcedureEvidenceRow, ProcedureRow, ProjectionPlan,
-    SessionRow, SourceCursorRow, SourceCursorUpsertPlan, stable_id,
+    EpisodeRow, IngestPlan, IngressReceiptRow, InsightAnchorRow, InsightRow, ProcedureEvidenceRow,
+    ProcedureRow, ProjectionPlan, SearchDocsRow, SessionRow, SourceCursorRow,
+    SourceCursorUpsertPlan, VerificationRow, stable_id,
 };
 use axiomsync_domain::error::{AxiomError, Result};
 use axiomsync_kernel::ports::RepositoryPort;
@@ -47,6 +48,7 @@ impl ContextDb {
         conn.execute_batch(include_str!("schema.sql"))
             .map_err(map_db_err)?;
         self.migrate_legacy(&mut conn)?;
+        self.migrate_current(&conn)?;
         Ok(())
     }
 
@@ -59,7 +61,9 @@ impl ContextDb {
             return Ok(());
         }
         let current_count: i64 = conn
-            .query_row("select count(*) from ingress_receipts", [], |row| row.get(0))
+            .query_row("select count(*) from ingress_receipts", [], |row| {
+                row.get(0)
+            })
             .map_err(map_db_err)?;
         if current_count == 0 {
             let tx = conn.transaction().map_err(map_db_err)?;
@@ -72,10 +76,96 @@ impl ContextDb {
         Ok(())
     }
 
-    fn with_tx<T>(
-        &self,
-        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
-    ) -> Result<T> {
+    fn migrate_current(&self, conn: &Connection) -> Result<()> {
+        ensure_column(
+            conn,
+            "ingress_receipts",
+            "normalized_json",
+            "TEXT NOT NULL DEFAULT '{}'",
+        )?;
+        ensure_column(
+            conn,
+            "ingress_receipts",
+            "projection_state",
+            "TEXT NOT NULL DEFAULT 'pending'",
+        )?;
+        ensure_column(
+            conn,
+            "ingress_receipts",
+            "derived_state",
+            "TEXT NOT NULL DEFAULT 'pending'",
+        )?;
+        ensure_column(
+            conn,
+            "ingress_receipts",
+            "index_state",
+            "TEXT NOT NULL DEFAULT 'pending'",
+        )?;
+        ensure_column(
+            conn,
+            "source_cursor",
+            "metadata_json",
+            "TEXT NOT NULL DEFAULT '{}'",
+        )?;
+        ensure_column(
+            conn,
+            "procedures",
+            "status",
+            "TEXT NOT NULL DEFAULT 'active'",
+        )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS insights (
+                insight_id TEXT PRIMARY KEY,
+                episode_id TEXT REFERENCES episodes(episode_id) ON DELETE CASCADE,
+                insight_kind TEXT NOT NULL,
+                statement TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.0,
+                scope_json TEXT NOT NULL DEFAULT '{}',
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE IF NOT EXISTS insight_anchors (
+                insight_id TEXT NOT NULL REFERENCES insights(insight_id) ON DELETE CASCADE,
+                anchor_id TEXT NOT NULL REFERENCES anchors(anchor_id) ON DELETE CASCADE,
+                PRIMARY KEY (insight_id, anchor_id)
+            );
+            CREATE TABLE IF NOT EXISTS verifications (
+                verification_id TEXT PRIMARY KEY,
+                subject_kind TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                method TEXT NOT NULL,
+                status TEXT NOT NULL,
+                checked_at TEXT NOT NULL,
+                checker TEXT,
+                details_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS insight_search_fts USING fts5(
+                insight_id UNINDEXED,
+                insight_kind UNINDEXED,
+                statement
+            );
+            CREATE TABLE IF NOT EXISTS search_docs (
+                doc_id TEXT PRIMARY KEY,
+                doc_kind TEXT NOT NULL,
+                subject_kind TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                title TEXT,
+                body TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS search_docs_fts USING fts5(
+                doc_id UNINDEXED,
+                doc_kind UNINDEXED,
+                subject_kind UNINDEXED,
+                subject_id UNINDEXED,
+                title,
+                body
+            );",
+        )
+        .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    fn with_tx<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
         let mut conn = self.connection()?;
         let tx = conn.transaction().map_err(map_db_err)?;
         let value = f(&tx)?;
@@ -119,7 +209,8 @@ impl RepositoryPort for ContextDb {
                 "select receipt_id, batch_id, source_kind, connector, session_kind,
                         external_session_key, external_entry_key, event_kind, observed_at,
                         captured_at, workspace_root, content_hash, dedupe_key, payload_json,
-                        raw_payload_json, artifacts_json
+                        raw_payload_json, artifacts_json, normalized_json, projection_state,
+                        derived_state, index_state
                  from ingress_receipts
                  order by observed_at asc, receipt_id asc",
             )
@@ -143,6 +234,10 @@ impl RepositoryPort for ContextDb {
                     payload_json: row.get(13)?,
                     raw_payload_json: row.get(14)?,
                     artifacts_json: row.get(15)?,
+                    normalized_json: row.get(16)?,
+                    projection_state: row.get(17)?,
+                    derived_state: row.get(18)?,
+                    index_state: row.get(19)?,
                 })
             })
             .map_err(map_db_err)?;
@@ -153,7 +248,7 @@ impl RepositoryPort for ContextDb {
         let conn = self.connection()?;
         let mut stmt = conn
             .prepare(
-                "select connector, cursor_key, cursor_value, updated_at
+                "select connector, cursor_key, cursor_value, updated_at, metadata_json
                  from source_cursor
                  order by connector asc, cursor_key asc",
             )
@@ -165,6 +260,7 @@ impl RepositoryPort for ContextDb {
                     cursor_key: row.get(1)?,
                     cursor_value: row.get(2)?,
                     updated_at: row.get(3)?,
+                    metadata_json: parse_json_value(row.get::<_, String>(4)?)?,
                 })
             })
             .map_err(map_db_err)?;
@@ -180,8 +276,9 @@ impl RepositoryPort for ContextDb {
                         receipt_id, batch_id, source_kind, connector, session_kind,
                         external_session_key, external_entry_key, event_kind, observed_at,
                         captured_at, workspace_root, content_hash, dedupe_key, payload_json,
-                        raw_payload_json, artifacts_json
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                        raw_payload_json, artifacts_json, normalized_json, projection_state,
+                        derived_state, index_state
+                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
                     params![
                         receipt.receipt_id,
                         receipt.batch_id,
@@ -199,6 +296,10 @@ impl RepositoryPort for ContextDb {
                         receipt.payload_json,
                         receipt.raw_payload_json,
                         receipt.artifacts_json,
+                        receipt.normalized_json,
+                        receipt.projection_state,
+                        receipt.derived_state,
+                        receipt.index_state,
                     ],
                 )
                 .map_err(map_db_err)?;
@@ -209,6 +310,8 @@ impl RepositoryPort for ContextDb {
             Ok(json!({
                 "accepted": plan.receipts.len(),
                 "skipped": plan.skipped_dedupe_keys.len(),
+                "accepted_receipts": plan.receipts.iter().map(|row| row.receipt_id.clone()).collect::<Vec<_>>(),
+                "skipped_dedupe_keys": plan.skipped_dedupe_keys.clone(),
             }))
         })
     }
@@ -334,6 +437,14 @@ impl RepositoryPort for ContextDb {
                 )
                 .map_err(map_db_err)?;
             }
+            tx.execute(
+                "update ingress_receipts
+                 set projection_state = 'projected',
+                     derived_state = 'pending',
+                     index_state = 'pending'",
+                [],
+            )
+            .map_err(map_db_err)?;
             Ok(json!({
                 "sessions": plan.sessions.len(),
                 "entries": plan.entries.len(),
@@ -345,14 +456,20 @@ impl RepositoryPort for ContextDb {
 
     fn replace_derivation(&self, plan: &DerivePlan) -> Result<Value> {
         self.with_tx(|tx| {
+            tx.execute("delete from insight_anchors", []).map_err(map_db_err)?;
+            tx.execute("delete from verifications", []).map_err(map_db_err)?;
             tx.execute("delete from claim_evidence", []).map_err(map_db_err)?;
             tx.execute("delete from procedure_evidence", []).map_err(map_db_err)?;
+            tx.execute("delete from insights", []).map_err(map_db_err)?;
             tx.execute("delete from claims", []).map_err(map_db_err)?;
             tx.execute("delete from procedures", []).map_err(map_db_err)?;
             tx.execute("delete from episodes", []).map_err(map_db_err)?;
             tx.execute("delete from episode_search_fts", []).map_err(map_db_err)?;
+            tx.execute("delete from insight_search_fts", []).map_err(map_db_err)?;
             tx.execute("delete from claim_search_fts", []).map_err(map_db_err)?;
             tx.execute("delete from procedure_search_fts", []).map_err(map_db_err)?;
+            tx.execute("delete from search_docs", []).map_err(map_db_err)?;
+            tx.execute("delete from search_docs_fts", []).map_err(map_db_err)?;
 
             for episode in &plan.episodes {
                 tx.execute(
@@ -376,6 +493,54 @@ impl RepositoryPort for ContextDb {
                     "insert into episode_search_fts (episode_id, episode_kind, summary)
                      values (?1, ?2, ?3)",
                     params![episode.episode_id, episode.episode_kind, episode.summary],
+                )
+                .map_err(map_db_err)?;
+            }
+            for insight in &plan.insights {
+                tx.execute(
+                    "insert into insights (
+                        insight_id, episode_id, insight_kind, statement, confidence, scope_json, metadata_json
+                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        insight.insight_id,
+                        insight.episode_id,
+                        insight.insight_kind,
+                        insight.statement,
+                        insight.confidence,
+                        serde_json::to_string(&insight.scope_json)?,
+                        serde_json::to_string(&insight.metadata_json)?,
+                    ],
+                )
+                .map_err(map_db_err)?;
+                tx.execute(
+                    "insert into insight_search_fts (insight_id, insight_kind, statement)
+                     values (?1, ?2, ?3)",
+                    params![insight.insight_id, insight.insight_kind, insight.statement],
+                )
+                .map_err(map_db_err)?;
+            }
+            for row in &plan.insight_anchors {
+                tx.execute(
+                    "insert into insight_anchors (insight_id, anchor_id) values (?1, ?2)",
+                    params![row.insight_id, row.anchor_id],
+                )
+                .map_err(map_db_err)?;
+            }
+            for verification in &plan.verifications {
+                tx.execute(
+                    "insert into verifications (
+                        verification_id, subject_kind, subject_id, method, status, checked_at, checker, details_json
+                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        verification.verification_id,
+                        verification.subject_kind,
+                        verification.subject_id,
+                        verification.method,
+                        verification.status,
+                        verification.checked_at,
+                        verification.checker,
+                        serde_json::to_string(&verification.details_json)?,
+                    ],
                 )
                 .map_err(map_db_err)?;
             }
@@ -410,14 +575,18 @@ impl RepositoryPort for ContextDb {
             for procedure in &plan.procedures {
                 tx.execute(
                     "insert into procedures (
-                        procedure_id, title, goal, steps_json, confidence,
+                        procedure_id, title, goal, steps_json, status, confidence,
                         extractor_version, stale
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     params![
                         procedure.procedure_id,
                         procedure.title,
                         procedure.goal,
                         serde_json::to_string(&procedure.steps_json)?,
+                        procedure
+                            .status
+                            .clone()
+                            .unwrap_or_else(|| "active".to_string()),
                         procedure.confidence,
                         procedure.extractor_version,
                         if procedure.stale { 1 } else { 0 },
@@ -444,10 +613,50 @@ impl RepositoryPort for ContextDb {
                 )
                 .map_err(map_db_err)?;
             }
+            for doc in &plan.search_docs {
+                tx.execute(
+                    "insert into search_docs (doc_id, doc_kind, subject_kind, subject_id, title, body, metadata_json)
+                     values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        doc.doc_id,
+                        doc.doc_kind,
+                        doc.subject_kind,
+                        doc.subject_id,
+                        doc.title,
+                        doc.body,
+                        serde_json::to_string(&doc.metadata_json)?,
+                    ],
+                )
+                .map_err(map_db_err)?;
+                tx.execute(
+                    "insert into search_docs_fts (doc_id, doc_kind, subject_kind, subject_id, title, body)
+                     values (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        doc.doc_id,
+                        doc.doc_kind,
+                        doc.subject_kind,
+                        doc.subject_id,
+                        doc.title,
+                        doc.body,
+                    ],
+                )
+                .map_err(map_db_err)?;
+            }
+            tx.execute(
+                "update ingress_receipts
+                 set derived_state = 'derived',
+                     index_state = 'indexed'
+                 where projection_state = 'projected'",
+                [],
+            )
+            .map_err(map_db_err)?;
             Ok(json!({
                 "episodes": plan.episodes.len(),
+                "insights": plan.insights.len(),
+                "verifications": plan.verifications.len(),
                 "claims": plan.claims.len(),
                 "procedures": plan.procedures.len(),
+                "search_docs": plan.search_docs.len(),
             }))
         })
     }
@@ -591,6 +800,77 @@ impl RepositoryPort for ContextDb {
         rows.map(|row| row.map_err(map_db_err)).collect()
     }
 
+    fn load_insights(&self) -> Result<Vec<InsightRow>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "select insight_id, episode_id, insight_kind, statement, confidence, scope_json, metadata_json
+                 from insights
+                 order by insight_id asc",
+            )
+            .map_err(map_db_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(InsightRow {
+                    insight_id: row.get(0)?,
+                    episode_id: row.get(1)?,
+                    insight_kind: row.get(2)?,
+                    statement: row.get(3)?,
+                    confidence: row.get(4)?,
+                    scope_json: parse_json_value(row.get::<_, String>(5)?)?,
+                    metadata_json: parse_json_value(row.get::<_, String>(6)?)?,
+                })
+            })
+            .map_err(map_db_err)?;
+        rows.map(|row| row.map_err(map_db_err)).collect()
+    }
+
+    fn load_insight_anchors(&self) -> Result<Vec<InsightAnchorRow>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "select insight_id, anchor_id
+                 from insight_anchors
+                 order by insight_id asc, anchor_id asc",
+            )
+            .map_err(map_db_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(InsightAnchorRow {
+                    insight_id: row.get(0)?,
+                    anchor_id: row.get(1)?,
+                })
+            })
+            .map_err(map_db_err)?;
+        rows.map(|row| row.map_err(map_db_err)).collect()
+    }
+
+    fn load_verifications(&self) -> Result<Vec<VerificationRow>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "select verification_id, subject_kind, subject_id, method, status, checked_at, checker, details_json
+                 from verifications
+                 order by verification_id asc",
+            )
+            .map_err(map_db_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(VerificationRow {
+                    verification_id: row.get(0)?,
+                    subject_kind: row.get(1)?,
+                    subject_id: row.get(2)?,
+                    method: row.get(3)?,
+                    status: row.get(4)?,
+                    checked_at: row.get(5)?,
+                    checker: row.get(6)?,
+                    details_json: parse_json_value(row.get::<_, String>(7)?)?,
+                })
+            })
+            .map_err(map_db_err)?;
+        rows.map(|row| row.map_err(map_db_err)).collect()
+    }
+
     fn load_claims(&self) -> Result<Vec<ClaimRow>> {
         let conn = self.connection()?;
         let mut stmt = conn
@@ -640,7 +920,7 @@ impl RepositoryPort for ContextDb {
         let conn = self.connection()?;
         let mut stmt = conn
             .prepare(
-                "select procedure_id, title, goal, steps_json, confidence, extractor_version, stale
+                "select procedure_id, title, goal, steps_json, status, confidence, extractor_version, stale
                  from procedures
                  order by procedure_id asc",
             )
@@ -652,9 +932,10 @@ impl RepositoryPort for ContextDb {
                     title: row.get(1)?,
                     goal: row.get(2)?,
                     steps_json: parse_json_value(row.get::<_, String>(3)?)?,
-                    confidence: row.get(4)?,
-                    extractor_version: row.get(5)?,
-                    stale: row.get::<_, i64>(6)? != 0,
+                    status: row.get(4)?,
+                    confidence: row.get(5)?,
+                    extractor_version: row.get(6)?,
+                    stale: row.get::<_, i64>(7)? != 0,
                 })
             })
             .map_err(map_db_err)?;
@@ -682,8 +963,44 @@ impl RepositoryPort for ContextDb {
         rows.map(|row| row.map_err(map_db_err)).collect()
     }
 
+    fn load_search_docs(&self) -> Result<Vec<SearchDocsRow>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "select doc_id, doc_kind, subject_kind, subject_id, title, body, metadata_json
+                 from search_docs
+                 order by doc_id asc",
+            )
+            .map_err(map_db_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SearchDocsRow {
+                    doc_id: row.get(0)?,
+                    doc_kind: row.get(1)?,
+                    subject_kind: row.get(2)?,
+                    subject_id: row.get(3)?,
+                    title: row.get(4)?,
+                    body: row.get(5)?,
+                    metadata_json: parse_json_value(row.get::<_, String>(6)?)?,
+                })
+            })
+            .map_err(map_db_err)?;
+        rows.map(|row| row.map_err(map_db_err)).collect()
+    }
+
+    fn pending_counts(&self) -> Result<(usize, usize, usize)> {
+        let conn = self.connection()?;
+        Ok((
+            count_where(&conn, "ingress_receipts", "projection_state <> 'projected'")?,
+            count_where(&conn, "ingress_receipts", "derived_state <> 'derived'")?,
+            count_where(&conn, "ingress_receipts", "index_state <> 'indexed'")?,
+        ))
+    }
+
     fn doctor_report(&self) -> Result<DoctorReport> {
         let conn = self.connection()?;
+        let (pending_projection_count, pending_derived_count, pending_index_count) =
+            self.pending_counts()?;
         Ok(DoctorReport {
             db_path: self.db_path.display().to_string(),
             schema_version: axiomsync_domain::domain::KERNEL_SCHEMA_VERSION.to_string(),
@@ -691,8 +1008,13 @@ impl RepositoryPort for ContextDb {
             sessions: count_rows(&conn, "sessions")?,
             entries: count_rows(&conn, "entries")?,
             episodes: count_rows(&conn, "episodes")?,
+            insights: count_rows(&conn, "insights")?,
+            verifications: count_rows(&conn, "verifications")?,
             claims: count_rows(&conn, "claims")?,
             procedures: count_rows(&conn, "procedures")?,
+            pending_projection_count,
+            pending_derived_count,
+            pending_index_count,
         })
     }
 }
@@ -756,6 +1078,10 @@ fn plan_legacy_backfill(rows: &[LegacyRawEventRow]) -> Result<Vec<IngressReceipt
                 payload_json: row.payload_json.clone(),
                 raw_payload_json: row.native_schema_version.clone(),
                 artifacts_json: "[]".to_string(),
+                normalized_json: row.payload_json.clone(),
+                projection_state: "pending".to_string(),
+                derived_state: "pending".to_string(),
+                index_state: "pending".to_string(),
             })
         })
         .collect()
@@ -768,8 +1094,9 @@ fn apply_legacy_backfill(tx: &Transaction<'_>, receipts: &[IngressReceiptRow]) -
                 receipt_id, batch_id, source_kind, connector, session_kind,
                 external_session_key, external_entry_key, event_kind, observed_at,
                 captured_at, workspace_root, content_hash, dedupe_key, payload_json,
-                raw_payload_json, artifacts_json
-            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                raw_payload_json, artifacts_json, normalized_json, projection_state,
+                derived_state, index_state
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 receipt.receipt_id,
                 receipt.batch_id,
@@ -787,6 +1114,10 @@ fn apply_legacy_backfill(tx: &Transaction<'_>, receipts: &[IngressReceiptRow]) -
                 receipt.payload_json,
                 receipt.raw_payload_json,
                 receipt.artifacts_json,
+                receipt.normalized_json,
+                receipt.projection_state,
+                receipt.derived_state,
+                receipt.index_state,
             ],
         )
         .map_err(map_db_err)?;
@@ -825,23 +1156,56 @@ fn drop_legacy_tables(conn: &Connection) -> Result<()> {
 }
 
 fn count_rows(conn: &Connection, table: &str) -> Result<usize> {
-    conn.query_row(&format!("select count(*) from {table}"), [], |row| row.get::<_, i64>(0))
-        .map(|value| value as usize)
-        .map_err(map_db_err)
+    conn.query_row(&format!("select count(*) from {table}"), [], |row| {
+        row.get::<_, i64>(0)
+    })
+    .map(|value| value as usize)
+    .map_err(map_db_err)
+}
+
+fn count_where(conn: &Connection, table: &str, predicate: &str) -> Result<usize> {
+    conn.query_row(
+        &format!("select count(*) from {table} where {predicate}"),
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value as usize)
+    .map_err(map_db_err)
+}
+
+fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
+    let mut stmt = conn
+        .prepare(&format!("pragma table_info({table})"))
+        .map_err(map_db_err)?;
+    let mut rows = stmt.query([]).map_err(map_db_err)?;
+    while let Some(row) = rows.next().map_err(map_db_err)? {
+        let existing: String = row.get(1).map_err(map_db_err)?;
+        if existing == column {
+            return Ok(());
+        }
+    }
+    conn.execute(
+        &format!("alter table {table} add column {column} {definition}"),
+        [],
+    )
+    .map_err(map_db_err)?;
+    Ok(())
 }
 
 fn upsert_source_cursor_tx(tx: &Transaction<'_>, cursor: &SourceCursorRow) -> Result<()> {
     tx.execute(
-        "insert into source_cursor (connector, cursor_key, cursor_value, updated_at)
-         values (?1, ?2, ?3, ?4)
+        "insert into source_cursor (connector, cursor_key, cursor_value, updated_at, metadata_json)
+         values (?1, ?2, ?3, ?4, ?5)
          on conflict(connector, cursor_key) do update set
            cursor_value = excluded.cursor_value,
-           updated_at = excluded.updated_at",
+           updated_at = excluded.updated_at,
+           metadata_json = excluded.metadata_json",
         params![
             cursor.connector,
             cursor.cursor_key,
             cursor.cursor_value,
             cursor.updated_at,
+            serde_json::to_string(&cursor.metadata_json)?,
         ],
     )
     .map_err(map_db_err)?;
@@ -866,9 +1230,9 @@ fn infer_legacy_session_kind(event_type: &str, payload_json: &str) -> String {
     let lowered = event_type.to_ascii_lowercase();
     if lowered.contains("run") || lowered.contains("task") || lowered.contains("approval") {
         "run".to_string()
-    } else if lowered.contains("document") {
-        "import".to_string()
-    } else if payload_json.contains("\"subject\":{\"kind\":\"document\"") {
+    } else if lowered.contains("document")
+        || payload_json.contains("\"subject\":{\"kind\":\"document\"")
+    {
         "import".to_string()
     } else {
         "conversation".to_string()

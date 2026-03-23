@@ -1,6 +1,7 @@
 use axiomsync_domain::domain::{
     AnchorRow, ArtifactRow, ArtifactView, CaseRecord, ClaimRow, EntryBundle, EntryRow, EpisodeRow,
-    EpisodeView, ProcedureRow, SessionRow, SessionView, TaskView, workspace_stable_id,
+    EpisodeView, InsightRow, ProcedureRow, SessionRow, SessionView, TaskView, VerificationRow,
+    VerificationSummary, workspace_stable_id,
 };
 use axiomsync_domain::error::{AxiomError, Result};
 
@@ -55,30 +56,58 @@ pub fn document_view_from_artifact(
 
 pub fn episode_view(
     episode: &EpisodeRow,
+    insights: &[InsightRow],
+    verifications: &[VerificationRow],
     claims: &[ClaimRow],
     procedures: &[ProcedureRow],
 ) -> EpisodeView {
     EpisodeView {
         episode: episode.clone(),
+        insights: insights
+            .iter()
+            .filter(|insight| insight.episode_id.as_deref() == Some(episode.episode_id.as_str()))
+            .cloned()
+            .collect(),
+        verifications: verifications
+            .iter()
+            .filter(|verification| verification.subject_kind == "insight")
+            .filter(|verification| {
+                insights.iter().any(|insight| {
+                    insight.episode_id.as_deref() == Some(episode.episode_id.as_str())
+                        && insight.insight_id == verification.subject_id
+                })
+            })
+            .cloned()
+            .collect(),
         claims: claims
             .iter()
             .filter(|claim| claim.episode_id.as_deref() == Some(episode.episode_id.as_str()))
             .cloned()
             .collect(),
-        procedures: procedures.to_vec(),
+        procedures: procedures
+            .iter()
+            .filter(|procedure| procedure.goal.as_deref() == Some(episode.summary.as_str()))
+            .cloned()
+            .collect(),
     }
 }
 
 pub fn case_from_episode(
     episode: &EpisodeRow,
     sessions: &[SessionRow],
+    insights: &[InsightRow],
+    verifications: &[VerificationRow],
     claims: &[ClaimRow],
     procedures: &[ProcedureRow],
 ) -> CaseRecord {
     let workspace_root = episode
         .session_id
         .as_deref()
-        .and_then(|session_id| sessions.iter().find(|session| session.session_id == session_id))
+        .and_then(|session_id| {
+            sessions
+                .iter()
+                .find(|session| session.session_id == session_id)
+        })
         .and_then(|session| session.workspace_root.clone());
     let related_claims = claims
         .iter()
@@ -87,13 +116,36 @@ pub fn case_from_episode(
     let root_cause = related_claims
         .iter()
         .find(|claim| claim.claim_kind == "root_cause")
-        .map(|claim| claim.statement.clone());
+        .map(|claim| claim.statement.clone())
+        .or_else(|| {
+            insights
+                .iter()
+                .find(|insight| {
+                    insight.episode_id.as_deref() == Some(episode.episode_id.as_str())
+                        && insight.insight_kind == "root_cause"
+                })
+                .map(|insight| insight.statement.clone())
+        });
     let resolution = related_claims
         .iter()
         .find(|claim| claim.claim_kind == "fix")
-        .map(|claim| claim.statement.clone());
+        .map(|claim| claim.statement.clone())
+        .or_else(|| {
+            insights
+                .iter()
+                .find(|insight| {
+                    insight.episode_id.as_deref() == Some(episode.episode_id.as_str())
+                        && insight.insight_kind == "fix"
+                })
+                .map(|insight| insight.statement.clone())
+        });
+    let related_procedures = procedures
+        .iter()
+        .filter(|procedure| procedure.goal.as_deref() == Some(episode.summary.as_str()))
+        .collect::<Vec<_>>();
     let commands = procedures
         .iter()
+        .filter(|procedure| procedure.goal.as_deref() == Some(episode.summary.as_str()))
         .flat_map(|procedure| {
             procedure
                 .steps_json
@@ -105,6 +157,15 @@ pub fn case_from_episode(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
+    let related_insight_ids = insights
+        .iter()
+        .filter(|insight| insight.episode_id.as_deref() == Some(episode.episode_id.as_str()))
+        .map(|insight| insight.insight_id.as_str())
+        .collect::<Vec<_>>();
+    let related_procedure_ids = related_procedures
+        .iter()
+        .map(|procedure| procedure.procedure_id.as_str())
+        .collect::<Vec<_>>();
     CaseRecord {
         case_id: episode.episode_id.clone(),
         workspace_root,
@@ -112,7 +173,23 @@ pub fn case_from_episode(
         root_cause,
         resolution,
         commands,
-        evidence: related_claims.iter().map(|claim| claim.claim_id.clone()).collect(),
+        verification: verifications
+            .iter()
+            .filter(|verification| {
+                (verification.subject_kind == "insight"
+                    && related_insight_ids.contains(&verification.subject_id.as_str()))
+                    || (verification.subject_kind == "procedure"
+                        && related_procedure_ids.contains(&verification.subject_id.as_str()))
+            })
+            .map(|verification| VerificationSummary {
+                status: verification.status.clone(),
+                method: verification.method.clone(),
+            })
+            .collect(),
+        evidence: related_claims
+            .iter()
+            .map(|claim| claim.claim_id.clone())
+            .collect(),
     }
 }
 

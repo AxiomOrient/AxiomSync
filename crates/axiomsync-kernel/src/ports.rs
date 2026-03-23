@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use axiomsync_domain::domain::{
     AdminTokenPlan, AnchorRow, ArtifactRow, AuthSnapshot, ClaimEvidenceRow, ClaimRow, DerivePlan,
-    DoctorReport, EntryRow, EpisodeRow, IngestPlan, IngressReceiptRow, ProcedureEvidenceRow,
-    ProcedureRow, ProjectionPlan, SearchHit, SessionRow, SourceCursorRow,
-    SourceCursorUpsertPlan, WorkspaceTokenPlan,
+    DoctorReport, EntryRow, EpisodeRow, IngestPlan, IngressReceiptRow, InsightAnchorRow,
+    InsightRow, ProcedureEvidenceRow, ProcedureRow, ProjectionPlan, SearchDocsRow, SearchHit,
+    SessionRow, SourceCursorRow, SourceCursorUpsertPlan, VerificationRow, WorkspaceTokenPlan,
 };
 use axiomsync_domain::error::Result;
 use serde_json::Value;
@@ -30,10 +30,15 @@ pub trait RepositoryPort: Send + Sync {
     fn load_artifacts(&self) -> Result<Vec<ArtifactRow>>;
     fn load_anchors(&self) -> Result<Vec<AnchorRow>>;
     fn load_episodes(&self) -> Result<Vec<EpisodeRow>>;
+    fn load_insights(&self) -> Result<Vec<InsightRow>>;
+    fn load_insight_anchors(&self) -> Result<Vec<InsightAnchorRow>>;
+    fn load_verifications(&self) -> Result<Vec<VerificationRow>>;
     fn load_claims(&self) -> Result<Vec<ClaimRow>>;
     fn load_claim_evidence(&self) -> Result<Vec<ClaimEvidenceRow>>;
     fn load_procedures(&self) -> Result<Vec<ProcedureRow>>;
     fn load_procedure_evidence(&self) -> Result<Vec<ProcedureEvidenceRow>>;
+    fn load_search_docs(&self) -> Result<Vec<SearchDocsRow>>;
+    fn pending_counts(&self) -> Result<(usize, usize, usize)>;
     fn doctor_report(&self) -> Result<DoctorReport>;
 }
 

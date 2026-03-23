@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AxiomSyncKernelSinkContract",
+  "type": "object",
+  "required": [
+    "batch_id",
+    "source",
+    "events"
+  ],
+  "properties": {
+    "batch_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "source_kind",
+        "connector_name"
+      ],
+      "properties": {
+        "source_kind": {
+          "type": "string",
+          "enum": [
+            "axiomrelay",
+            "axiomrams",
+            "manual",
+            "import"
+          ]
+        },
+        "connector_name": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "event_type",
+          "observed_at_ms",
+          "dedupe_key",
+          "payload"
+        ],
+        "properties": {
+          "raw_event_id": {
+            "type": "string"
+          },
+          "native_session_id": {
+            "type": "string"
+          },
+          "native_entry_id": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "captured_at_ms": {
+            "type": "integer"
+          },
+          "observed_at_ms": {
+            "type": "integer"
+          },
+          "dedupe_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "object"
+          },
+          "hints": {
+            "type": "object",
+            "properties": {
+              "session_kind": {
+                "type": "string",
+                "enum": [
+                  "conversation",
+                  "run",
+                  "task",
+                  "import"
+                ]
+              },
+              "entry_kind": {
+                "type": "string"
+              },
+              "workspace_root": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

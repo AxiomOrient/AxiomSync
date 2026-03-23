@@ -1,0 +1,24 @@
+{
+  "results": [
+    {
+      "procedure_id": "proc_fix_http_contract",
+      "title": "Fix kernel sink contract mismatch",
+      "status": "active",
+      "verification": {
+        "status": "verified",
+        "method": "deterministic"
+      },
+      "steps": [
+        "Load the contract fixture.",
+        "Compare the request body against schema.",
+        "Update adapter mapping only if the kernel schema changed."
+      ],
+      "evidence": [
+        {
+          "anchor_id": "anchor_001",
+          "preview_text": "HTTP contract fixture matched expected kernel response."
+        }
+      ]
+    }
+  ]
+}

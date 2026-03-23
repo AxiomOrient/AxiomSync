@@ -1,0 +1,41 @@
+{
+  "batch_id": "relay-2026-03-23T12:00:00Z-001",
+  "source": {
+    "source_kind": "axiomrelay",
+    "connector_name": "chatgpt_web_selection"
+  },
+  "events": [
+    {
+      "native_session_id": "chatgpt:abc123",
+      "native_entry_id": "msg_42",
+      "event_type": "selection_captured",
+      "captured_at_ms": 1710000000000,
+      "observed_at_ms": 1710000000123,
+      "dedupe_key": "chatgpt:abc123:msg_42:sel:fp_001",
+      "content_hash": "sha256:74dd4e17af8f0c3b07e93985f09b8e6bb32fd43f0f9eb0f8217d92b7704f6f4f",
+      "payload": {
+        "page_url": "https://chatgpt.com/c/abc123",
+        "page_title": "ChatGPT - Architecture Review",
+        "source_message": {
+          "message_id": "msg_42",
+          "role": "assistant"
+        },
+        "selection": {
+          "text": "Use a narrow sink contract between relayd and AxiomSync.",
+          "start_hint": "Use a narrow sink contract",
+          "end_hint": "between relayd and AxiomSync.",
+          "dom_fingerprint": "sha1:dom:fp_001"
+        },
+        "user_note": "keep",
+        "tags": [
+          "keep",
+          "architecture"
+        ]
+      },
+      "hints": {
+        "session_kind": "conversation",
+        "entry_kind": "message"
+      }
+    }
+  ]
+}
