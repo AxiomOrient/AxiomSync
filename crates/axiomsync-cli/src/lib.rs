@@ -12,9 +12,79 @@ use axiomsync_domain::domain::{
 };
 use axiomsync_kernel::AxiomSync;
 
+const CLI_AFTER_HELP: &str = "\
+Quick start:
+  axiomsync init
+  axiomsync sink plan-append-raw-events --file raw-events.json > ingest-plan.json
+  axiomsync sink apply-ingest-plan --file ingest-plan.json
+  axiomsync project rebuild
+  axiomsync project doctor
+
+See `axiomsync sink <command> --help` and `axiomsync query <command> --help` for request JSON examples.";
+
+const PLAN_APPEND_RAW_EVENTS_AFTER_HELP: &str = r#"Input JSON example:
+{
+  "batch_id": "relay-2026-03-23T12:00:00Z-001",
+  "source": {
+    "source_kind": "axiomrelay",
+    "connector_name": "chatgpt_web_selection"
+  },
+  "events": [
+    {
+      "native_session_id": "chatgpt:abc123",
+      "native_entry_id": "msg_42",
+      "event_type": "selection_captured",
+      "captured_at_ms": 1710000000000,
+      "observed_at_ms": 1710000000123,
+      "payload": {
+        "selection": {
+          "text": "Use a narrow sink contract between relayd and AxiomSync."
+        }
+      },
+      "hints": {
+        "session_kind": "conversation",
+        "entry_kind": "message"
+      }
+    }
+  ]
+}
+
+Writes an ingest plan JSON document to stdout."#;
+
+const APPLY_INGEST_PLAN_AFTER_HELP: &str =
+    "Input must be the JSON plan previously returned by `plan-append-raw-events`.";
+
+const PLAN_SOURCE_CURSOR_AFTER_HELP: &str = r#"Input JSON example:
+{
+  "source": "codex",
+  "cursor": {
+    "cursor_key": "events",
+    "cursor_value": "cursor-1",
+    "updated_at_ms": 1710000000000,
+    "metadata": {
+      "checkpoint": "spool-offset-1"
+    }
+  }
+}
+
+Writes a source cursor upsert plan JSON document to stdout."#;
+
+const APPLY_SOURCE_CURSOR_AFTER_HELP: &str =
+    "Input must be the JSON plan previously returned by `plan-upsert-source-cursor`.";
+
+const SEARCH_AFTER_HELP: &str = r#"Input JSON example:
+{
+  "query": "narrow sink contract",
+  "limit": 10,
+  "filter": {
+    "workspace_root": "/workspace/demo"
+  }
+}"#;
+
 #[derive(Debug, Parser)]
 #[command(name = "axiomsync")]
 #[command(about = "AxiomSync knowledge kernel")]
+#[command(after_help = CLI_AFTER_HELP)]
 pub struct Cli {
     #[arg(long, default_value = ".axiomsync")]
     pub root: PathBuf,
@@ -42,9 +112,13 @@ pub struct SinkArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum SinkCommand {
+    #[command(after_long_help = PLAN_APPEND_RAW_EVENTS_AFTER_HELP)]
     PlanAppendRawEvents(FileArg),
+    #[command(after_long_help = APPLY_INGEST_PLAN_AFTER_HELP)]
     ApplyIngestPlan(FileArg),
+    #[command(after_long_help = PLAN_SOURCE_CURSOR_AFTER_HELP)]
     PlanUpsertSourceCursor(FileArg),
+    #[command(after_long_help = APPLY_SOURCE_CURSOR_AFTER_HELP)]
     ApplySourceCursorPlan(FileArg),
 }
 
@@ -92,14 +166,23 @@ pub struct QueryArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum QueryCommand {
+    #[command(after_long_help = SEARCH_AFTER_HELP)]
     SearchEntries(SearchFileArg),
+    #[command(after_long_help = SEARCH_AFTER_HELP)]
     SearchEpisodes(SearchFileArg),
+    #[command(after_long_help = SEARCH_AFTER_HELP)]
     SearchDocs(SearchFileArg),
+    #[command(after_long_help = SEARCH_AFTER_HELP)]
     SearchInsights(SearchFileArg),
+    #[command(after_long_help = SEARCH_AFTER_HELP)]
     SearchClaims(SearchFileArg),
+    #[command(after_long_help = SEARCH_AFTER_HELP)]
     SearchProcedures(SearchFileArg),
+    #[command(after_long_help = SEARCH_AFTER_HELP)]
     FindFix(SearchFileArg),
+    #[command(after_long_help = SEARCH_AFTER_HELP)]
     FindDecision(SearchFileArg),
+    #[command(after_long_help = SEARCH_AFTER_HELP)]
     FindRunbook(SearchFileArg),
     GetEvidenceBundle(EvidenceBundleArg),
     GetSession(IdArg),

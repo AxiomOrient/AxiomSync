@@ -7,13 +7,13 @@ use crate::error::Result;
 pub fn plan_workspace_token_grant(canonical_root: &str, token: &str) -> Result<WorkspaceTokenPlan> {
     Ok(WorkspaceTokenPlan {
         workspace_id: workspace_stable_id(canonical_root.trim()),
-        token_sha256: stable_hash(&[token]),
+        token_sha256: stable_hash(&["workspace-token", token]),
     })
 }
 
 pub fn plan_admin_token_grant(token: &str) -> Result<AdminTokenPlan> {
     Ok(AdminTokenPlan {
-        token_sha256: stable_hash(&[token]),
+        token_sha256: stable_hash(&["admin-token", token]),
     })
 }
 
@@ -22,7 +22,7 @@ pub fn apply_workspace_token_plan(
     plan: &WorkspaceTokenPlan,
 ) -> AuthSnapshot {
     let mut next = snapshot.clone();
-    next.schema_version = crate::domain::RENEWAL_SCHEMA_VERSION.to_string();
+    next.schema_version = crate::domain::KERNEL_SCHEMA_VERSION.to_string();
     next.grants
         .retain(|grant| grant.workspace_id != plan.workspace_id);
     next.grants.push(AuthGrantRecord {
@@ -36,7 +36,7 @@ pub fn apply_workspace_token_plan(
 
 pub fn apply_admin_token_plan(snapshot: &AuthSnapshot, plan: &AdminTokenPlan) -> AuthSnapshot {
     let mut next = snapshot.clone();
-    next.schema_version = crate::domain::RENEWAL_SCHEMA_VERSION.to_string();
+    next.schema_version = crate::domain::KERNEL_SCHEMA_VERSION.to_string();
     next.admin_tokens
         .retain(|token| token != &plan.token_sha256);
     next.admin_tokens.push(plan.token_sha256.clone());

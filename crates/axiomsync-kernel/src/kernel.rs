@@ -19,8 +19,7 @@ use crate::domain::{
 use crate::error::{AxiomError, Result};
 use crate::ingest::{plan_append_raw_events, plan_source_cursor_upsert};
 use crate::ports::{
-    SharedAuthStorePort, SharedLlmExtractionPort, SharedRepositoryPort, admin_token_plan,
-    filter_hits, workspace_token_plan,
+    SharedAuthStorePort, SharedLlmExtractionPort, SharedRepositoryPort, filter_hits,
 };
 use crate::projection::plan_projection;
 
@@ -142,12 +141,7 @@ impl AxiomSync {
     }
 
     pub fn apply_replay(&self, plan: &ReplayPlan) -> Result<Value> {
-        let projection = self.repo.replace_projection(&plan.projection)?;
-        let derivation = self.repo.replace_derivation(&plan.derivation)?;
-        Ok(json!({
-            "projection": projection,
-            "derivation": derivation,
-        }))
+        self.repo.apply_replay(plan)
     }
 
     pub fn rebuild(&self) -> Result<Value> {
@@ -662,33 +656,26 @@ impl AxiomSync {
         canonical_root: &str,
         token: &str,
     ) -> Result<WorkspaceTokenPlan> {
-        Ok(workspace_token_plan(canonical_root, token))
+        crate::logic::auth::plan_workspace_token_grant(canonical_root, token)
     }
 
     pub fn apply_workspace_token_grant(&self, plan: &WorkspaceTokenPlan) -> Result<Value> {
-        let mut snapshot = self.auth.read()?;
-        snapshot
-            .grants
-            .retain(|grant| grant.workspace_id != plan.workspace_id);
-        snapshot.grants.push(crate::domain::AuthGrantRecord {
-            workspace_id: plan.workspace_id.clone(),
-            token_sha256: plan.token_sha256.clone(),
-        });
-        self.auth.write(&snapshot)?;
+        let snapshot = self.auth.read()?;
+        let next = crate::logic::auth::apply_workspace_token_plan(&snapshot, plan);
+        self.auth.write(&next)?;
         Ok(json!({ "workspace_id": plan.workspace_id }))
     }
 
     pub fn plan_admin_token_grant(&self, token: &str) -> Result<AdminTokenPlan> {
-        Ok(admin_token_plan(token))
+        crate::logic::auth::plan_admin_token_grant(token)
     }
 
     pub fn apply_admin_token_grant(&self, plan: &AdminTokenPlan) -> Result<Value> {
-        let mut snapshot = self.auth.read()?;
-        if !snapshot.admin_tokens.contains(&plan.token_sha256) {
-            snapshot.admin_tokens.push(plan.token_sha256.clone());
-        }
-        self.auth.write(&snapshot)?;
-        Ok(json!({ "admin_tokens": snapshot.admin_tokens.len() }))
+        let snapshot = self.auth.read()?;
+        let next = crate::logic::auth::apply_admin_token_plan(&snapshot, plan);
+        let admin_tokens = next.admin_tokens.len();
+        self.auth.write(&next)?;
+        Ok(json!({ "admin_tokens": admin_tokens }))
     }
 
     pub fn authorize_workspace(

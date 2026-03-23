@@ -4,8 +4,9 @@ use std::sync::Arc;
 use axiomsync_domain::domain::{
     AdminTokenPlan, AnchorRow, ArtifactRow, AuthSnapshot, ClaimEvidenceRow, ClaimRow, DerivePlan,
     DoctorReport, EntryRow, EpisodeRow, IngestPlan, IngressReceiptRow, InsightAnchorRow,
-    InsightRow, ProcedureEvidenceRow, ProcedureRow, ProjectionPlan, SearchDocsRow, SearchHit,
-    SessionRow, SourceCursorRow, SourceCursorUpsertPlan, VerificationRow, WorkspaceTokenPlan,
+    InsightRow, ProcedureEvidenceRow, ProcedureRow, ProjectionPlan, ReplayPlan, SearchDocsRow,
+    SearchHit, SessionRow, SourceCursorRow, SourceCursorUpsertPlan, VerificationRow,
+    WorkspaceTokenPlan,
 };
 use axiomsync_domain::error::Result;
 use serde_json::Value;
@@ -23,6 +24,7 @@ pub trait RepositoryPort: Send + Sync {
     fn load_source_cursors(&self) -> Result<Vec<SourceCursorRow>>;
     fn apply_ingest(&self, plan: &IngestPlan) -> Result<Value>;
     fn apply_source_cursor_upsert(&self, plan: &SourceCursorUpsertPlan) -> Result<Value>;
+    fn apply_replay(&self, plan: &ReplayPlan) -> Result<Value>;
     fn replace_projection(&self, plan: &ProjectionPlan) -> Result<Value>;
     fn replace_derivation(&self, plan: &DerivePlan) -> Result<Value>;
     fn load_sessions(&self) -> Result<Vec<SessionRow>>;

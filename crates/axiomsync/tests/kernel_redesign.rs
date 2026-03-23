@@ -2,7 +2,7 @@ use std::fs;
 
 use axiomsync::domain::{
     AppendRawEventsRequest, SearchClaimsRequest, SearchEntriesRequest, SearchFilter,
-    SearchProceduresRequest, UpsertSourceCursorRequest, workspace_stable_id,
+    SearchProceduresRequest, SessionRow, UpsertSourceCursorRequest, workspace_stable_id,
 };
 use rusqlite::Connection;
 use tempfile::tempdir;
@@ -316,6 +316,54 @@ fn duplicate_dedupe_and_source_cursor_upsert_are_idempotent() {
         )
         .expect("cursor metadata");
     assert_eq!(cursor_metadata, "{}");
+}
+
+#[test]
+fn replay_apply_is_atomic_when_derivation_write_fails() {
+    let temp = tempdir().expect("tempdir");
+    let app = axiomsync::open(temp.path()).expect("app");
+
+    let ingest = app
+        .plan_append_raw_events(sample_request())
+        .expect("plan ingest");
+    app.apply_ingest_plan(&ingest).expect("apply ingest");
+    app.rebuild().expect("initial rebuild");
+
+    let conn = Connection::open(app.db_path()).expect("open sqlite");
+    let session_count_before: i64 = conn
+        .query_row("select count(*) from sessions", [], |row| row.get(0))
+        .expect("session count before");
+    drop(conn);
+
+    let mut plan = app.build_replay_plan().expect("replay plan");
+    plan.projection.sessions.push(SessionRow {
+        session_id: "session_extra".to_string(),
+        session_kind: "conversation".to_string(),
+        connector: "relay".to_string(),
+        external_session_key: Some("extra".to_string()),
+        title: Some("extra".to_string()),
+        workspace_root: Some("/workspace/demo".to_string()),
+        opened_at: None,
+        closed_at: None,
+        metadata_json: serde_json::json!({}),
+    });
+    plan.derivation.episodes[0].session_id = Some("missing-session".to_string());
+
+    assert!(app.apply_replay(&plan).is_err());
+
+    let conn = Connection::open(app.db_path()).expect("open sqlite");
+    let session_count: i64 = conn
+        .query_row("select count(*) from sessions", [], |row| row.get(0))
+        .expect("session count");
+    assert_eq!(session_count, session_count_before);
+    let extra_session_count: i64 = conn
+        .query_row(
+            "select count(*) from sessions where session_id = 'session_extra'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("extra session count");
+    assert_eq!(extra_session_count, 0);
 }
 
 #[test]

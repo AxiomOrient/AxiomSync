@@ -155,12 +155,7 @@ async fn rebuild_index(
 ) -> HttpResult<Json<Value>> {
     authorize_admin(&state.app, &headers)?;
     let plan = state.app.build_replay_plan()?;
-    let projection_result = state.app.apply_projection_plan(&plan.projection)?;
-    let derivation_result = state.app.apply_derivation_plan(&plan.derivation)?;
-    Ok(Json(json!({
-        "projection": projection_result,
-        "derivation": derivation_result,
-    })))
+    Ok(Json(state.app.apply_replay(&plan)?))
 }
 
 async fn get_session(
