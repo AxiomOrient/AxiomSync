@@ -10,3 +10,4 @@
 - [RELEASE_RUNBOOK.md](./RELEASE_RUNBOOK.md): 출시 전 최종 체크
 
 `docs/`에는 현재 구현과 직접 맞는 문서만 유지한다.
+루트에 있는 review package나 설계 참고 자료는 현재 릴리스 계약이 아니라 배경 자료로만 취급한다.

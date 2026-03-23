@@ -2,6 +2,12 @@
 
 Universal agent memory kernel for recording immutable raw records into a single SQLite `context.db`, projecting them into canonical views, and deriving evidence-backed knowledge over CLI, HTTP, MCP, and a Rust-rendered web UI.
 
+## Repository Boundary
+- This repository owns the kernel workspace, CLI, HTTP API, MCP surface, and local web UI.
+- The canonical external write boundary is the raw-only `sink` surface exposed by this repository.
+- Edge capture, spool, retry, approval, browser integration, and connector-specific delivery live in a separate external repository and are not part of this release surface.
+- Any review package or extraction notes checked into this repository are reference material only, not the release contract.
+
 ## Runtime Model
 - Domain state: single SQLite store at `<root>/context.db`
 - Auth grants: `<root>/auth.json`
@@ -44,6 +50,7 @@ cargo run -p axiomsync -- web --addr 127.0.0.1:4400
 - `sink plan-upsert-source-cursor`: build `SourceCursorUpsertPlan` without mutating the store
 - `sink apply-source-cursor-plan`: apply a previously serialized cursor plan
 - `web`: serves `GET /health`, query/admin routes, and `/sink/*` on one server
+- external collectors and edge runtimes integrate only through these `sink` routes or equivalent CLI commands
 
 ## Kernel Flow
 - `project plan-rebuild`: produce `ReplayPlan` from current raw ledger plus collected enrichment

@@ -6,7 +6,8 @@
 - 이 저장소는 AxiomSync kernel, CLI, HTTP API, MCP server, local web UI를 소유한다.
 - canonical write contract는 raw-only `sink` surface다.
 - canonical read model은 `record -> view -> knowledge` 3층이다.
-- capture extension, daemon, fallback worker는 이 저장소 범위 밖이다.
+- capture extension, edge daemon, spool, retry, approval, fallback worker는 별도 외부 레포가 소유하며 이 저장소의 릴리스 범위 밖이다.
+- 외부 시스템은 이 저장소와 `sink` contract로만 통합된다고 가정한다.
 - 과거 v3 resource/event/link runtime, migration, release-pack surface는 현재 릴리스 범위에 포함되지 않는다.
 
 ## Runtime Files
@@ -76,6 +77,7 @@
 
 canonical read nouns는 `cases`, `threads`, `runs`, `tasks`, `documents`, `evidence`다.
 `episodes`와 `runbooks`는 compatibility route로 유지된다.
+이 문서는 kernel/query surface만 다루며 external edge repository의 capture/admin API는 포함하지 않는다.
 
 ## MCP Surface
 - transports: `stdio`, HTTP

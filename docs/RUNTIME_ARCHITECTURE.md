@@ -16,6 +16,8 @@
 4. SQLite adapter applies plans inside transaction boundaries
 5. query surfaces read view state and evidence-backed knowledge
 
+External collectors or edge runtimes are expected to live outside this repository and write through the `sink` HTTP/CLI surface instead of linking to repository internals.
+
 ## Storage Model
 - raw record ledger: `raw_event`
 - view projection:
@@ -33,8 +35,8 @@ public canonical noun은 `case`이고, 기존 `episode`/`runbook`는 compatibili
 - filesystem, HTTP, browser, SQLite, and LLM calls stay behind adapter modules
 - kernel depends on ports, not concrete app/store implementations
 - dry-run never mutates store state
-- external daemons write through `/sink/*` on the main web router
-- capture/spool/retry/file watching은 kernel 밖 책임이다
+- external edge repositories write through `/sink/*` on the main web router or the equivalent CLI plan/apply flow
+- capture/spool/retry/file watching/approval은 이 저장소 밖 책임이다
 - `program`/`state` 파일은 직접 정본으로 읽지 않고 external importer가 `document_snapshot` record로 전달한다
 
 ## Retrieval Model

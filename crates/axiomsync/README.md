@@ -14,6 +14,8 @@
 - `sink *`는 canonical kernel write surface다.
 - projection/derive/query semantics는 계속 kernel이 소유한다.
 - app shell은 request를 plan으로 만들거나 plan을 apply adapter에 넘기는 orchestration만 수행한다.
+- capture/spool/retry/approval/browser integration은 이 crate 범위 밖이며 외부 edge repository가 소유한다.
+- 이 crate는 external edge runtime을 직접 포함하지 않고 kernel-facing surface만 제공한다.
 
 ## Invariants
 - 모든 의사결정 로직은 `Parse -> Normalize -> Plan -> Apply` 순서를 따른다.

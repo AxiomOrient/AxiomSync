@@ -4,6 +4,7 @@
 
 ## Preflight
 - `README.md`와 `docs/`를 기준 문서로 사용한다.
+- 외부 edge repository의 capture/daemon 문서는 이 저장소 릴리스 계약으로 간주하지 않는다.
 - 삭제된 legacy command나 script를 릴리스 기준으로 다시 되살리지 않는다.
 - root는 항상 새 임시 디렉터리로 검증한다.
 
@@ -29,4 +30,5 @@ cargo run -p axiomsync -- --root "$tmp_root" search "smoke"
 ## Release Decision
 - commands above must succeed
 - docs must describe only current commands and files
+- docs must describe this repository's owned surface only
 - no release guide may reference removed legacy commands or deleted helper scripts
