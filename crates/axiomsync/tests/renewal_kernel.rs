@@ -1,16 +1,74 @@
 use std::sync::Arc;
 
 use axiomsync::domain::{
-    ConnectorBatchInput, ConvSessionRow, ConvTurnRow, CursorInput, DerivePlan, EpisodeExtraction,
-    EpisodeRow, EpisodeStatus, ProjectionPlan, RawEventInput, SearchDocRedactedRow,
-    SearchEpisodesFilter, SearchEpisodesRequest, VerificationExtraction, VerificationKind,
-    VerificationStatus, WorkspaceRow,
+    AppendRawEventsRequest, ConnectorBatchInput, ConvSessionRow, ConvTurnRow, CursorInput,
+    DerivePlan, EpisodeExtraction, EpisodeRow, EpisodeStatus, ProjectionPlan, RawEventInput,
+    SearchDocRedactedRow, SearchEpisodesFilter, SearchEpisodesRequest, UpsertSourceCursorRequest,
+    VerificationExtraction, VerificationKind, VerificationStatus, WorkspaceRow,
 };
 use axiomsync::kernel::AxiomSync;
 use axiomsync::llm::MockLlmClient;
 use rusqlite::Connection;
 use serde_json::json;
 use tempfile::tempdir;
+
+fn plan_ingest(
+    app: &AxiomSync,
+    batch: &ConnectorBatchInput,
+) -> axiomsync::Result<axiomsync::domain::IngestPlan> {
+    let existing = app.load_existing_raw_event_keys()?;
+    app.plan_ingest(&existing, batch)
+}
+
+fn plan_derivation(app: &AxiomSync) -> axiomsync::Result<axiomsync::domain::DerivePlan> {
+    let inputs = app.load_derivation_inputs()?;
+    let contexts = app.plan_derivation_contexts(&inputs);
+    let enrichment = app.collect_derivation_enrichment(&contexts)?;
+    app.plan_derivation(&inputs, &enrichment)
+}
+
+fn plan_replay(app: &AxiomSync) -> axiomsync::Result<axiomsync::domain::ReplayPlan> {
+    let raw_events = app.load_raw_events()?;
+    let projection = app.plan_projection(&raw_events)?;
+    let inputs = app.derivation_inputs_from_projection(&projection);
+    let contexts = app.plan_derivation_contexts(&inputs);
+    let enrichment = app.collect_derivation_enrichment(&contexts)?;
+    app.plan_replay(&raw_events, &enrichment)
+}
+
+fn plan_purge(
+    app: &AxiomSync,
+    source: Option<&str>,
+    workspace_id: Option<&str>,
+) -> axiomsync::Result<axiomsync::domain::PurgePlan> {
+    let raw_events = app.load_raw_events()?;
+    let mut surviving = Vec::new();
+    for event in &raw_events {
+        if !axiomsync::logic::raw_event_matches_purge(event, source, workspace_id)? {
+            surviving.push(event.clone());
+        }
+    }
+    let projection = app.plan_projection(&surviving)?;
+    let inputs = app.derivation_inputs_from_projection(&projection);
+    let contexts = app.plan_derivation_contexts(&inputs);
+    let enrichment = app.collect_derivation_enrichment(&contexts)?;
+    app.plan_purge(&raw_events, source, workspace_id, &enrichment)
+}
+
+fn plan_repair(
+    app: &AxiomSync,
+    batch: &ConnectorBatchInput,
+) -> axiomsync::Result<axiomsync::domain::RepairPlan> {
+    let ingest = plan_ingest(app, batch)?;
+    let raw_events = app.load_raw_events()?;
+    let mut combined = raw_events.clone();
+    combined.extend(ingest.adds.iter().map(|event| event.row.clone()));
+    let projection = app.plan_projection(&combined)?;
+    let inputs = app.derivation_inputs_from_projection(&projection);
+    let contexts = app.plan_derivation_contexts(&inputs);
+    let enrichment = app.collect_derivation_enrichment(&contexts)?;
+    app.plan_repair(&raw_events, &ingest, &enrichment)
+}
 
 fn mock_app() -> AxiomSync {
     let temp = tempdir().expect("tempdir");
@@ -44,7 +102,7 @@ fn sample_batch(connector: &str) -> ConnectorBatchInput {
     ConnectorBatchInput {
         events: vec![
             RawEventInput {
-                connector: connector.to_string(),
+                source: connector.to_string(),
                 native_schema_version: Some("v1".to_string()),
                 native_session_id: format!("{connector}-session"),
                 native_event_id: Some("evt-1".to_string()),
@@ -58,7 +116,7 @@ fn sample_batch(connector: &str) -> ConnectorBatchInput {
                 }),
             },
             RawEventInput {
-                connector: connector.to_string(),
+                source: connector.to_string(),
                 native_schema_version: Some("v1".to_string()),
                 native_session_id: format!("{connector}-session"),
                 native_event_id: Some("evt-2".to_string()),
@@ -72,7 +130,7 @@ fn sample_batch(connector: &str) -> ConnectorBatchInput {
                 }),
             },
             RawEventInput {
-                connector: connector.to_string(),
+                source: connector.to_string(),
                 native_schema_version: Some("v1".to_string()),
                 native_session_id: format!("{connector}-session"),
                 native_event_id: Some("evt-3".to_string()),
@@ -87,7 +145,7 @@ fn sample_batch(connector: &str) -> ConnectorBatchInput {
                 }),
             },
             RawEventInput {
-                connector: connector.to_string(),
+                source: connector.to_string(),
                 native_schema_version: Some("v1".to_string()),
                 native_session_id: format!("{connector}-session"),
                 native_event_id: Some("evt-4".to_string()),
@@ -112,8 +170,11 @@ fn sample_batch(connector: &str) -> ConnectorBatchInput {
 #[test]
 fn init_creates_sqlite_schema_and_extra_tables() {
     let app = mock_app();
-    app.init().expect("init");
+    let report = app.init().expect("init");
     assert!(app.db_path().exists());
+    assert!(report.get("auth_path").is_some(), "{report}");
+    assert!(report.get("connectors_path").is_none(), "{report}");
+    assert!(!app.root().join("connectors.toml").exists());
 
     let conn = Connection::open(app.db_path()).expect("sqlite");
     for table in [
@@ -134,6 +195,12 @@ fn init_creates_sqlite_schema_and_extra_tables() {
         "search_doc_redacted_fts",
         "insight_anchor",
         "insight_fts",
+        "execution_run",
+        "execution_task",
+        "execution_check",
+        "execution_approval",
+        "execution_event",
+        "document_record",
     ] {
         let exists: i64 = conn
             .query_row(
@@ -150,9 +217,7 @@ fn init_creates_sqlite_schema_and_extra_tables() {
 fn ingest_project_derive_search_flow_is_deterministic() {
     let app = mock_app();
 
-    let ingest_plan = app
-        .plan_ingest(&sample_batch("codex"))
-        .expect("plan ingest");
+    let ingest_plan = plan_ingest(&app, &sample_batch("codex")).expect("plan ingest");
     assert_eq!(ingest_plan.adds.len(), 4);
     app.apply_ingest(&ingest_plan).expect("apply ingest");
     let conn = Connection::open(app.db_path()).expect("sqlite");
@@ -161,12 +226,13 @@ fn ingest_project_derive_search_flow_is_deterministic() {
         .expect("journal count");
     assert_eq!(journal_count, 1);
 
-    let projection_plan = app.plan_projection().expect("projection");
+    let raw_events = app.load_raw_events().expect("raw events");
+    let projection_plan = app.plan_projection(&raw_events).expect("projection");
     assert_eq!(projection_plan.conv_sessions.len(), 1);
     app.apply_projection(&projection_plan)
         .expect("apply projection");
 
-    let derive_plan = app.plan_derivation().expect("derive");
+    let derive_plan = plan_derivation(&app).expect("derive");
     assert_eq!(derive_plan.episodes.len(), 2);
     app.apply_derivation(&derive_plan).expect("apply derive");
     let search_doc_count: i64 = conn
@@ -202,20 +268,56 @@ fn ingest_project_derive_search_flow_is_deterministic() {
     assert_eq!(runbook.commands, vec!["cargo test -p axiomsync"]);
     assert_eq!(runbook.verification[0].status, VerificationStatus::Pass);
 
-    let replan = app.plan_ingest(&sample_batch("codex")).expect("replan");
+    let replan = plan_ingest(&app, &sample_batch("codex")).expect("replan");
     assert_eq!(replan.adds.len(), 0);
 }
 
 #[test]
-fn connector_dedup_and_cursor_work_for_all_connectors() {
+fn sink_contract_parity_holds_for_all_connectors() {
     for connector in ["chatgpt", "codex", "claude_code", "gemini_cli"] {
         let app = mock_app();
-        let plan = app.plan_ingest(&sample_batch(connector)).expect("plan");
-        app.apply_ingest(&plan).expect("apply");
-        let second = app
-            .plan_ingest(&sample_batch(connector))
-            .expect("plan second");
-        assert_eq!(second.adds.len(), 0, "{connector}");
+        let batch = sample_batch(connector);
+        let append_request = AppendRawEventsRequest {
+            request_id: Some(format!("req-{connector}")),
+            events: batch.events.clone(),
+        };
+        let first_batch = app
+            .build_append_batch(&append_request)
+            .expect("append batch first");
+        let first_existing = app.load_existing_raw_event_keys().expect("existing first");
+        let first_plan = app
+            .plan_ingest(&first_existing, &first_batch)
+            .expect("sink append first");
+        assert_eq!(first_plan.adds.len(), 4, "{connector}");
+        assert_eq!(first_plan.skipped_dedupe_keys.len(), 0, "{connector}");
+        app.apply_ingest(&first_plan).expect("apply first");
+
+        let second_batch = app
+            .build_append_batch(&append_request)
+            .expect("append batch second");
+        let second_existing = app.load_existing_raw_event_keys().expect("existing second");
+        let second_plan = app
+            .plan_ingest(&second_existing, &second_batch)
+            .expect("sink append second");
+        assert_eq!(second_plan.adds.len(), 0, "{connector}");
+        assert_eq!(second_plan.skipped_dedupe_keys.len(), 4, "{connector}");
+
+        let cursor_request = UpsertSourceCursorRequest {
+            source: connector.to_string(),
+            cursor: batch.cursor.clone().expect("cursor"),
+        };
+        let cursor_plan = app
+            .plan_source_cursor_upsert(&cursor_request)
+            .expect("cursor plan");
+        let cursor_response = app
+            .apply_source_cursor_upsert(&cursor_plan)
+            .expect("cursor upsert");
+        assert_eq!(
+            cursor_response["cursor"]["connector"].as_str(),
+            Some(connector),
+            "{connector}"
+        );
+
         let conn = Connection::open(app.db_path()).expect("sqlite");
         let raw_count: i64 = conn
             .query_row("select count(*) from raw_event", [], |row| row.get(0))
@@ -261,8 +363,110 @@ fn apply_projection_rejects_turn_without_item() {
         conv_items: vec![],
         artifacts: vec![],
         evidence_anchors: vec![],
+        execution_runs: vec![],
+        execution_tasks: vec![],
+        execution_checks: vec![],
+        execution_approvals: vec![],
+        execution_events: vec![],
+        document_records: vec![],
     };
     assert!(app.apply_projection(&invalid).is_err());
+}
+
+#[test]
+fn universal_agent_records_project_to_execution_and_document_views_only() {
+    let app = mock_app();
+    let batch = ConnectorBatchInput {
+        events: vec![
+            RawEventInput {
+                source: "codex".to_string(),
+                native_schema_version: Some("v1".to_string()),
+                native_session_id: "thread-session".to_string(),
+                native_event_id: Some("thread-1".to_string()),
+                event_type: "user_message".to_string(),
+                ts_ms: 1_710_000_000_000,
+                payload: json!({
+                    "workspace_root": "/repo/app",
+                    "turn_id": "turn-1",
+                    "actor": "user",
+                    "text": "Investigate timeout error"
+                }),
+            },
+            RawEventInput {
+                source: "codex".to_string(),
+                native_schema_version: Some("agent-record-v1".to_string()),
+                native_session_id: "runtime-session".to_string(),
+                native_event_id: Some("run-1".to_string()),
+                event_type: "task_state".to_string(),
+                ts_ms: 1_710_000_001_000,
+                payload: json!({
+                    "workspace_root": "/repo/app",
+                    "record_type": "task_state",
+                    "subject": {"kind": "task", "id": "task-1", "parent_id": "run-1"},
+                    "runtime": {"run_id": "run-1", "task_id": "task-1", "role": "do", "status": "running"},
+                    "task": {"title": "Investigate timeout"},
+                    "body": {"text": "Task is running"}
+                }),
+            },
+            RawEventInput {
+                source: "codex".to_string(),
+                native_schema_version: Some("agent-record-v1".to_string()),
+                native_session_id: "runtime-session".to_string(),
+                native_event_id: Some("doc-1".to_string()),
+                event_type: "document_snapshot".to_string(),
+                ts_ms: 1_710_000_002_000,
+                payload: json!({
+                    "workspace_root": "/repo/app",
+                    "record_type": "document_snapshot",
+                    "subject": {"kind": "document", "id": "mission-doc"},
+                    "document": {
+                        "kind": "mission",
+                        "path": "program/MISSION.md",
+                        "title": "Mission",
+                        "body": "Restore service health"
+                    },
+                    "artifacts": [
+                        {
+                            "uri": "file:///repo/app/program/MISSION.md",
+                            "mime": "text/markdown",
+                            "sha256": "abc123",
+                            "bytes": 23
+                        }
+                    ]
+                }),
+            },
+        ],
+        cursor: None,
+    };
+
+    app.init().expect("init");
+    let ingest = plan_ingest(&app, &batch).expect("plan ingest");
+    app.apply_ingest(&ingest).expect("apply ingest");
+
+    let raw_events = app.load_raw_events().expect("raw events");
+    let projection = app.plan_projection(&raw_events).expect("projection");
+    assert_eq!(projection.conv_sessions.len(), 1);
+    assert_eq!(projection.execution_runs.len(), 1);
+    assert_eq!(projection.execution_tasks.len(), 1);
+    assert_eq!(projection.execution_events.len(), 1);
+    assert_eq!(projection.document_records.len(), 1);
+    assert_eq!(projection.conv_items.len(), 1);
+    app.apply_projection(&projection).expect("apply projection");
+
+    let runs = app.list_runs(None).expect("runs");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].run_id, "run-1");
+    assert_eq!(runs[0].producer, "codex");
+
+    let documents = app
+        .list_documents(None, Some("mission"))
+        .expect("documents");
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0].document_id, "mission-doc");
+    assert_eq!(documents[0].kind, "mission");
+
+    let derive = plan_derivation(&app).expect("derive");
+    assert_eq!(derive.episodes.len(), 1);
 }
 
 #[test]
@@ -296,10 +500,10 @@ fn replay_doctor_purge_and_repair_stay_deterministic() {
     let app = mock_app();
     let batch = sample_batch("codex");
 
-    let ingest = app.plan_ingest(&batch).expect("plan ingest");
+    let ingest = plan_ingest(&app, &batch).expect("plan ingest");
     app.apply_ingest(&ingest).expect("apply ingest");
 
-    let replay = app.plan_replay().expect("plan replay");
+    let replay = plan_replay(&app).expect("plan replay");
     app.apply_replay(&replay).expect("apply replay");
     let baseline_runbooks = app.list_runbooks().expect("runbooks");
     let baseline_results = app
@@ -310,7 +514,7 @@ fn replay_doctor_purge_and_repair_stay_deterministic() {
         })
         .expect("search");
 
-    let second_replay = app.plan_replay().expect("plan replay second");
+    let second_replay = plan_replay(&app).expect("plan replay second");
     assert_eq!(replay, second_replay);
     app.apply_replay(&second_replay)
         .expect("apply replay second");
@@ -335,7 +539,7 @@ fn replay_doctor_purge_and_repair_stay_deterministic() {
         Some(axiomsync::domain::RENEWAL_SCHEMA_VERSION)
     );
 
-    let purge = app.plan_purge(Some("codex"), None).expect("plan purge");
+    let purge = plan_purge(&app, Some("codex"), None).expect("plan purge");
     assert_eq!(purge.deleted_raw_event_ids.len(), 4);
     app.apply_purge(&purge).expect("apply purge");
 
@@ -349,7 +553,7 @@ fn replay_doctor_purge_and_repair_stay_deterministic() {
     assert_eq!(raw_count, 0);
     assert_eq!(episode_count, 0);
 
-    let repair = app.plan_repair(&batch).expect("plan repair");
+    let repair = plan_repair(&app, &batch).expect("plan repair");
     app.apply_repair(&repair).expect("apply repair");
     assert_eq!(
         baseline_runbooks,

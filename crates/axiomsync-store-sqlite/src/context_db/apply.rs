@@ -5,10 +5,18 @@ mod apply_ingest;
 mod apply_maintenance;
 mod apply_projection;
 mod apply_replay;
+mod apply_sink;
 
 impl ContextDb {
     pub fn apply_ingest(&self, plan: &IngestPlan) -> Result<serde_json::Value> {
         self.with_write_tx(|tx| Self::apply_ingest_in_tx(tx, plan))
+    }
+
+    pub fn apply_source_cursor_upsert(
+        &self,
+        plan: &SourceCursorUpsertPlan,
+    ) -> Result<serde_json::Value> {
+        self.with_write_tx(|tx| Self::apply_source_cursor_upsert_in_tx(tx, plan))
     }
 
     pub fn delete_raw_events(&self, stable_ids: &[String]) -> Result<usize> {

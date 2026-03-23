@@ -1,15 +1,15 @@
 use crate::domain::{
-    EpisodeRow, InsightAnchorRow, InsightKind, InsightRow, RunbookRecord, RunbookVerification,
-    VerificationRow,
+    CaseRecord, EpisodeRow, InsightAnchorRow, InsightKind, InsightRow, RunbookRecord,
+    RunbookVerification, VerificationRow,
 };
 use crate::error::Result;
 
-pub fn synthesize_runbook(
+pub fn synthesize_case(
     episode: &EpisodeRow,
     insights: &[InsightRow],
     insight_anchors: &[InsightAnchorRow],
     verifications: &[VerificationRow],
-) -> Result<RunbookRecord> {
+) -> Result<CaseRecord> {
     let problem = insights
         .iter()
         .find(|insight| insight.kind == InsightKind::Problem)
@@ -53,16 +53,25 @@ pub fn synthesize_runbook(
                 .map(|value| format!("axiom://evidence/{value}")),
         })
         .collect::<Vec<_>>();
-    let runbook = RunbookRecord {
-        episode_id: episode.stable_id.clone(),
+    let case = CaseRecord {
+        case_id: episode.stable_id.clone(),
         workspace_id: episode.workspace_id.clone(),
         problem,
         root_cause,
-        fix,
+        resolution: fix,
         commands,
         verification,
         evidence,
     };
-    runbook.validate()?;
-    Ok(runbook)
+    case.validate()?;
+    Ok(case)
+}
+
+pub fn synthesize_runbook(
+    episode: &EpisodeRow,
+    insights: &[InsightRow],
+    insight_anchors: &[InsightAnchorRow],
+    verifications: &[VerificationRow],
+) -> Result<RunbookRecord> {
+    Ok(synthesize_case(episode, insights, insight_anchors, verifications)?.into())
 }

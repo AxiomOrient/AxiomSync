@@ -82,6 +82,12 @@ fn projection_plan_requires_item_for_every_turn() {
         conv_items: vec![],
         artifacts: vec![],
         evidence_anchors: vec![],
+        execution_runs: vec![],
+        execution_tasks: vec![],
+        execution_checks: vec![],
+        execution_approvals: vec![],
+        execution_events: vec![],
+        document_records: vec![],
     };
     assert!(plan.validate().is_err());
 }

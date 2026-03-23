@@ -5,6 +5,7 @@ mod planning;
 mod projection;
 mod runbook;
 mod search;
+mod sink;
 mod verification;
 
 pub use auth::*;
@@ -14,4 +15,5 @@ pub use planning::*;
 pub use projection::*;
 pub use runbook::*;
 pub use search::*;
+pub use sink::*;
 pub use verification::*;

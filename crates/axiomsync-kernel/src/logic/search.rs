@@ -26,7 +26,7 @@ pub fn filter_matches(
     {
         return false;
     }
-    if let Some(expected) = filter.connector.as_deref()
+    if let Some(expected) = filter.source.as_deref()
         && connector != Some(expected)
     {
         return false;
@@ -118,7 +118,7 @@ fn aggregate_episode_search_results(
                 .or_insert_with(|| SearchEpisodesResult {
                     episode_id: row.episode_id.clone(),
                     workspace_id: row.workspace_id.clone(),
-                    connector: row.connector.clone(),
+                    source: row.connector.clone(),
                     status: row.status,
                     problem: String::new(),
                     root_cause: None,
@@ -210,7 +210,7 @@ fn fallback_episode_search_results(
         results.push(SearchEpisodesResult {
             episode_id: episode.stable_id.clone(),
             workspace_id: episode.workspace_id.clone(),
-            connector,
+            source: connector,
             status: episode.status,
             problem: episode_insights
                 .iter()

@@ -2,11 +2,40 @@ use serde::{Deserialize, Serialize};
 
 use super::derived::{InsightRow, SearchDocRedactedRow, VerificationRow};
 use super::enums::{EpisodeStatus, InsightKind};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SearchCasesResult {
+    pub case_id: String,
+    pub workspace_id: Option<String>,
+    pub producer: Option<String>,
+    pub status: EpisodeStatus,
+    pub problem: String,
+    pub root_cause: Option<String>,
+    pub resolution: Option<String>,
+    pub score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SearchCasesRequest {
+    pub query: String,
+    pub limit: usize,
+    pub filter: SearchCasesFilter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SearchCasesFilter {
+    #[serde(rename = "producer", alias = "source", alias = "connector")]
+    pub producer: Option<String>,
+    pub workspace_id: Option<String>,
+    pub status: Option<EpisodeStatus>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SearchEpisodesResult {
     pub episode_id: String,
     pub workspace_id: Option<String>,
-    pub connector: Option<String>,
+    #[serde(rename = "source", alias = "connector")]
+    pub source: Option<String>,
     pub status: EpisodeStatus,
     pub problem: String,
     pub root_cause: Option<String>,
@@ -23,7 +52,8 @@ pub struct SearchEpisodesRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct SearchEpisodesFilter {
-    pub connector: Option<String>,
+    #[serde(rename = "source", alias = "connector")]
+    pub source: Option<String>,
     pub workspace_id: Option<String>,
     pub status: Option<EpisodeStatus>,
 }
@@ -70,6 +100,36 @@ pub struct SearchCommandCandidateRow {
     pub episode_id: String,
     pub workspace_id: Option<String>,
     pub command: String,
+}
+
+impl From<SearchEpisodesResult> for SearchCasesResult {
+    fn from(value: SearchEpisodesResult) -> Self {
+        Self {
+            case_id: value.episode_id,
+            workspace_id: value.workspace_id,
+            producer: value.source,
+            status: value.status,
+            problem: value.problem,
+            root_cause: value.root_cause,
+            resolution: value.fix,
+            score: value.score,
+        }
+    }
+}
+
+impl From<SearchCasesResult> for SearchEpisodesResult {
+    fn from(value: SearchCasesResult) -> Self {
+        Self {
+            episode_id: value.case_id,
+            workspace_id: value.workspace_id,
+            source: value.producer,
+            status: value.status,
+            problem: value.problem,
+            root_cause: value.root_cause,
+            fix: value.resolution,
+            score: value.score,
+        }
+    }
 }
 
 pub fn build_search_doc_redacted(

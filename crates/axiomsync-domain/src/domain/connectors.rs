@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
 use super::enums::{VerificationKind, VerificationStatus};
@@ -37,36 +35,4 @@ impl Default for VerificationExtraction {
             human_confirmed: false,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ChatGptConnectorConfig {
-    pub capture_endpoint: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CodexConnectorConfig {
-    pub app_server_base_url: String,
-    pub api_key: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ClaudeCodeConnectorConfig {
-    pub ingest_bind_addr: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct GeminiConnectorConfig {
-    pub watch_directory: String,
-    pub poll_interval_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct ConnectorsConfig {
-    pub chatgpt: Option<ChatGptConnectorConfig>,
-    pub codex: Option<CodexConnectorConfig>,
-    pub claude_code: Option<ClaudeCodeConnectorConfig>,
-    pub gemini_cli: Option<GeminiConnectorConfig>,
-    #[serde(flatten)]
-    pub extra: HashMap<String, toml::Value>,
 }

@@ -1,6 +1,20 @@
 use super::*;
+use crate::domain::stable_hash;
 
 impl AxiomSync {
+    pub fn plan_admin_token_grant(&self, token: &str) -> Result<crate::domain::AdminTokenPlan> {
+        crate::logic::plan_admin_token_grant(token)
+    }
+
+    pub fn apply_admin_token_grant(&self, plan: &crate::domain::AdminTokenPlan) -> Result<Value> {
+        let snapshot = self.auth.read()?;
+        let next = crate::logic::apply_admin_token_plan(&snapshot, plan);
+        self.auth.write(&next)?;
+        Ok(serde_json::json!({
+            "admin_token_sha256": plan.token_sha256,
+        }))
+    }
+
     pub fn plan_workspace_token_grant(
         &self,
         canonical_root: &str,
@@ -47,5 +61,20 @@ impl AxiomSync {
             ));
         }
         Ok(matched.into_iter().next())
+    }
+
+    pub fn authorize_admin(&self, token: &str) -> Result<()> {
+        let snapshot = self.auth.read()?;
+        let token_sha = stable_hash(&[token]);
+        if snapshot
+            .admin_tokens
+            .iter()
+            .any(|entry| entry == &token_sha)
+        {
+            return Ok(());
+        }
+        Err(AxiomError::PermissionDenied(
+            "invalid admin bearer token".to_string(),
+        ))
     }
 }

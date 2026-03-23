@@ -36,7 +36,10 @@ pub struct AuthGrantRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct AuthSnapshot {
     pub schema_version: String,
+    #[serde(default)]
     pub grants: Vec<AuthGrantRecord>,
+    #[serde(default)]
+    pub admin_tokens: Vec<String>,
 }
 
 impl AuthSnapshot {
@@ -45,6 +48,7 @@ impl AuthSnapshot {
         Self {
             schema_version: RENEWAL_SCHEMA_VERSION.to_string(),
             grants: Vec::new(),
+            admin_tokens: Vec::new(),
         }
     }
 }

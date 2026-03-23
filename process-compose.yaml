@@ -1,8 +1,13 @@
 version: "0.5"
 
 processes:
-  queue_daemon:
+  web:
     command: >-
-      sh -lc 'mkdir -p logs && cargo run -p axiomsync -- --root .axiomsync queue daemon --max-cycles 1000000 --sleep-ms 1000 --stop-when-idle=false --idle-cycles 3 >> logs/queue_daemon.log 2>&1'
+      sh -lc 'mkdir -p logs && cargo run -p axiomsync -- --root .axiomsync web --addr 127.0.0.1:4400 >> logs/web.log 2>&1'
+    availability:
+      restart: on_failure
+  mcp_http:
+    command: >-
+      sh -lc 'mkdir -p logs && cargo run -p axiomsync -- --root .axiomsync mcp serve --transport http --addr 127.0.0.1:4401 >> logs/mcp_http.log 2>&1'
     availability:
       restart: on_failure

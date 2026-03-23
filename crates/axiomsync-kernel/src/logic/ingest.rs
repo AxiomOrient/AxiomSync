@@ -15,7 +15,7 @@ pub fn normalize_raw_event(input: &RawEventInput) -> Result<NormalizedRawEvent> 
         stable_id: stable_id(
             "raw_event",
             &json!({
-                "connector": input.connector,
+                "source": input.source,
                 "native_session_id": input.native_session_id,
                 "native_event_id": input.native_event_id,
                 "event_type": input.event_type,
@@ -23,7 +23,7 @@ pub fn normalize_raw_event(input: &RawEventInput) -> Result<NormalizedRawEvent> 
                 "payload_sha256": payload_sha256_hex,
             }),
         ),
-        connector: input.connector.clone(),
+        connector: input.source.clone(),
         native_schema_version: input.native_schema_version.clone(),
         native_session_id: input.native_session_id.clone(),
         native_event_id: input.native_event_id.clone(),
@@ -52,9 +52,9 @@ pub fn deterministic_directory_cursor(
     latest_path: Option<&str>,
 ) -> Option<CursorInput> {
     let latest_path = latest_path.map(str::trim).filter(|path| !path.is_empty())?;
-    let connector = events.first()?.connector.as_str();
+    let source = events.first()?.source.as_str();
     Some(CursorInput {
-        cursor_key: format!("{connector}_directory"),
+        cursor_key: format!("{source}_directory"),
         cursor_value: latest_path.to_string(),
         updated_at_ms: events
             .iter()
@@ -86,7 +86,7 @@ pub fn plan_ingest(
 
     let cursor_update = input.cursor.as_ref().and_then(|cursor| {
         input.events.first().map(|event| SourceCursorRow {
-            connector: event.connector.clone(),
+            connector: event.source.clone(),
             cursor_key: cursor.cursor_key.clone(),
             cursor_value: cursor.cursor_value.clone(),
             updated_at_ms: cursor.updated_at_ms,
@@ -96,13 +96,13 @@ pub fn plan_ingest(
         stable_id: stable_id(
             "journal",
             &json!({
-                "connector": event.connector,
+                "source": event.source,
                 "imported_events": adds.len(),
                 "skipped_events": skipped.len(),
                 "cursor": cursor_update,
             }),
         ),
-        connector: event.connector.clone(),
+        connector: event.source.clone(),
         imported_events: adds.len(),
         skipped_events: skipped.len(),
         cursor_key: cursor_update.as_ref().map(|row| row.cursor_key.clone()),

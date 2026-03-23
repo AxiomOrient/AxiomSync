@@ -5,19 +5,21 @@ use serde_json::Value;
 
 use crate::error::{AxiomError, Result};
 
+use super::connectors::{EpisodeExtraction, VerificationExtraction};
 use super::conversation::{
     ArtifactRow, ConvItemRow, ConvSessionRow, ConvTurnRow, EvidenceAnchorRow, ImportJournalRow,
     RawEventRow, SourceCursorRow, WorkspaceRow,
 };
-use super::connectors::{EpisodeExtraction, VerificationExtraction};
 use super::derived::{
-    EpisodeMemberRow, EpisodeRow, InsightAnchorRow, InsightRow, SearchDocRedactedRow,
-    VerificationRow,
+    DocumentRecordRow, EpisodeMemberRow, EpisodeRow, ExecutionApprovalRow, ExecutionCheckRow,
+    ExecutionEventRow, ExecutionRunRow, ExecutionTaskRow, InsightAnchorRow, InsightRow,
+    SearchDocRedactedRow, VerificationRow,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RawEventInput {
-    pub connector: String,
+    #[serde(rename = "source", alias = "connector")]
+    pub source: String,
     pub native_schema_version: Option<String>,
     pub native_session_id: String,
     pub native_event_id: Option<String>,
@@ -28,12 +30,12 @@ pub struct RawEventInput {
 
 impl RawEventInput {
     pub fn validate(&self) -> Result<()> {
-        if self.connector.trim().is_empty()
+        if self.source.trim().is_empty()
             || self.native_session_id.trim().is_empty()
             || self.event_type.trim().is_empty()
         {
             return Err(AxiomError::Validation(
-                "raw event input requires connector, native_session_id, event_type".to_string(),
+                "raw event input requires source, native_session_id, event_type".to_string(),
             ));
         }
         Ok(())
@@ -45,6 +47,17 @@ pub struct CursorInput {
     pub cursor_key: String,
     pub cursor_value: String,
     pub updated_at_ms: i64,
+}
+
+impl CursorInput {
+    pub fn validate(&self) -> Result<()> {
+        if self.cursor_key.trim().is_empty() || self.cursor_value.trim().is_empty() {
+            return Err(AxiomError::Validation(
+                "cursor input requires cursor_key and cursor_value".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -88,6 +101,17 @@ impl IngestPlan {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceCursorUpsertPlan {
+    pub cursor: SourceCursorRow,
+}
+
+impl SourceCursorUpsertPlan {
+    pub fn validate(&self) -> Result<()> {
+        self.cursor.validate()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectionPlan {
     pub workspaces: Vec<WorkspaceRow>,
@@ -96,6 +120,12 @@ pub struct ProjectionPlan {
     pub conv_items: Vec<ConvItemRow>,
     pub artifacts: Vec<ArtifactRow>,
     pub evidence_anchors: Vec<EvidenceAnchorRow>,
+    pub execution_runs: Vec<ExecutionRunRow>,
+    pub execution_tasks: Vec<ExecutionTaskRow>,
+    pub execution_checks: Vec<ExecutionCheckRow>,
+    pub execution_approvals: Vec<ExecutionApprovalRow>,
+    pub execution_events: Vec<ExecutionEventRow>,
+    pub document_records: Vec<DocumentRecordRow>,
 }
 
 impl ProjectionPlan {
@@ -119,6 +149,16 @@ impl ProjectionPlan {
             .conv_items
             .iter()
             .map(|item| item.stable_id.as_str())
+            .collect();
+        let run_ids: HashSet<_> = self
+            .execution_runs
+            .iter()
+            .map(|run| run.stable_id.as_str())
+            .collect();
+        let task_ids: HashSet<_> = self
+            .execution_tasks
+            .iter()
+            .map(|task| task.stable_id.as_str())
             .collect();
 
         for workspace in &self.workspaces {
@@ -181,6 +221,114 @@ impl ProjectionPlan {
                 return Err(AxiomError::Validation(format!(
                     "evidence_anchor {} references unknown item {}",
                     anchor.stable_id, anchor.item_id
+                )));
+            }
+        }
+        for run in &self.execution_runs {
+            run.validate()?;
+            if run
+                .workspace_id
+                .as_deref()
+                .is_some_and(|workspace_id| !workspace_ids.contains(workspace_id))
+            {
+                return Err(AxiomError::Validation(format!(
+                    "execution_run {} references unknown workspace {}",
+                    run.stable_id,
+                    run.workspace_id.as_deref().unwrap_or_default()
+                )));
+            }
+        }
+        for task in &self.execution_tasks {
+            task.validate()?;
+            if !run_ids.contains(task.run_id.as_str()) {
+                return Err(AxiomError::Validation(format!(
+                    "execution_task {} references unknown run {}",
+                    task.stable_id, task.run_id
+                )));
+            }
+            if task
+                .workspace_id
+                .as_deref()
+                .is_some_and(|workspace_id| !workspace_ids.contains(workspace_id))
+            {
+                return Err(AxiomError::Validation(format!(
+                    "execution_task {} references unknown workspace {}",
+                    task.stable_id,
+                    task.workspace_id.as_deref().unwrap_or_default()
+                )));
+            }
+        }
+        for check in &self.execution_checks {
+            check.validate()?;
+            if !run_ids.contains(check.run_id.as_str()) {
+                return Err(AxiomError::Validation(format!(
+                    "execution_check {} references unknown run {}",
+                    check.stable_id, check.run_id
+                )));
+            }
+            if check
+                .task_id
+                .as_deref()
+                .is_some_and(|task_id| !task_ids.contains(task_id))
+            {
+                return Err(AxiomError::Validation(format!(
+                    "execution_check {} references unknown task {}",
+                    check.stable_id,
+                    check.task_id.as_deref().unwrap_or_default()
+                )));
+            }
+        }
+        for approval in &self.execution_approvals {
+            approval.validate()?;
+            if !run_ids.contains(approval.run_id.as_str()) {
+                return Err(AxiomError::Validation(format!(
+                    "execution_approval {} references unknown run {}",
+                    approval.stable_id, approval.run_id
+                )));
+            }
+            if approval
+                .task_id
+                .as_deref()
+                .is_some_and(|task_id| !task_ids.contains(task_id))
+            {
+                return Err(AxiomError::Validation(format!(
+                    "execution_approval {} references unknown task {}",
+                    approval.stable_id,
+                    approval.task_id.as_deref().unwrap_or_default()
+                )));
+            }
+        }
+        for event in &self.execution_events {
+            event.validate()?;
+            if !run_ids.contains(event.run_id.as_str()) {
+                return Err(AxiomError::Validation(format!(
+                    "execution_event {} references unknown run {}",
+                    event.stable_id, event.run_id
+                )));
+            }
+            if event
+                .task_id
+                .as_deref()
+                .is_some_and(|task_id| !task_ids.contains(task_id))
+            {
+                return Err(AxiomError::Validation(format!(
+                    "execution_event {} references unknown task {}",
+                    event.stable_id,
+                    event.task_id.as_deref().unwrap_or_default()
+                )));
+            }
+        }
+        for document in &self.document_records {
+            document.validate()?;
+            if document
+                .workspace_id
+                .as_deref()
+                .is_some_and(|workspace_id| !workspace_ids.contains(workspace_id))
+            {
+                return Err(AxiomError::Validation(format!(
+                    "document_record {} references unknown workspace {}",
+                    document.stable_id,
+                    document.workspace_id.as_deref().unwrap_or_default()
                 )));
             }
         }
@@ -357,6 +505,14 @@ pub struct DerivationContext {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DerivationInputs {
+    pub sessions: Vec<ConvSessionRow>,
+    pub turns: Vec<ConvTurnRow>,
+    pub items: Vec<ConvItemRow>,
+    pub anchors: Vec<EvidenceAnchorRow>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct DerivationEnrichment {
     pub extractions: std::collections::HashMap<String, EpisodeExtraction>,
     pub verifications: std::collections::HashMap<String, Vec<VerificationExtraction>>,
@@ -365,5 +521,10 @@ pub struct DerivationEnrichment {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceTokenPlan {
     pub workspace_id: String,
+    pub token_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminTokenPlan {
     pub token_sha256: String,
 }

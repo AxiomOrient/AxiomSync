@@ -43,20 +43,7 @@ impl ContextDb {
             .map_db_err()?;
         }
         if let Some(cursor) = &plan.cursor_update {
-            tx.execute(
-                "insert into source_cursor (connector, cursor_key, cursor_value, updated_at_ms)
-                 values (?1, ?2, ?3, ?4)
-                 on conflict(connector, cursor_key) do update set
-                 cursor_value = excluded.cursor_value,
-                 updated_at_ms = excluded.updated_at_ms",
-                params![
-                    cursor.connector,
-                    cursor.cursor_key,
-                    cursor.cursor_value,
-                    cursor.updated_at_ms
-                ],
-            )
-            .map_db_err()?;
+            Self::upsert_source_cursor_in_tx(tx, cursor)?;
         }
         Ok(serde_json::to_value(plan)?)
     }

@@ -1,7 +1,5 @@
+use crate::domain::CaseRecord;
 use maud::{DOCTYPE, Markup, html};
-use serde_json::Value;
-
-use crate::domain::RunbookRecord;
 
 fn layout(title: &str, body: Markup) -> String {
     html! {
@@ -32,25 +30,25 @@ fn layout(title: &str, body: Markup) -> String {
     .into_string()
 }
 
-pub fn index(runbooks: &[RunbookRecord]) -> String {
+pub fn index(cases: &[CaseRecord]) -> String {
     layout(
-        "AxiomSync Episodes",
+        "AxiomSync Cases",
         html! {
-            h1 { "AxiomSync Renewal Kernel" }
-            p { "SQLite-backed conversation ledger and runbook surface." }
-            @for runbook in runbooks {
+            h1 { "AxiomSync Agent Memory Kernel" }
+            p { "SQLite-backed case, thread, and evidence surface for universal agent records." }
+            @for case_record in cases {
                 article.card {
                     h2 {
-                        a href=(format!("/episodes/{}", runbook.episode_id)) {
-                            (runbook.problem)
+                        a href=(format!("/cases/{}", case_record.case_id)) {
+                            (case_record.problem)
                         }
                     }
-                    p { code { (runbook.episode_id) } }
-                    @if let Some(fix) = &runbook.fix {
-                        p { (fix) }
+                    p { code { (case_record.case_id) } }
+                    @if let Some(resolution) = &case_record.resolution {
+                        p { (resolution) }
                     }
-                    @if !runbook.commands.is_empty() {
-                        p { "Commands: " (runbook.commands.join(" | ")) }
+                    @if !case_record.commands.is_empty() {
+                        p { "Commands: " (case_record.commands.join(" | ")) }
                     }
                 }
             }
@@ -58,28 +56,28 @@ pub fn index(runbooks: &[RunbookRecord]) -> String {
     )
 }
 
-pub fn episode(runbook: &RunbookRecord) -> String {
+pub fn case_page(case_record: &CaseRecord) -> String {
     layout(
-        "Episode",
+        "Case",
         html! {
-            h1 { (runbook.problem) }
-            p { code { (runbook.episode_id) } }
-            @if let Some(root_cause) = &runbook.root_cause {
+            h1 { (case_record.problem) }
+            p { code { (case_record.case_id) } }
+            @if let Some(root_cause) = &case_record.root_cause {
                 section.card {
                     h2 { "Root Cause" }
                     p { (root_cause) }
                 }
             }
-            @if let Some(fix) = &runbook.fix {
+            @if let Some(resolution) = &case_record.resolution {
                 section.card {
-                    h2 { "Fix" }
-                    p { (fix) }
+                    h2 { "Resolution" }
+                    p { (resolution) }
                 }
             }
             section.card {
                 h2 { "Commands" }
                 ul {
-                    @for command in &runbook.commands {
+                    @for command in &case_record.commands {
                         li { code { (command) } }
                     }
                 }
@@ -87,7 +85,7 @@ pub fn episode(runbook: &RunbookRecord) -> String {
             section.card {
                 h2 { "Verification" }
                 ul {
-                    @for verification in &runbook.verification {
+                    @for verification in &case_record.verification {
                         li {
                             strong { (&verification.kind) " · " (&verification.status) }
                             @if let Some(summary) = &verification.summary {
@@ -100,7 +98,7 @@ pub fn episode(runbook: &RunbookRecord) -> String {
             section.card {
                 h2 { "Evidence" }
                 ul {
-                    @for uri in &runbook.evidence {
+                    @for uri in &case_record.evidence {
                         li { code { (uri) } }
                     }
                 }
@@ -109,14 +107,6 @@ pub fn episode(runbook: &RunbookRecord) -> String {
     )
 }
 
-pub fn connectors(status: &Value) -> String {
-    layout(
-        "Connectors",
-        html! {
-            h1 { "Connector Status" }
-            div.card {
-                pre { (serde_json::to_string_pretty(status).unwrap_or_else(|_| "{}".to_string())) }
-            }
-        },
-    )
+pub fn episode(runbook: &crate::domain::RunbookRecord) -> String {
+    case_page(&runbook.clone().into())
 }

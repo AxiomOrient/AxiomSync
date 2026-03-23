@@ -4,7 +4,7 @@ pub fn run(cli: Cli) -> Result<()> {
     let app = crate::open(cli.root)?;
     match cli.command {
         Command::Init => print_json(&app.init()?)?,
-        Command::Connector(args) => run_connector(app, args)?,
+        Command::Sink(args) => run_sink(app, args)?,
         Command::Project(args) => run_project(app, args)?,
         Command::Derive(args) => run_derive(app, args)?,
         Command::Search(args) => run_search(app, args)?,
@@ -31,43 +31,28 @@ pub fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn run_connector(app: AxiomSync, args: ConnectorArgs) -> Result<()> {
+fn run_sink(app: AxiomSync, args: SinkArgs) -> Result<()> {
     match args.command {
-        ConnectorCommand::Ingest(args) => {
-            let adapter = ConnectorAdapter::from_connector_label(&args.connector);
-            let batch = adapter.load_batch(
-                args.file.as_deref(),
-                args.cursor_key,
-                args.cursor_value,
-                args.cursor_ts_ms,
-            )?;
-            runtime::apply_batch(app, batch, args.dry_run)?;
+        SinkCommand::PlanAppendRawEvents(args) => {
+            let request = crate::sink::load_append_request(&args.file)?;
+            let batch = app.build_append_batch(&request)?;
+            let existing = app.load_existing_raw_event_keys()?;
+            let plan = app.plan_ingest(&existing, &batch)?;
+            print_json(&serde_json::to_value(plan)?)?;
         }
-        ConnectorCommand::Sync(args) => {
-            let adapter = ConnectorAdapter::from_connector_name(args.connector);
-            let batch = adapter.sync_batch(&app)?;
-            runtime::apply_batch(app, batch, args.dry_run)?;
+        SinkCommand::ApplyIngestPlan(args) => {
+            let plan = crate::sink::load_json_file::<crate::domain::IngestPlan>(&args.file)?;
+            print_json(&app.apply_ingest(&plan)?)?;
         }
-        ConnectorCommand::Repair(args) => {
-            let adapter = ConnectorAdapter::from_connector_name(args.connector);
-            let batch = adapter.repair_batch(args.dir.as_deref())?;
-            let plan = app.plan_repair(&batch)?;
-            if args.dry_run {
-                print_json(&serde_json::to_value(plan)?)?;
-            } else {
-                print_json(&serde_json::json!({
-                    "plan": plan,
-                    "applied": app.apply_repair(&plan)?,
-                }))?;
-            }
+        SinkCommand::PlanUpsertSourceCursor(args) => {
+            let request = crate::sink::load_cursor_request(&args.file)?;
+            let plan = app.plan_source_cursor_upsert(&request)?;
+            print_json(&serde_json::to_value(plan)?)?;
         }
-        ConnectorCommand::Watch(args) => {
-            let adapter = ConnectorAdapter::from_connector_name(args.connector);
-            adapter.watch_batch(app, args.dry_run, args.once)?;
-        }
-        ConnectorCommand::Serve(args) => {
-            let adapter = ConnectorAdapter::from_connector_name(args.connector);
-            runtime::build_runtime()?.block_on(adapter.serve_connector_ingest(app, args.addr))?;
+        SinkCommand::ApplySourceCursorPlan(args) => {
+            let plan =
+                crate::sink::load_json_file::<crate::domain::SourceCursorUpsertPlan>(&args.file)?;
+            print_json(&app.apply_source_cursor_upsert(&plan)?)?;
         }
     }
     Ok(())
@@ -75,63 +60,61 @@ fn run_connector(app: AxiomSync, args: ConnectorArgs) -> Result<()> {
 
 fn run_project(app: AxiomSync, args: ProjectArgs) -> Result<()> {
     match args.command {
-        ProjectCommand::Rebuild { dry_run } => {
-            let plan = app.plan_replay()?;
-            if dry_run {
-                print_json(&serde_json::to_value(plan)?)?;
-            } else {
-                print_json(&serde_json::json!({
-                    "plan": plan,
-                    "applied": app.apply_replay(&plan)?,
-                }))?;
-            }
+        ProjectCommand::PlanRebuild => {
+            let plan = crate::build_replay_plan(&app)?;
+            print_json(&serde_json::to_value(plan)?)?;
         }
-        ProjectCommand::Purge {
-            connector,
+        ProjectCommand::ApplyReplayPlan { file } => {
+            let plan = crate::sink::load_json_file::<crate::domain::ReplayPlan>(&file)?;
+            print_json(&app.apply_replay(&plan)?)?;
+        }
+        ProjectCommand::PlanPurge {
+            source,
             workspace_id,
-            dry_run,
         } => {
-            let plan = app.plan_purge(connector.as_deref(), workspace_id.as_deref())?;
-            if dry_run {
-                print_json(&serde_json::to_value(plan)?)?;
-            } else {
-                print_json(&serde_json::json!({
-                    "plan": plan,
-                    "applied": app.apply_purge(&plan)?,
-                }))?;
-            }
+            let plan = crate::build_purge_plan(&app, source.as_deref(), workspace_id.as_deref())?;
+            print_json(&serde_json::to_value(plan)?)?;
+        }
+        ProjectCommand::ApplyPurgePlan { file } => {
+            let plan = crate::sink::load_json_file::<crate::domain::PurgePlan>(&file)?;
+            print_json(&app.apply_purge(&plan)?)?;
         }
         ProjectCommand::Doctor => {
             print_json(&serde_json::to_value(app.doctor()?)?)?;
         }
-        ProjectCommand::AuthGrant {
+        ProjectCommand::PlanAuthGrant {
             workspace_root,
             token,
-            dry_run,
         } => {
             let plan = app.plan_workspace_token_grant(&workspace_root, &token)?;
-            if dry_run {
-                print_json(&serde_json::to_value(plan)?)?;
-            } else {
-                print_json(&serde_json::json!({
-                    "plan": plan,
-                    "applied": app.apply_workspace_token_grant(&plan)?,
-                }))?;
-            }
+            print_json(&serde_json::to_value(plan)?)?;
+        }
+        ProjectCommand::PlanAdminGrant { token } => {
+            let plan = app.plan_admin_token_grant(&token)?;
+            print_json(&serde_json::to_value(plan)?)?;
+        }
+        ProjectCommand::ApplyAuthGrantPlan { file } => {
+            let plan = crate::sink::load_json_file::<crate::domain::WorkspaceTokenPlan>(&file)?;
+            print_json(&app.apply_workspace_token_grant(&plan)?)?;
+        }
+        ProjectCommand::ApplyAdminGrantPlan { file } => {
+            let plan = crate::sink::load_json_file::<crate::domain::AdminTokenPlan>(&file)?;
+            print_json(&app.apply_admin_token_grant(&plan)?)?;
         }
     }
     Ok(())
 }
 
 fn run_derive(app: AxiomSync, args: DeriveArgs) -> Result<()> {
-    let plan = app.plan_derivation()?;
-    if args.dry_run {
-        print_json(&serde_json::to_value(plan)?)?;
-    } else {
-        print_json(&serde_json::json!({
-            "plan": plan,
-            "applied": app.apply_derivation(&plan)?,
-        }))?;
+    match args.command {
+        DeriveCommand::Plan => {
+            let plan = crate::build_derivation_plan(&app)?;
+            print_json(&serde_json::to_value(plan)?)?;
+        }
+        DeriveCommand::ApplyPlan { file } => {
+            let plan = crate::sink::load_json_file::<crate::domain::DerivePlan>(&file)?;
+            print_json(&app.apply_derivation(&plan)?)?;
+        }
     }
     Ok(())
 }
@@ -146,7 +129,7 @@ fn run_search(app: AxiomSync, args: SearchArgs) -> Result<()> {
         query: args.query,
         limit: args.limit,
         filter: SearchEpisodesFilter {
-            connector: args.connector,
+            source: args.source,
             workspace_id: args.workspace_id,
             status: args
                 .status

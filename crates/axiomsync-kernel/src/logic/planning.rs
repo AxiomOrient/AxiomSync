@@ -48,9 +48,7 @@ pub fn raw_event_matches_purge(
     }
     if let Some(expected) = workspace_id {
         let payload: serde_json::Value = serde_json::from_str(&event.payload_json)?;
-        let canonical_root =
-            super::projection::payload_string(&payload, &["workspace_root", "root", "cwd"])
-                .unwrap_or_else(|| ".".to_string());
+        let canonical_root = super::projection::workspace_root_for_payload(&payload);
         if crate::domain::workspace_stable_id(&canonical_root) != expected {
             return Ok(false);
         }

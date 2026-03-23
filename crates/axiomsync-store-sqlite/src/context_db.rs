@@ -7,12 +7,14 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::domain::stable_id as make_stable_id;
 use crate::domain::{
     ArtifactRow, ConvItemRow, ConvSessionRow, ConvTurnRow, DerivePlan, DoctorReport,
-    EpisodeConnectorRow, EpisodeEvidenceSearchRow, EpisodeMemberRow, EpisodeRow, EpisodeStatus,
-    EvidenceAnchorRow, ExistingRawEventKey, ImportJournalRow, IngestPlan, InsightAnchorRow,
-    InsightKind, InsightRow, ItemType, ProjectionPlan, PurgePlan, RawEventRow, RepairPlan,
-    ReplayPlan, SearchCommandCandidateRow, SearchDocRedactedRow, SearchEpisodeFtsRow, SelectorType,
-    SourceCursorRow, ThreadItemView, ThreadTurnView, ThreadView, VerificationKind, VerificationRow,
-    VerificationStatus, WorkspaceRow,
+    DocumentRecordRow, DocumentView, EpisodeConnectorRow, EpisodeEvidenceSearchRow,
+    EpisodeMemberRow, EpisodeRow, EpisodeStatus, EvidenceAnchorRow, ExecutionApprovalRow,
+    ExecutionCheckRow, ExecutionEventRow, ExecutionRunRow, ExecutionTaskRow, ExistingRawEventKey,
+    ImportJournalRow, IngestPlan, InsightAnchorRow, InsightKind, InsightRow, ItemType,
+    ProjectionPlan, PurgePlan, RawEventRow, RepairPlan, ReplayPlan, RunView,
+    SearchCommandCandidateRow, SearchDocRedactedRow, SearchEpisodeFtsRow, SelectorType,
+    SourceCursorRow, SourceCursorUpsertPlan, TaskView, ThreadItemView, ThreadTurnView, ThreadView,
+    VerificationKind, VerificationRow, VerificationStatus, WorkspaceRow,
 };
 use crate::error::{AxiomError, Result};
 use crate::ports::{ReadRepository, TransactionManager, WriteRepository};
@@ -48,6 +50,12 @@ create unique index if not exists idx_conv_turn_stable_id on conv_turn(stable_id
 create unique index if not exists idx_conv_item_stable_id on conv_item(stable_id);
 create unique index if not exists idx_artifact_stable_id on artifact(stable_id);
 create unique index if not exists idx_evidence_anchor_stable_id on evidence_anchor(stable_id);
+create unique index if not exists idx_execution_run_stable_id on execution_run(stable_id);
+create unique index if not exists idx_execution_task_stable_id on execution_task(stable_id);
+create unique index if not exists idx_execution_check_stable_id on execution_check(stable_id);
+create unique index if not exists idx_execution_approval_stable_id on execution_approval(stable_id);
+create unique index if not exists idx_execution_event_stable_id on execution_event(stable_id);
+create unique index if not exists idx_document_record_stable_id on document_record(stable_id);
 create unique index if not exists idx_episode_stable_id on episode(stable_id);
 create unique index if not exists idx_insight_stable_id on insight(stable_id);
 create unique index if not exists idx_verification_stable_id on verification(stable_id);

@@ -93,7 +93,9 @@ pub fn plan_derivation(
                     .into_iter()
                     .flat_map(|items| items.iter())
                     .filter_map(|item| {
-                        anchors_by_item_id.get(&item.stable_id).map(|a| (*a).clone())
+                        anchors_by_item_id
+                            .get(&item.stable_id)
+                            .map(|a| (*a).clone())
                     })
                     .collect::<Vec<_>>()
             })

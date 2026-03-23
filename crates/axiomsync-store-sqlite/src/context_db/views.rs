@@ -40,6 +40,93 @@ impl ContextDb {
         })
     }
 
+    pub fn get_run(&self, run_id: &str) -> Result<RunView> {
+        let run = self
+            .load_execution_runs()?
+            .into_iter()
+            .find(|row| row.stable_id == run_id)
+            .ok_or_else(|| AxiomError::NotFound(format!("run {run_id}")))?;
+        let tasks = self.load_execution_tasks()?;
+        let checks = self.load_execution_checks()?;
+        let approvals = self.load_execution_approvals()?;
+        let events = self.load_execution_events()?;
+
+        let task_views = tasks
+            .iter()
+            .filter(|task| task.run_id == run.stable_id)
+            .cloned()
+            .map(|task| TaskView {
+                checks: checks
+                    .iter()
+                    .filter(|check| check.task_id.as_deref() == Some(task.stable_id.as_str()))
+                    .cloned()
+                    .collect(),
+                approvals: approvals
+                    .iter()
+                    .filter(|approval| approval.task_id.as_deref() == Some(task.stable_id.as_str()))
+                    .cloned()
+                    .collect(),
+                events: events
+                    .iter()
+                    .filter(|event| event.task_id.as_deref() == Some(task.stable_id.as_str()))
+                    .cloned()
+                    .collect(),
+                task,
+            })
+            .collect::<Vec<_>>();
+
+        Ok(RunView {
+            approvals: approvals
+                .into_iter()
+                .filter(|approval| approval.run_id == run.stable_id && approval.task_id.is_none())
+                .collect(),
+            events: events
+                .into_iter()
+                .filter(|event| event.run_id == run.stable_id)
+                .collect(),
+            run,
+            tasks: task_views,
+        })
+    }
+
+    pub fn get_task(&self, task_id: &str) -> Result<TaskView> {
+        let task = self
+            .load_execution_tasks()?
+            .into_iter()
+            .find(|row| row.stable_id == task_id)
+            .ok_or_else(|| AxiomError::NotFound(format!("task {task_id}")))?;
+        let checks = self
+            .load_execution_checks()?
+            .into_iter()
+            .filter(|check| check.task_id.as_deref() == Some(task.stable_id.as_str()))
+            .collect();
+        let approvals = self
+            .load_execution_approvals()?
+            .into_iter()
+            .filter(|approval| approval.task_id.as_deref() == Some(task.stable_id.as_str()))
+            .collect();
+        let events = self
+            .load_execution_events()?
+            .into_iter()
+            .filter(|event| event.task_id.as_deref() == Some(task.stable_id.as_str()))
+            .collect();
+        Ok(TaskView {
+            task,
+            checks,
+            approvals,
+            events,
+        })
+    }
+
+    pub fn get_document(&self, document_id: &str) -> Result<DocumentView> {
+        let document = self
+            .load_document_records()?
+            .into_iter()
+            .find(|row| row.stable_id == document_id)
+            .ok_or_else(|| AxiomError::NotFound(format!("document {document_id}")))?;
+        Ok(DocumentView { document })
+    }
+
     pub fn get_evidence(&self, evidence_id: &str) -> Result<crate::domain::EvidenceView> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
@@ -123,6 +210,39 @@ impl ContextDb {
              left join workspace on workspace.id = conv_session.workspace_id
              where conv_session.stable_id = ?1",
             [thread_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_db_err()
+    }
+
+    pub fn run_workspace_id(&self, run_id: &str) -> Result<Option<String>> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "select workspace_id from execution_run where stable_id = ?1",
+            [run_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_db_err()
+    }
+
+    pub fn task_workspace_id(&self, task_id: &str) -> Result<Option<String>> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "select workspace_id from execution_task where stable_id = ?1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_db_err()
+    }
+
+    pub fn document_workspace_id(&self, document_id: &str) -> Result<Option<String>> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "select workspace_id from document_record where stable_id = ?1",
+            [document_id],
             |row| row.get(0),
         )
         .optional()

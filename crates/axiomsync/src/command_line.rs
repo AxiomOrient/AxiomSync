@@ -4,8 +4,6 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::connectors::ConnectorAdapter;
-use crate::domain::ConnectorBatchInput;
 use crate::domain::{EpisodeStatus, SearchEpisodesFilter, SearchEpisodesRequest};
 use crate::http_api;
 use crate::kernel::AxiomSync;
@@ -19,7 +17,7 @@ pub use dispatch::run;
 
 #[derive(Debug, Parser)]
 #[command(name = "axiomsync")]
-#[command(about = "Conversation-native AxiomSync kernel")]
+#[command(about = "Explicit plan/apply AxiomSync kernel")]
 pub struct Cli {
     #[arg(long, default_value = ".axiomsync")]
     pub root: PathBuf,
@@ -31,7 +29,8 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Init,
-    Connector(ConnectorArgs),
+    #[command(about = "Canonical raw-only kernel sink surface")]
+    Sink(SinkArgs),
     Project(ProjectArgs),
     Derive(DeriveArgs),
     Search(SearchArgs),
@@ -41,78 +40,24 @@ pub enum Command {
 }
 
 #[derive(Debug, Args)]
-pub struct ConnectorArgs {
+#[command(about = "Canonical raw-only kernel sink surface")]
+pub struct SinkArgs {
     #[command(subcommand)]
-    pub command: ConnectorCommand,
+    pub command: SinkCommand,
 }
 
 #[derive(Debug, Subcommand)]
-pub enum ConnectorCommand {
-    Ingest(IngestArgs),
-    Sync(SyncArgs),
-    Repair(RepairArgs),
-    Watch(WatchArgs),
-    Serve(ServeArgs),
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum ConnectorName {
-    Chatgpt,
-    Codex,
-    ClaudeCode,
-    GeminiCli,
+pub enum SinkCommand {
+    PlanAppendRawEvents(SinkFileArgs),
+    ApplyIngestPlan(SinkFileArgs),
+    PlanUpsertSourceCursor(SinkFileArgs),
+    ApplySourceCursorPlan(SinkFileArgs),
 }
 
 #[derive(Debug, Args)]
-pub struct IngestArgs {
+pub struct SinkFileArgs {
     #[arg(long)]
-    pub connector: String,
-    #[arg(long)]
-    pub file: Option<PathBuf>,
-    #[arg(long)]
-    pub dry_run: bool,
-    #[arg(long)]
-    pub cursor_key: Option<String>,
-    #[arg(long)]
-    pub cursor_value: Option<String>,
-    #[arg(long)]
-    pub cursor_ts_ms: Option<i64>,
-}
-
-#[derive(Debug, Args)]
-pub struct SyncArgs {
-    #[arg(value_enum)]
-    pub connector: ConnectorName,
-    #[arg(long)]
-    pub dry_run: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct RepairArgs {
-    #[arg(value_enum)]
-    pub connector: ConnectorName,
-    #[arg(long)]
-    pub dir: Option<PathBuf>,
-    #[arg(long)]
-    pub dry_run: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct WatchArgs {
-    #[arg(value_enum)]
-    pub connector: ConnectorName,
-    #[arg(long)]
-    pub dry_run: bool,
-    #[arg(long)]
-    pub once: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct ServeArgs {
-    #[arg(value_enum)]
-    pub connector: ConnectorName,
-    #[arg(long, default_value = "127.0.0.1:4402")]
-    pub addr: SocketAddr,
+    pub file: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -123,33 +68,55 @@ pub struct ProjectArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ProjectCommand {
-    Rebuild {
+    PlanRebuild,
+    ApplyReplayPlan {
         #[arg(long)]
-        dry_run: bool,
+        file: PathBuf,
     },
-    Purge {
-        #[arg(long)]
-        connector: Option<String>,
+    PlanPurge {
+        #[arg(long, alias = "connector")]
+        source: Option<String>,
         #[arg(long)]
         workspace_id: Option<String>,
+    },
+    ApplyPurgePlan {
         #[arg(long)]
-        dry_run: bool,
+        file: PathBuf,
     },
     Doctor,
-    AuthGrant {
+    PlanAuthGrant {
         #[arg(long)]
         workspace_root: String,
         #[arg(long)]
         token: String,
+    },
+    PlanAdminGrant {
         #[arg(long)]
-        dry_run: bool,
+        token: String,
+    },
+    ApplyAuthGrantPlan {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    ApplyAdminGrantPlan {
+        #[arg(long)]
+        file: PathBuf,
     },
 }
 
 #[derive(Debug, Args)]
 pub struct DeriveArgs {
-    #[arg(long)]
-    pub dry_run: bool,
+    #[command(subcommand)]
+    pub command: DeriveCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DeriveCommand {
+    Plan,
+    ApplyPlan {
+        #[arg(long)]
+        file: PathBuf,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -157,8 +124,8 @@ pub struct SearchArgs {
     pub query: String,
     #[arg(long, default_value_t = 10)]
     pub limit: usize,
-    #[arg(long)]
-    pub connector: Option<String>,
+    #[arg(long, alias = "connector")]
+    pub source: Option<String>,
     #[arg(long)]
     pub workspace_id: Option<String>,
     #[arg(long)]

@@ -90,6 +90,89 @@ create table if not exists evidence_anchor (
   quoted_text text
 );
 
+create table if not exists execution_run (
+  id integer primary key autoincrement,
+  stable_id text not null default '',
+  run_id text not null,
+  workspace_id text,
+  producer text not null,
+  mission_id text,
+  flow_id text,
+  mode text,
+  status text not null,
+  started_at_ms integer not null,
+  updated_at_ms integer not null,
+  last_event_type text not null
+);
+
+create table if not exists execution_task (
+  id integer primary key autoincrement,
+  stable_id text not null default '',
+  run_id text not null,
+  task_id text not null,
+  workspace_id text,
+  producer text not null,
+  title text,
+  status text not null,
+  owner_role text,
+  updated_at_ms integer not null
+);
+
+create table if not exists execution_check (
+  id integer primary key autoincrement,
+  stable_id text not null default '',
+  run_id text not null,
+  task_id text,
+  name text not null,
+  status text not null,
+  details text,
+  updated_at_ms integer not null
+);
+
+create table if not exists execution_approval (
+  id integer primary key autoincrement,
+  stable_id text not null default '',
+  run_id text not null,
+  task_id text,
+  approval_id text not null,
+  kind text,
+  status text not null,
+  resume_token text,
+  updated_at_ms integer not null
+);
+
+create table if not exists execution_event (
+  id integer primary key autoincrement,
+  stable_id text not null default '',
+  raw_event_id text not null,
+  run_id text not null,
+  task_id text,
+  producer text not null,
+  role text,
+  event_type text not null,
+  status text,
+  body_text text,
+  occurred_at_ms integer not null
+);
+
+create table if not exists document_record (
+  id integer primary key autoincrement,
+  stable_id text not null default '',
+  document_id text not null,
+  workspace_id text,
+  producer text not null,
+  kind text not null,
+  path text,
+  title text,
+  body_text text,
+  artifact_uri text,
+  artifact_mime text,
+  artifact_sha256 blob,
+  artifact_bytes integer,
+  updated_at_ms integer not null,
+  raw_event_id text not null
+);
+
 create table if not exists episode (
   id integer primary key autoincrement,
   stable_id text not null default '',

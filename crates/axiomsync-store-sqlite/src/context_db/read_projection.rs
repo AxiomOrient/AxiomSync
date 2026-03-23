@@ -147,4 +147,168 @@ impl ContextDb {
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(sqlite_error)
     }
+
+    pub fn load_execution_runs(&self) -> Result<Vec<ExecutionRunRow>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "select stable_id, run_id, workspace_id, producer, mission_id, flow_id, mode, status, started_at_ms, updated_at_ms, last_event_type
+             from execution_run
+             order by updated_at_ms asc, stable_id asc",
+        ).map_db_err()?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ExecutionRunRow {
+                    stable_id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    workspace_id: row.get(2)?,
+                    producer: row.get(3)?,
+                    mission_id: row.get(4)?,
+                    flow_id: row.get(5)?,
+                    mode: row.get(6)?,
+                    status: row.get(7)?,
+                    started_at_ms: row.get(8)?,
+                    updated_at_ms: row.get(9)?,
+                    last_event_type: row.get(10)?,
+                })
+            })
+            .map_db_err()?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sqlite_error)
+    }
+
+    pub fn load_execution_tasks(&self) -> Result<Vec<ExecutionTaskRow>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "select stable_id, run_id, task_id, workspace_id, producer, title, status, owner_role, updated_at_ms
+             from execution_task
+             order by updated_at_ms asc, stable_id asc",
+        ).map_db_err()?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ExecutionTaskRow {
+                    stable_id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    task_id: row.get(2)?,
+                    workspace_id: row.get(3)?,
+                    producer: row.get(4)?,
+                    title: row.get(5)?,
+                    status: row.get(6)?,
+                    owner_role: row.get(7)?,
+                    updated_at_ms: row.get(8)?,
+                })
+            })
+            .map_db_err()?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sqlite_error)
+    }
+
+    pub fn load_execution_checks(&self) -> Result<Vec<ExecutionCheckRow>> {
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare(
+                "select stable_id, run_id, task_id, name, status, details, updated_at_ms
+             from execution_check
+             order by updated_at_ms asc, stable_id asc",
+            )
+            .map_db_err()?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ExecutionCheckRow {
+                    stable_id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    task_id: row.get(2)?,
+                    name: row.get(3)?,
+                    status: row.get(4)?,
+                    details: row.get(5)?,
+                    updated_at_ms: row.get(6)?,
+                })
+            })
+            .map_db_err()?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sqlite_error)
+    }
+
+    pub fn load_execution_approvals(&self) -> Result<Vec<ExecutionApprovalRow>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "select stable_id, run_id, task_id, approval_id, kind, status, resume_token, updated_at_ms
+             from execution_approval
+             order by updated_at_ms asc, stable_id asc",
+        ).map_db_err()?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ExecutionApprovalRow {
+                    stable_id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    task_id: row.get(2)?,
+                    approval_id: row.get(3)?,
+                    kind: row.get(4)?,
+                    status: row.get(5)?,
+                    resume_token: row.get(6)?,
+                    updated_at_ms: row.get(7)?,
+                })
+            })
+            .map_db_err()?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sqlite_error)
+    }
+
+    pub fn load_execution_events(&self) -> Result<Vec<ExecutionEventRow>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "select stable_id, raw_event_id, run_id, task_id, producer, role, event_type, status, body_text, occurred_at_ms
+             from execution_event
+             order by occurred_at_ms asc, stable_id asc",
+        ).map_db_err()?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ExecutionEventRow {
+                    stable_id: row.get(0)?,
+                    raw_event_id: row.get(1)?,
+                    run_id: row.get(2)?,
+                    task_id: row.get(3)?,
+                    producer: row.get(4)?,
+                    role: row.get(5)?,
+                    event_type: row.get(6)?,
+                    status: row.get(7)?,
+                    body_text: row.get(8)?,
+                    occurred_at_ms: row.get(9)?,
+                })
+            })
+            .map_db_err()?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sqlite_error)
+    }
+
+    pub fn load_document_records(&self) -> Result<Vec<DocumentRecordRow>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "select stable_id, document_id, workspace_id, producer, kind, path, title, body_text, artifact_uri, artifact_mime, hex(artifact_sha256), artifact_bytes, updated_at_ms, raw_event_id
+             from document_record
+             order by updated_at_ms asc, stable_id asc",
+        ).map_db_err()?;
+        let rows = stmt
+            .query_map([], |row| {
+                let sha256: Option<String> = row.get(10)?;
+                Ok(DocumentRecordRow {
+                    stable_id: row.get(0)?,
+                    document_id: row.get(1)?,
+                    workspace_id: row.get(2)?,
+                    producer: row.get(3)?,
+                    kind: row.get(4)?,
+                    path: row.get(5)?,
+                    title: row.get(6)?,
+                    body_text: row.get(7)?,
+                    artifact_uri: row.get(8)?,
+                    artifact_mime: row.get(9)?,
+                    artifact_sha256_hex: sha256.map(|value| value.to_ascii_lowercase()),
+                    artifact_bytes: row.get::<_, Option<i64>>(11)?.map(|value| value as u64),
+                    updated_at_ms: row.get(12)?,
+                    raw_event_id: row.get(13)?,
+                })
+            })
+            .map_db_err()?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sqlite_error)
+    }
 }

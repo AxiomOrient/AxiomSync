@@ -49,6 +49,30 @@ impl ReadRepository for ContextDb {
         ContextDb::load_evidence_anchors(self)
     }
 
+    fn load_execution_runs(&self) -> Result<Vec<ExecutionRunRow>> {
+        ContextDb::load_execution_runs(self)
+    }
+
+    fn load_execution_tasks(&self) -> Result<Vec<ExecutionTaskRow>> {
+        ContextDb::load_execution_tasks(self)
+    }
+
+    fn load_execution_checks(&self) -> Result<Vec<ExecutionCheckRow>> {
+        ContextDb::load_execution_checks(self)
+    }
+
+    fn load_execution_approvals(&self) -> Result<Vec<ExecutionApprovalRow>> {
+        ContextDb::load_execution_approvals(self)
+    }
+
+    fn load_execution_events(&self) -> Result<Vec<ExecutionEventRow>> {
+        ContextDb::load_execution_events(self)
+    }
+
+    fn load_document_records(&self) -> Result<Vec<DocumentRecordRow>> {
+        ContextDb::load_document_records(self)
+    }
+
     fn load_episodes(&self) -> Result<Vec<EpisodeRow>> {
         ContextDb::load_episodes(self)
     }
@@ -71,6 +95,18 @@ impl ReadRepository for ContextDb {
 
     fn get_thread(&self, session_id: &str) -> Result<ThreadView> {
         ContextDb::get_thread(self, session_id)
+    }
+
+    fn get_run(&self, run_id: &str) -> Result<RunView> {
+        ContextDb::get_run(self, run_id)
+    }
+
+    fn get_task(&self, task_id: &str) -> Result<TaskView> {
+        ContextDb::get_task(self, task_id)
+    }
+
+    fn get_document(&self, document_id: &str) -> Result<DocumentView> {
+        ContextDb::get_document(self, document_id)
     }
 
     fn get_evidence(&self, evidence_id: &str) -> Result<crate::domain::EvidenceView> {
@@ -105,6 +141,18 @@ impl ReadRepository for ContextDb {
         ContextDb::thread_workspace_id(self, thread_id)
     }
 
+    fn run_workspace_id(&self, run_id: &str) -> Result<Option<String>> {
+        ContextDb::run_workspace_id(self, run_id)
+    }
+
+    fn task_workspace_id(&self, task_id: &str) -> Result<Option<String>> {
+        ContextDb::task_workspace_id(self, task_id)
+    }
+
+    fn document_workspace_id(&self, document_id: &str) -> Result<Option<String>> {
+        ContextDb::document_workspace_id(self, document_id)
+    }
+
     fn evidence_workspace_id(&self, evidence_id: &str) -> Result<Option<String>> {
         ContextDb::evidence_workspace_id(self, evidence_id)
     }
@@ -135,6 +183,13 @@ impl WriteRepository for ContextDb {
 impl TransactionManager for ContextDb {
     fn apply_ingest_tx(&self, plan: &IngestPlan) -> Result<serde_json::Value> {
         self.with_write_tx(|tx| Self::apply_ingest_in_tx(tx, plan))
+    }
+
+    fn apply_source_cursor_upsert_tx(
+        &self,
+        plan: &SourceCursorUpsertPlan,
+    ) -> Result<serde_json::Value> {
+        self.with_write_tx(|tx| Self::apply_source_cursor_upsert_in_tx(tx, plan))
     }
 
     fn apply_projection_tx(&self, plan: &ProjectionPlan) -> Result<serde_json::Value> {
