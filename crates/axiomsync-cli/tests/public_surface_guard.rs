@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -15,6 +16,40 @@ fn read(path: &Path) -> String {
 
 fn join(parts: &[&str]) -> String {
     parts.concat()
+}
+
+fn verification_commands() -> [&'static str; 9] {
+    [
+        "cargo fmt --all --check",
+        "cargo clippy --workspace --all-targets -- -D warnings",
+        "cargo test --workspace -- --nocapture",
+        "cargo test -p axiomsync-cli --test relay_interop relay_http_delivery_smoke_commits_only_after_both_apply_phases -- --nocapture",
+        "cargo run -p axiomsync-cli -- --help",
+        "cargo run -p axiomsync-cli -- sink --help",
+        "cargo run -p axiomsync-cli -- serve --help",
+        "cargo run -p axiomsync-cli -- mcp serve --help",
+        "./scripts/verify-release.sh",
+    ]
+}
+
+fn script_verification_commands() -> [&'static str; 8] {
+    [
+        "cargo fmt --all --check",
+        "cargo clippy --workspace --all-targets -- -D warnings",
+        "cargo test --workspace -- --nocapture",
+        "cargo test -p axiomsync-cli --test relay_interop relay_http_delivery_smoke_commits_only_after_both_apply_phases -- --nocapture",
+        "cargo run -p axiomsync-cli -- --help",
+        "cargo run -p axiomsync-cli -- sink --help",
+        "cargo run -p axiomsync-cli -- serve --help",
+        "cargo run -p axiomsync-cli -- mcp serve --help",
+    ]
+}
+
+fn command_position_after(haystack: &str, needle: &str, start: usize) -> usize {
+    haystack[start..]
+        .find(needle)
+        .map(|offset| start + offset)
+        .unwrap_or_else(|| panic!("missing command `{needle}` after byte {start}"))
 }
 
 #[test]
@@ -101,6 +136,7 @@ fn api_contract_lists_current_canonical_routes_and_commands() {
     let sink_contract = read(&root.join("docs/KERNEL_SINK_CONTRACT.md"));
     let testing = read(&root.join("docs/TESTING.md"));
     let release_runbook = read(&root.join("docs/RELEASE_RUNBOOK.md"));
+    let verify_release = read(&root.join("scripts/verify-release.sh"));
 
     for route in [
         "POST /sink/raw-events/plan",
@@ -167,14 +203,62 @@ fn api_contract_lists_current_canonical_routes_and_commands() {
 
     for body in [&testing, &release_runbook] {
         assert!(
-            body.contains("./scripts/verify-release.sh"),
-            "missing one-shot verification script reference"
-        );
-        assert!(
             body.contains(
                 "cargo test -p axiomsync-cli --test relay_interop relay_http_delivery_smoke_commits_only_after_both_apply_phases -- --nocapture"
             ),
             "missing explicit relay interop smoke gate"
+        );
+    }
+
+    for body in [&readme, &testing, &release_runbook] {
+        let mut search_start = 0;
+        for command in verification_commands() {
+            let position = command_position_after(body, command, search_start);
+            search_start = position + command.len();
+        }
+    }
+
+    let mut search_start = 0;
+    for command in script_verification_commands() {
+        let position = command_position_after(&verify_release, command, search_start);
+        search_start = position + command.len();
+    }
+}
+
+#[test]
+fn readme_declares_non_release_assets_out_of_contract() {
+    let root = repo_root();
+    let readme = read(&root.join("README.md"));
+
+    assert!(
+        readme.contains(
+            "Only files explicitly linked from this README, `docs/`, or `scripts/verify-release.sh` are part of the release contract."
+        ),
+        "README must declare the non-release asset boundary"
+    );
+}
+
+#[test]
+fn cli_help_surface_stays_canonical() {
+    let help = Command::new(env!("CARGO_BIN_EXE_axiomsync-cli"))
+        .arg("--help")
+        .output()
+        .expect("run axiomsync-cli --help");
+    assert!(help.status.success(), "axiomsync-cli --help must succeed");
+
+    let stdout = String::from_utf8(help.stdout).expect("utf8 help output");
+
+    for command in ["init", "sink", "project", "query", "mcp", "serve"] {
+        assert!(
+            stdout.contains(command),
+            "missing top-level command `{command}` from CLI help"
+        );
+    }
+
+    for legacy in ["connector", "derive", "search", "runbook", "web"] {
+        assert!(
+            !stdout.contains(legacy),
+            "unexpected legacy command `{legacy}` in CLI help"
         );
     }
 }

@@ -22,7 +22,8 @@
 - canonical append request는 `AppendRawEventsRequest { batch_id, producer, received_at_ms, events[] }`다.
 - canonical cursor request는 `UpsertSourceCursorRequest { connector, cursor_key, cursor_value, updated_at_ms }`다.
 - relay same-host adapter semantics는 [`RELAY_INTEROP.md`](./RELAY_INTEROP.md) 에서 고정한다.
-- canonical wire example은 `native_event_id` 를 사용하지만, 현재 구현은 compatibility input으로 `native_entry_id`, optional `artifacts`, `hints` field도 수용한다.
+- canonical wire example은 `native_event_id` 를 사용한다.
+- `native_entry_id`, optional `artifacts`, `hints` field는 compatibility input acceptance로만 유지하며 public canonical shape로 승격하지 않는다.
 - `RawEvent.event_type`는 고정 taxonomy만 허용한다:
   - `message_captured`
   - `selection_captured`

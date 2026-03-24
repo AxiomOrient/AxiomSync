@@ -7,6 +7,7 @@ Universal agent memory kernel for recording immutable raw records into a single 
 - The canonical external write boundary is the raw-only `sink` surface exposed by this repository.
 - Edge capture, spool, retry, approval, browser integration, and connector-specific delivery live in a separate external repository and are not part of this release surface.
 - Any review package or extraction notes checked into this repository are reference material only, not the release contract.
+- Only files explicitly linked from this README, `docs/`, or `scripts/verify-release.sh` are part of the release contract.
 
 ## Runtime Model
 - Domain state: single SQLite store at `<root>/context.db`
@@ -93,4 +94,5 @@ cargo run -p axiomsync-cli -- --help
 cargo run -p axiomsync-cli -- sink --help
 cargo run -p axiomsync-cli -- serve --help
 cargo run -p axiomsync-cli -- mcp serve --help
+./scripts/verify-release.sh
 ```

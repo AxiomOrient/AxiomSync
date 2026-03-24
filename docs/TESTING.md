@@ -12,6 +12,7 @@ cargo run -p axiomsync-cli -- --help
 cargo run -p axiomsync-cli -- sink --help
 cargo run -p axiomsync-cli -- serve --help
 cargo run -p axiomsync-cli -- mcp serve --help
+./scripts/verify-release.sh
 ```
 
 ## Regression Suites
@@ -48,11 +49,7 @@ cargo run -p axiomsync-cli -- --root "$tmp_root" project doctor
 ```
 
 ## One-Shot Verification
-```bash
-./scripts/verify-release.sh
-```
-
-`verify-release.sh` 는 workspace regression 전체 외에 relay HTTP smoke를 한 번 더 명시 실행해 same-host interop gate를 고정한다.
+`verify-release.sh` 는 위 Required command set을 같은 순서로 다시 실행하고, relay HTTP smoke를 한 번 더 명시해 same-host interop gate를 고정한다.
 
 focused relay smoke만 재실행하려면 아래 명령을 사용한다.
 

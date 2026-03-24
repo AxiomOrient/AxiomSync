@@ -6,6 +6,7 @@
 - `README.md`와 `docs/`를 기준 문서로 사용한다.
 - 외부 edge repository의 capture/daemon 문서는 이 저장소 릴리스 계약으로 간주하지 않는다.
 - 삭제된 legacy command나 script를 릴리스 기준으로 다시 되살리지 않는다.
+- `README.md`, `docs/`, `scripts/verify-release.sh` 에서 명시하지 않은 asset은 release contract로 간주하지 않는다.
 - root는 항상 새 임시 디렉터리로 검증한다.
 
 ## Required Gates
@@ -18,6 +19,7 @@ cargo run -p axiomsync-cli -- --help
 cargo run -p axiomsync-cli -- sink --help
 cargo run -p axiomsync-cli -- serve --help
 cargo run -p axiomsync-cli -- mcp serve --help
+./scripts/verify-release.sh
 ```
 
 ## Runtime Smoke
@@ -28,9 +30,7 @@ cargo run -p axiomsync-cli -- --root "$tmp_root" project doctor
 ```
 
 ## One-Shot Verification
-```bash
-./scripts/verify-release.sh
-```
+`verify-release.sh` 는 Required Gates command set을 같은 순서로 다시 실행하고, clean checkout 기준 changelog/runtime smoke까지 함께 확인한다.
 
 relay interop focused smoke:
 
