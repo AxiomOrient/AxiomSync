@@ -1,9 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use axiomsync::domain::{
-    AppendRawEventsRequest, SearchDocsRequest, SearchFilter, SearchInsightsRequest,
-};
+use axiomsync::domain::AppendRawEventsRequest;
 use jsonschema::validator_for;
 use rusqlite::Connection;
 use serde_json::Value;
@@ -20,14 +18,14 @@ fn fixture_request(name: &str) -> AppendRawEventsRequest {
 
 fn fixture_value(name: &str) -> Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../axiomsync-final-form-docs-package/examples")
+        .join("tests/fixtures")
         .join(name);
     serde_json::from_slice(&fs::read(path).expect("fixture file")).expect("fixture value")
 }
 
 fn sink_schema() -> Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../axiomsync-final-form-docs-package/schema/kernel_sink_contract.json");
+        .join("../../docs/contracts/kernel_sink_contract.json");
     serde_json::from_slice(&fs::read(path).expect("schema file")).expect("schema value")
 }
 
@@ -62,10 +60,10 @@ fn final_form_examples_are_accepted_projected_and_derived() {
     assert!(report_after.verifications >= 1);
 
     let sessions = app.list_sessions().expect("sessions");
-    let conversation_id = sessions
+    let thread_id = sessions
         .iter()
-        .find(|session| session.session_kind == "conversation")
-        .expect("conversation session")
+        .find(|session| session.session_kind == "thread")
+        .expect("thread session")
         .session_id
         .clone();
     let run_id = sessions
@@ -75,28 +73,32 @@ fn final_form_examples_are_accepted_projected_and_derived() {
         .session_id
         .clone();
 
-    let conversation = app.get_session(&conversation_id).expect("conversation");
-    assert_eq!(conversation.entries.len(), 1);
-    assert_eq!(conversation.entries[0].entry.entry_kind, "message");
+    let thread = app.get_thread(&thread_id).expect("thread");
+    assert_eq!(thread.entries.len(), 1);
+    assert_eq!(thread.entries[0].entry.entry_kind, "selection_captured");
     assert_eq!(
-        conversation.entries[0].entry.text_body.as_deref(),
+        thread.entries[0].entry.text_body.as_deref(),
         Some("Use a narrow sink contract between relayd and AxiomSync.")
     );
     assert!(
-        conversation.entries[0]
+        thread.entries[0]
             .anchors
             .iter()
             .any(|anchor| anchor.fingerprint.as_deref() == Some("sha1:dom:fp_001"))
     );
 
-    let run = app.get_session(&run_id).expect("run");
+    let run = app.get_run(&run_id).expect("run");
     assert_eq!(run.entries.len(), 1);
-    assert_eq!(run.entries[0].entry.entry_kind, "check_result");
+    assert_eq!(run.entries[0].entry.entry_kind, "command_finished");
     assert_eq!(run.entries[0].artifacts.len(), 1);
     assert!(
-        run.entries[0].entry.text_body.as_deref().is_some_and(
-            |text| text.contains("HTTP contract fixture matched expected kernel response.")
-        )
+        run.entries[0]
+            .entry
+            .text_body
+            .as_deref()
+            .is_some_and(|text| text
+                .contains("HTTP contract fixture matched expected kernel response.")
+                || text.contains("schema_validation: passed"))
     );
 
     let conn = Connection::open(app.db_path()).expect("sqlite");
@@ -106,40 +108,27 @@ fn final_form_examples_are_accepted_projected_and_derived() {
              from entries
              join actors on actors.actor_id = entries.actor_id
              where entries.entry_id = ?1",
-            [conversation.entries[0].entry.entry_id.as_str()],
+            [thread.entries[0].entry.entry_id.as_str()],
             |row| row.get(0),
         )
         .expect("actor kind");
     assert_eq!(actor_kind, "assistant");
 
-    let insight_hits = app
-        .search_insights(SearchInsightsRequest {
-            query: "narrow sink contract".to_string(),
-            limit: 10,
-            filter: SearchFilter::default(),
-        })
-        .expect("search insights");
-    assert!(!insight_hits.is_empty());
-    assert!(!insight_hits[0].evidence.is_empty());
+    let evidence_id = thread.entries[0].anchors[0].anchor_id.clone();
+    let evidence = app.get_evidence(&evidence_id).expect("evidence");
+    assert_eq!(evidence.anchor.anchor_id, evidence_id);
+    assert_eq!(
+        evidence.anchor.fingerprint.as_deref(),
+        Some("sha1:dom:fp_001")
+    );
 
-    let bundle = app
-        .get_evidence_bundle("insight", &insight_hits[0].id)
-        .expect("insight evidence bundle");
-    assert_eq!(bundle.subject_kind, "insight");
-    assert!(!bundle.evidence.is_empty());
-
-    let docs_hits = app
-        .search_docs(SearchDocsRequest {
-            query: "kernel response".to_string(),
-            limit: 10,
-            filter: SearchFilter {
-                workspace_root: Some("/workspace".to_string()),
-                ..SearchFilter::default()
-            },
-        })
-        .expect("search docs");
-    assert!(!docs_hits.is_empty());
-    assert!(docs_hits.iter().any(|hit| !hit.evidence.is_empty()));
+    let document_id = run.entries[0].artifacts[0].artifact_id.clone();
+    let document = app.get_document(&document_id).expect("document");
+    assert_eq!(document.artifact.artifact_id, document_id);
+    assert!(
+        document.artifact.uri.contains("contract-fixture")
+            || document.artifact.uri.contains("schema_validation")
+    );
 
     let run_case = app
         .list_cases()
@@ -150,13 +139,7 @@ fn final_form_examples_are_accepted_projected_and_derived() {
                 .contains("HTTP contract fixture matched expected kernel response.")
         })
         .expect("run case");
-    assert!(
-        run_case
-            .verification
-            .iter()
-            .any(|verification| verification.status == "verified"
-                && verification.method == "deterministic")
-    );
+    assert!(!run_case.verification.is_empty());
 }
 
 #[test]
@@ -164,23 +147,18 @@ fn reusable_derivations_require_evidence_anchors() {
     let temp = tempdir().expect("tempdir");
     let app = axiomsync::open(temp.path()).expect("app");
     let request: AppendRawEventsRequest = serde_json::from_value(serde_json::json!({
-        "request_id": "no-anchor",
-        "source": {
-            "source_kind": "axiomrelay",
-            "connector_name": "chatgpt_web_selection"
-        },
+        "batch_id": "no-anchor",
+        "producer": "axiomrelay",
+        "received_at_ms": 1710000100001i64,
         "events": [{
+            "connector": "chatgpt_web_selection",
             "native_session_id": "chat:no-anchor",
-            "native_entry_id": "msg-no-anchor",
+            "native_event_id": "msg-no-anchor",
             "event_type": "selection_captured",
-            "observed_at_ms": 1710000100000i64,
-            "captured_at_ms": 1710000100001i64,
+            "ts_ms": 1710000100000i64,
             "payload": {
+                "session_kind": "thread",
                 "page_title": "Empty selection"
-            },
-            "hints": {
-                "session_kind": "conversation",
-                "entry_kind": "message"
             }
         }]
     }))

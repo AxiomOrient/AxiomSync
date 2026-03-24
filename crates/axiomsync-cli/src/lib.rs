@@ -4,12 +4,12 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use serde_json::json;
 
-use axiomsync_domain::domain::{
-    AdminTokenPlan, AppendRawEventsRequest, DerivePlan, IngestPlan, ProjectionPlan, ReplayPlan,
-    SearchClaimsRequest, SearchDocsRequest, SearchEntriesRequest, SearchEpisodesRequest,
-    SearchInsightsRequest, SearchProceduresRequest, SourceCursorUpsertPlan,
-    UpsertSourceCursorRequest, WorkspaceTokenPlan,
+use axiomsync_domain::{
+    AdminTokenPlan, AppendRawEventsRequest, CliCommandPayload, DerivePlan, IngestPlan,
+    ProjectionPlan, ReplayPlan, SearchCasesRequest, SourceCursorUpsertPlan,
+    UpsertSourceCursorRequest, WorkStateExportPayload, WorkspaceTokenPlan,
 };
 use axiomsync_kernel::AxiomSync;
 
@@ -27,25 +27,21 @@ See `axiomsync sink <command> --help`, `axiomsync project <command> --help`, and
 const PLAN_APPEND_RAW_EVENTS_AFTER_HELP: &str = r#"Input JSON example:
 {
   "batch_id": "relay-2026-03-23T12:00:00Z-001",
-  "source": {
-    "source_kind": "axiomrelay",
-    "connector_name": "chatgpt_web_selection"
-  },
+  "producer": "axiomrelay",
+  "received_at_ms": 1710000000123,
   "events": [
     {
+      "connector": "chatgpt_web_selection",
+      "native_schema_version": "1",
       "native_session_id": "chatgpt:abc123",
       "native_entry_id": "msg_42",
       "event_type": "selection_captured",
-      "captured_at_ms": 1710000000000,
-      "observed_at_ms": 1710000000123,
+      "ts_ms": 1710000000123,
       "payload": {
+        "session_kind": "thread",
         "selection": {
           "text": "Use a narrow sink contract between relayd and AxiomSync."
         }
-      },
-      "hints": {
-        "session_kind": "conversation",
-        "entry_kind": "message"
       }
     }
   ]
@@ -58,18 +54,19 @@ const APPLY_INGEST_PLAN_AFTER_HELP: &str =
 
 const PLAN_SOURCE_CURSOR_AFTER_HELP: &str = r#"Input JSON example:
 {
-  "source": "codex",
-  "cursor": {
-    "cursor_key": "events",
-    "cursor_value": "cursor-1",
-    "updated_at_ms": 1710000000000,
-    "metadata": {
-      "checkpoint": "spool-offset-1"
-    }
-  }
+  "connector": "codex",
+  "cursor_key": "events",
+  "cursor_value": "cursor-1",
+  "updated_at_ms": 1710000000000
 }
 
 Writes a source cursor upsert plan JSON document to stdout."#;
+
+const IMPORT_CLI_RUN_AFTER_HELP: &str =
+    "Compiles a CLI command payload JSON file into the canonical append_raw_events request.";
+
+const IMPORT_WORK_STATE_AFTER_HELP: &str =
+    "Compiles a work-state export JSON file into the canonical append_raw_events request.";
 
 const APPLY_SOURCE_CURSOR_AFTER_HELP: &str =
     "Input must be the JSON plan previously returned by `plan-upsert-source-cursor`.";
@@ -116,7 +113,6 @@ pub enum Command {
     Sink(SinkArgs),
     Project(ProjectArgs),
     Query(QueryArgs),
-    Compat(CompatArgs),
     Mcp(McpArgs),
     Serve(ServeArgs),
 }
@@ -137,6 +133,10 @@ pub enum SinkCommand {
     PlanUpsertSourceCursor(FileArg),
     #[command(after_long_help = APPLY_SOURCE_CURSOR_AFTER_HELP)]
     ApplySourceCursorPlan(FileArg),
+    #[command(after_long_help = IMPORT_CLI_RUN_AFTER_HELP)]
+    ImportCliRun(FileArg),
+    #[command(after_long_help = IMPORT_WORK_STATE_AFTER_HELP)]
+    ImportWorkState(FileArg),
 }
 
 #[derive(Debug, Args)]
@@ -204,31 +204,13 @@ pub struct QueryArgs {
 #[derive(Debug, Subcommand)]
 pub enum QueryCommand {
     #[command(after_long_help = SEARCH_AFTER_HELP)]
-    SearchEntries(SearchFileArg),
-    #[command(after_long_help = SEARCH_AFTER_HELP)]
-    SearchEpisodes(SearchFileArg),
-    #[command(after_long_help = SEARCH_AFTER_HELP)]
-    SearchDocs(SearchFileArg),
-    #[command(after_long_help = SEARCH_AFTER_HELP)]
-    SearchInsights(SearchFileArg),
-    #[command(after_long_help = SEARCH_AFTER_HELP)]
-    SearchClaims(SearchFileArg),
-    #[command(after_long_help = SEARCH_AFTER_HELP)]
-    SearchProcedures(SearchFileArg),
-    #[command(after_long_help = SEARCH_AFTER_HELP)]
-    FindFix(SearchFileArg),
-    #[command(after_long_help = SEARCH_AFTER_HELP)]
-    FindDecision(SearchFileArg),
-    #[command(after_long_help = SEARCH_AFTER_HELP)]
-    FindRunbook(SearchFileArg),
-    GetEvidenceBundle(EvidenceBundleArg),
-    GetSession(IdArg),
-    GetEntry(IdArg),
-    GetArtifact(IdArg),
-    GetAnchor(IdArg),
-    GetEpisode(IdArg),
-    GetClaim(IdArg),
-    GetProcedure(IdArg),
+    SearchCases(SearchFileArg),
+    GetCase(IdArg),
+    GetThread(IdArg),
+    GetRun(IdArg),
+    GetTask(IdArg),
+    GetDocument(IdArg),
+    GetEvidence(IdArg),
 }
 
 #[derive(Debug, Args)]
@@ -240,28 +222,6 @@ pub struct SearchFileArg {
 #[derive(Debug, Args)]
 pub struct IdArg {
     pub id: String,
-}
-
-#[derive(Debug, Args)]
-pub struct EvidenceBundleArg {
-    #[arg(long)]
-    pub subject_kind: String,
-    #[arg(long)]
-    pub subject_id: String,
-}
-
-#[derive(Debug, Args)]
-pub struct CompatArgs {
-    #[command(subcommand)]
-    pub command: CompatCommand,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum CompatCommand {
-    GetCase(IdArg),
-    GetThread(IdArg),
-    GetRunbook(IdArg),
-    GetTask(IdArg),
 }
 
 #[derive(Debug, Args)]
@@ -322,6 +282,14 @@ where
                 let plan: SourceCursorUpsertPlan = load_json_file(&file.file)?;
                 print_json(&app.apply_source_cursor_plan(&plan)?)?;
             }
+            SinkCommand::ImportCliRun(file) => {
+                let payload: CliCommandPayload = load_json_file(&file.file)?;
+                print_json(&serde_json::to_value(compile_cli_run_import(payload)?)?)?;
+            }
+            SinkCommand::ImportWorkState(file) => {
+                let payload: WorkStateExportPayload = load_json_file(&file.file)?;
+                print_json(&serde_json::to_value(compile_work_state_import(payload)?)?)?;
+            }
         },
         Command::Project(args) => match args.command {
             ProjectCommand::PlanProjection => {
@@ -369,81 +337,27 @@ where
             }
         },
         Command::Query(args) => match args.command {
-            QueryCommand::SearchEntries(file) => {
-                let request: SearchEntriesRequest = load_json_file(&file.file)?;
-                print_json(&serde_json::to_value(app.search_entries(request)?)?)?;
+            QueryCommand::SearchCases(file) => {
+                let request: SearchCasesRequest = load_json_file(&file.file)?;
+                print_json(&serde_json::to_value(app.search_cases(request)?)?)?;
             }
-            QueryCommand::SearchEpisodes(file) => {
-                let request: SearchEpisodesRequest = load_json_file(&file.file)?;
-                print_json(&serde_json::to_value(app.search_episodes(request)?)?)?;
-            }
-            QueryCommand::SearchDocs(file) => {
-                let request: SearchDocsRequest = load_json_file(&file.file)?;
-                print_json(&serde_json::to_value(app.search_docs(request)?)?)?;
-            }
-            QueryCommand::SearchInsights(file) => {
-                let request: SearchInsightsRequest = load_json_file(&file.file)?;
-                print_json(&serde_json::to_value(app.search_insights(request)?)?)?;
-            }
-            QueryCommand::SearchClaims(file) => {
-                let request: SearchClaimsRequest = load_json_file(&file.file)?;
-                print_json(&serde_json::to_value(app.search_claims(request)?)?)?;
-            }
-            QueryCommand::SearchProcedures(file) => {
-                let request: SearchProceduresRequest = load_json_file(&file.file)?;
-                print_json(&serde_json::to_value(app.search_procedures(request)?)?)?;
-            }
-            QueryCommand::FindFix(file) => {
-                let request: SearchInsightsRequest = load_json_file(&file.file)?;
-                print_json(&serde_json::to_value(app.find_fix(request)?)?)?;
-            }
-            QueryCommand::FindDecision(file) => {
-                let request: SearchInsightsRequest = load_json_file(&file.file)?;
-                print_json(&serde_json::to_value(app.find_decision(request)?)?)?;
-            }
-            QueryCommand::FindRunbook(file) => {
-                let request: SearchProceduresRequest = load_json_file(&file.file)?;
-                print_json(&serde_json::to_value(app.find_runbook(request)?)?)?;
-            }
-            QueryCommand::GetEvidenceBundle(arg) => {
-                print_json(&serde_json::to_value(
-                    app.get_evidence_bundle(&arg.subject_kind, &arg.subject_id)?,
-                )?)?;
-            }
-            QueryCommand::GetSession(id) => {
-                print_json(&serde_json::to_value(app.get_session(&id.id)?)?)?;
-            }
-            QueryCommand::GetEntry(id) => {
-                print_json(&serde_json::to_value(app.get_entry(&id.id)?)?)?;
-            }
-            QueryCommand::GetArtifact(id) => {
-                print_json(&serde_json::to_value(app.get_artifact(&id.id)?)?)?;
-            }
-            QueryCommand::GetAnchor(id) => {
-                print_json(&serde_json::to_value(app.get_anchor(&id.id)?)?)?;
-            }
-            QueryCommand::GetEpisode(id) => {
-                print_json(&serde_json::to_value(app.get_episode(&id.id)?)?)?;
-            }
-            QueryCommand::GetClaim(id) => {
-                print_json(&serde_json::to_value(app.get_claim(&id.id)?)?)?;
-            }
-            QueryCommand::GetProcedure(id) => {
-                print_json(&serde_json::to_value(app.get_procedure(&id.id)?)?)?;
-            }
-        },
-        Command::Compat(args) => match args.command {
-            CompatCommand::GetCase(id) => {
+            QueryCommand::GetCase(id) => {
                 print_json(&serde_json::to_value(app.get_case(&id.id)?)?)?;
             }
-            CompatCommand::GetThread(id) => {
+            QueryCommand::GetThread(id) => {
                 print_json(&serde_json::to_value(app.get_thread(&id.id)?)?)?;
             }
-            CompatCommand::GetRunbook(id) => {
-                print_json(&serde_json::to_value(app.get_runbook(&id.id)?)?)?;
+            QueryCommand::GetRun(id) => {
+                print_json(&serde_json::to_value(app.get_run(&id.id)?)?)?;
             }
-            CompatCommand::GetTask(id) => {
+            QueryCommand::GetTask(id) => {
                 print_json(&serde_json::to_value(app.get_task(&id.id)?)?)?;
+            }
+            QueryCommand::GetDocument(id) => {
+                print_json(&serde_json::to_value(app.get_document(&id.id)?)?)?;
+            }
+            QueryCommand::GetEvidence(id) => {
+                print_json(&serde_json::to_value(app.get_evidence(&id.id)?)?)?;
             }
         },
         Command::Mcp(args) => match args.command {
@@ -476,4 +390,83 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
     Ok(tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?)
+}
+
+fn compile_cli_run_import(payload: CliCommandPayload) -> Result<AppendRawEventsRequest> {
+    payload.validate()?;
+    Ok(AppendRawEventsRequest {
+        batch_id: format!("cli-run-{}", payload.command_event_id),
+        producer: "axiomsync-cli".to_string(),
+        received_at_ms: payload.finished_at_ms as i64,
+        events: vec![axiomsync_domain::RawEventInput {
+            connector: "cli_local_exec".to_string(),
+            native_schema_version: Some("1".to_string()),
+            session_kind: Some("run".to_string()),
+            external_session_key: Some(format!("run:{}", payload.run_id)),
+            external_entry_key: Some(payload.command_event_id.clone()),
+            event_kind: Some("command_finished".to_string()),
+            observed_at: None,
+            captured_at: None,
+            workspace_root: Some(payload.workspace_root.clone()),
+            content_hash: None,
+            dedupe_key: None,
+            ts_ms: Some(payload.finished_at_ms as i64),
+            observed_at_ms: None,
+            captured_at_ms: None,
+            payload: json!({
+                "session_kind": "run",
+                "workspace_root": payload.workspace_root,
+                "task_id": payload.task_id,
+                "actor": payload.actor,
+                "command": payload.command,
+                "stdout_artifact": payload.stdout_artifact,
+                "stderr_artifact": payload.stderr_artifact,
+                "changed_files": payload.changed_files,
+                "verification": payload.verification,
+            }),
+            raw_payload: None,
+            artifacts: Vec::new(),
+            hints: json!({}),
+        }],
+    })
+}
+
+fn compile_work_state_import(payload: WorkStateExportPayload) -> Result<AppendRawEventsRequest> {
+    payload.validate()?;
+    Ok(AppendRawEventsRequest {
+        batch_id: format!("work-state-{}", payload.snapshot_id),
+        producer: "axiomsync-cli".to_string(),
+        received_at_ms: payload.exported_at_ms as i64,
+        events: vec![axiomsync_domain::RawEventInput {
+            connector: "work_state_export".to_string(),
+            native_schema_version: Some("1".to_string()),
+            session_kind: Some("task".to_string()),
+            external_session_key: Some(format!("task:{}", payload.task_id)),
+            external_entry_key: Some(payload.snapshot_id.clone()),
+            event_kind: Some("task_state_imported".to_string()),
+            observed_at: None,
+            captured_at: None,
+            workspace_root: Some(payload.workspace_root.clone()),
+            content_hash: None,
+            dedupe_key: None,
+            ts_ms: Some(payload.exported_at_ms as i64),
+            observed_at_ms: None,
+            captured_at_ms: None,
+            payload: json!({
+                "session_kind": "task",
+                "workspace_root": payload.workspace_root,
+                "run_id": payload.run_id,
+                "task_id": payload.task_id,
+                "status": payload.status,
+                "progress_summary": payload.progress_summary,
+                "task_file_uri": payload.task_file_uri,
+                "result_file_uri": payload.result_file_uri,
+                "events_file_uri": payload.events_file_uri,
+                "evidence_uris": payload.evidence_uris,
+            }),
+            raw_payload: None,
+            artifacts: Vec::new(),
+            hints: json!({}),
+        }],
+    })
 }

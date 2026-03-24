@@ -1,19 +1,19 @@
 {
   "batch_id": "relay-2026-03-23T12:00:00Z-001",
-  "source": {
-    "source_kind": "axiomrelay",
-    "connector_name": "chatgpt_web_selection"
-  },
+  "producer": "axiomrelay",
+  "received_at_ms": 1710000000123,
   "events": [
     {
+      "connector": "chatgpt_web_selection",
+      "native_schema_version": "1",
       "native_session_id": "chatgpt:abc123",
-      "native_entry_id": "msg_42",
+      "native_event_id": "evt_42",
       "event_type": "selection_captured",
-      "captured_at_ms": 1710000000000,
-      "observed_at_ms": 1710000000123,
-      "dedupe_key": "chatgpt:abc123:msg_42:sel:fp_001",
-      "content_hash": "sha256:74dd4e17af8f0c3b07e93985f09b8e6bb32fd43f0f9eb0f8217d92b7704f6f4f",
+      "ts_ms": 1710000000123,
       "payload": {
+        "session_kind": "thread",
+        "workspace_root": "/workspace",
+        "conversation_id": "abc123",
         "page_url": "https://chatgpt.com/c/abc123",
         "page_title": "ChatGPT - Architecture Review",
         "source_message": {
@@ -31,10 +31,6 @@
           "keep",
           "architecture"
         ]
-      },
-      "hints": {
-        "session_kind": "conversation",
-        "entry_kind": "message"
       }
     }
   ]

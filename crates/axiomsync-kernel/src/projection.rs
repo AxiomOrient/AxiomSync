@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
 
-use axiomsync_domain::domain::{
+use axiomsync_domain::error::Result;
+use axiomsync_domain::{
     ActorRow, AnchorRow, ArtifactRow, EntryRow, IngressReceiptRow, ProjectionPlan,
     RawArtifactInput, SessionRow, empty_object, stable_id,
 };
-use axiomsync_domain::error::Result;
 
 pub fn plan_projection(receipts: &[IngressReceiptRow]) -> Result<ProjectionPlan> {
     let mut ordered = receipts.to_vec();
@@ -34,7 +34,7 @@ pub fn plan_projection(receipts: &[IngressReceiptRow]) -> Result<ProjectionPlan>
         let hints = normalized
             .get("hints")
             .cloned()
-            .unwrap_or_else(axiomsync_domain::domain::empty_object);
+            .unwrap_or_else(axiomsync_domain::empty_object);
         let session_id = stable_id(
             "session",
             &(

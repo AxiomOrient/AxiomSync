@@ -1,19 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use axiomsync_domain::domain::{
-    AdminTokenPlan, AnchorRow, ArtifactRow, AuthSnapshot, ClaimEvidenceRow, ClaimRow, DerivePlan,
-    DoctorReport, EntryRow, EpisodeRow, IngestPlan, IngressReceiptRow, InsightAnchorRow,
-    InsightRow, ProcedureEvidenceRow, ProcedureRow, ProjectionPlan, ReplayPlan, SearchDocsRow,
-    SearchHit, SessionRow, SourceCursorRow, SourceCursorUpsertPlan, VerificationRow,
-    WorkspaceTokenPlan,
-};
 use axiomsync_domain::error::Result;
+use axiomsync_domain::{
+    AnchorRow, ArtifactRow, AuthSnapshot, ClaimRow, DerivePlan, DoctorReport, EntryRow, EpisodeRow,
+    IngestPlan, IngressReceiptRow, InsightAnchorRow, InsightRow, ProcedureRow, ProjectionPlan,
+    ReplayPlan, SearchHit, SessionRow, SourceCursorRow, SourceCursorUpsertPlan, VerificationRow,
+};
 use serde_json::Value;
-
-pub trait LlmExtractionPort: Send + Sync {}
-
-pub type SharedLlmExtractionPort = Arc<dyn LlmExtractionPort>;
 
 pub trait RepositoryPort: Send + Sync {
     fn root(&self) -> &Path;
@@ -36,10 +30,7 @@ pub trait RepositoryPort: Send + Sync {
     fn load_insight_anchors(&self) -> Result<Vec<InsightAnchorRow>>;
     fn load_verifications(&self) -> Result<Vec<VerificationRow>>;
     fn load_claims(&self) -> Result<Vec<ClaimRow>>;
-    fn load_claim_evidence(&self) -> Result<Vec<ClaimEvidenceRow>>;
     fn load_procedures(&self) -> Result<Vec<ProcedureRow>>;
-    fn load_procedure_evidence(&self) -> Result<Vec<ProcedureEvidenceRow>>;
-    fn load_search_docs(&self) -> Result<Vec<SearchDocsRow>>;
     fn pending_counts(&self) -> Result<(usize, usize, usize)>;
     fn doctor_report(&self) -> Result<DoctorReport>;
 }
@@ -71,19 +62,6 @@ pub trait McpToolPort: Send + Sync {
         bound_workspace_id: Option<&str>,
     ) -> Result<Value>;
     fn tool_workspace_requirement(&self, name: &str, arguments: &Value) -> Result<Option<String>>;
-}
-
-pub fn workspace_token_plan(canonical_root: &str, token: &str) -> WorkspaceTokenPlan {
-    WorkspaceTokenPlan {
-        workspace_id: axiomsync_domain::domain::workspace_stable_id(canonical_root),
-        token_sha256: axiomsync_domain::domain::stable_hash(&["workspace-token", token]),
-    }
-}
-
-pub fn admin_token_plan(token: &str) -> AdminTokenPlan {
-    AdminTokenPlan {
-        token_sha256: axiomsync_domain::domain::stable_hash(&["admin-token", token]),
-    }
 }
 
 pub fn filter_hits(hits: Vec<SearchHit>, limit: usize) -> Vec<SearchHit> {

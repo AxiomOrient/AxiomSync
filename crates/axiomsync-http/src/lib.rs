@@ -4,16 +4,15 @@ use axum::extract::connect_info::IntoMakeServiceWithConnectInfo;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{ConnectInfo, Path, State};
 use axum::http::HeaderMap;
+use axum::response::Html;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use axiomsync_domain::domain::{
-    AppendRawEventsRequest, DerivePlan, ProjectionPlan, ReplayPlan, SearchClaimsRequest,
-    SearchDocsRequest, SearchEntriesRequest, SearchEpisodesRequest, SearchInsightsRequest,
-    SearchProceduresRequest, SourceCursorUpsertPlan, UpsertSourceCursorRequest,
+use axiomsync_domain::{
+    AppendRawEventsRequest, DerivePlan, ProjectionPlan, ReplayPlan, SearchCasesRequest,
+    SourceCursorUpsertPlan, UpsertSourceCursorRequest,
 };
 use axiomsync_kernel::{AxiomError, AxiomSync, Result};
 use axiomsync_mcp as mcp;
@@ -26,6 +25,7 @@ pub struct AppState {
 pub fn router(app: AxiomSync) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/", get(index))
         .route("/sink/raw-events/plan", post(plan_append_raw_events))
         .route("/sink/raw-events/apply", post(apply_ingest_plan))
         .route("/sink/source-cursors/plan", post(plan_source_cursor_upsert))
@@ -36,26 +36,9 @@ pub fn router(app: AxiomSync) -> Router {
         .route("/admin/derivations/apply", post(apply_derivations))
         .route("/admin/replay/plan", post(plan_replay))
         .route("/admin/replay/apply", post(apply_replay))
-        .route("/api/sessions/{id}", get(get_session))
-        .route("/api/entries/{id}", get(get_entry))
-        .route("/api/artifacts/{id}", get(get_artifact))
-        .route("/api/anchors/{id}", get(get_anchor))
-        .route("/api/episodes/{id}", get(get_episode))
-        .route("/api/claims/{id}", get(get_claim))
-        .route("/api/procedures/{id}", get(get_procedure))
-        .route("/api/query/search-entries", post(search_entries))
-        .route("/api/query/search-episodes", post(search_episodes))
-        .route("/api/query/search-docs", post(search_docs))
-        .route("/api/query/search-insights", post(search_insights))
-        .route("/api/query/search-claims", post(search_claims))
-        .route("/api/query/search-procedures", post(search_procedures))
-        .route("/api/query/find-fix", post(find_fix))
-        .route("/api/query/find-decision", post(find_decision))
-        .route("/api/query/find-runbook", post(find_runbook))
-        .route("/api/query/evidence-bundle", post(get_evidence_bundle))
+        .route("/api/query/search-cases", post(search_cases))
         .route("/api/cases/{id}", get(get_case))
         .route("/api/threads/{id}", get(get_thread))
-        .route("/api/runbooks/{id}", get(get_runbook))
         .route("/api/runs", get(list_runs))
         .route("/api/runs/{id}", get(get_run))
         .route("/api/tasks/{id}", get(get_task))
@@ -90,6 +73,24 @@ async fn health(State(state): State<AppState>) -> HttpResult<Json<Value>> {
     })))
 }
 
+async fn index(headers: HeaderMap, State(state): State<AppState>) -> HttpResult<Html<String>> {
+    authorize_admin(&state.app, &headers)?;
+    let cases = state.app.list_cases()?;
+    let sessions = state.app.list_sessions()?;
+    let thread_count = sessions
+        .iter()
+        .filter(|session| session.session_kind == "thread")
+        .count();
+    let run_count = state.app.list_runs(None)?.len();
+    let document_count = state.app.list_documents(None, None)?.len();
+    Ok(Html(render_index_page(
+        &cases,
+        thread_count,
+        run_count,
+        document_count,
+    )))
+}
+
 async fn plan_append_raw_events(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
@@ -105,7 +106,7 @@ async fn plan_append_raw_events(
 async fn apply_ingest_plan(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
-    payload: std::result::Result<Json<axiomsync_domain::domain::IngestPlan>, JsonRejection>,
+    payload: std::result::Result<Json<axiomsync_domain::IngestPlan>, JsonRejection>,
 ) -> HttpResult<Json<Value>> {
     reject_non_loopback(addr.ip())?;
     let Json(plan) = payload.map_err(|error| AxiomError::Validation(error.body_text()))?;
@@ -189,83 +190,10 @@ async fn apply_replay(
     Ok(Json(state.app.apply_replay(&plan)?))
 }
 
-async fn get_session(
+async fn search_cases(
     headers: HeaderMap,
     State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> HttpResult<Json<Value>> {
-    authorize_workspace_resource(&state.app, &headers, state.app.session_workspace_id(&id)?)?;
-    Ok(Json(serde_json::to_value(state.app.get_session(&id)?)?))
-}
-
-async fn get_entry(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> HttpResult<Json<Value>> {
-    let entry = state.app.get_entry(&id)?;
-    authorize_workspace_resource(
-        &state.app,
-        &headers,
-        state.app.session_workspace_id(&entry.session_id)?,
-    )?;
-    Ok(Json(serde_json::to_value(entry)?))
-}
-
-async fn get_artifact(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> HttpResult<Json<Value>> {
-    authorize_workspace_resource(&state.app, &headers, state.app.artifact_workspace_id(&id)?)?;
-    Ok(Json(serde_json::to_value(state.app.get_artifact(&id)?)?))
-}
-
-async fn get_anchor(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> HttpResult<Json<Value>> {
-    authorize_workspace_resource(&state.app, &headers, state.app.anchor_workspace_id(&id)?)?;
-    Ok(Json(serde_json::to_value(state.app.get_anchor(&id)?)?))
-}
-
-async fn get_episode(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> HttpResult<Json<Value>> {
-    authorize_workspace_resource(&state.app, &headers, state.app.episode_workspace_id(&id)?)?;
-    Ok(Json(serde_json::to_value(state.app.get_episode(&id)?)?))
-}
-
-async fn get_claim(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> HttpResult<Json<Value>> {
-    let claim = state.app.get_claim(&id)?;
-    let workspace = match claim.episode_id.as_deref() {
-        Some(episode_id) => state.app.episode_workspace_id(episode_id)?,
-        None => None,
-    };
-    authorize_workspace_resource(&state.app, &headers, workspace)?;
-    Ok(Json(serde_json::to_value(claim)?))
-}
-
-async fn get_procedure(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> HttpResult<Json<Value>> {
-    authorize_admin(&state.app, &headers)?;
-    Ok(Json(serde_json::to_value(state.app.get_procedure(&id)?)?))
-}
-
-async fn search_entries(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    payload: Json<SearchEntriesRequest>,
+    payload: Json<SearchCasesRequest>,
 ) -> HttpResult<Json<Value>> {
     authorize_workspace_filter(
         &state.app,
@@ -273,151 +201,8 @@ async fn search_entries(
         payload.filter.workspace_root.as_deref(),
     )?;
     Ok(Json(serde_json::to_value(
-        state.app.search_entries(payload.0)?,
+        state.app.search_cases(payload.0)?,
     )?))
-}
-
-async fn search_episodes(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    payload: Json<SearchEpisodesRequest>,
-) -> HttpResult<Json<Value>> {
-    authorize_workspace_filter(
-        &state.app,
-        &headers,
-        payload.filter.workspace_root.as_deref(),
-    )?;
-    Ok(Json(serde_json::to_value(
-        state.app.search_episodes(payload.0)?,
-    )?))
-}
-
-async fn search_claims(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    payload: Json<SearchClaimsRequest>,
-) -> HttpResult<Json<Value>> {
-    authorize_workspace_filter(
-        &state.app,
-        &headers,
-        payload.filter.workspace_root.as_deref(),
-    )?;
-    Ok(Json(serde_json::to_value(
-        state.app.search_claims(payload.0)?,
-    )?))
-}
-
-async fn search_insights(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    payload: Json<SearchInsightsRequest>,
-) -> HttpResult<Json<Value>> {
-    authorize_workspace_filter(
-        &state.app,
-        &headers,
-        payload.filter.workspace_root.as_deref(),
-    )?;
-    Ok(Json(serde_json::to_value(
-        state.app.search_insights(payload.0)?,
-    )?))
-}
-
-async fn search_docs(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    payload: Json<SearchDocsRequest>,
-) -> HttpResult<Json<Value>> {
-    authorize_workspace_filter(
-        &state.app,
-        &headers,
-        payload.filter.workspace_root.as_deref(),
-    )?;
-    Ok(Json(serde_json::to_value(
-        state.app.search_docs(payload.0)?,
-    )?))
-}
-
-async fn search_procedures(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    payload: Json<SearchProceduresRequest>,
-) -> HttpResult<Json<Value>> {
-    authorize_workspace_filter(
-        &state.app,
-        &headers,
-        payload.filter.workspace_root.as_deref(),
-    )?;
-    Ok(Json(serde_json::to_value(
-        state.app.search_procedures(payload.0)?,
-    )?))
-}
-
-async fn find_fix(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    payload: Json<SearchInsightsRequest>,
-) -> HttpResult<Json<Value>> {
-    authorize_workspace_filter(
-        &state.app,
-        &headers,
-        payload.filter.workspace_root.as_deref(),
-    )?;
-    Ok(Json(serde_json::to_value(state.app.find_fix(payload.0)?)?))
-}
-
-async fn find_decision(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    payload: Json<SearchInsightsRequest>,
-) -> HttpResult<Json<Value>> {
-    authorize_workspace_filter(
-        &state.app,
-        &headers,
-        payload.filter.workspace_root.as_deref(),
-    )?;
-    Ok(Json(serde_json::to_value(
-        state.app.find_decision(payload.0)?,
-    )?))
-}
-
-async fn find_runbook(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    payload: Json<SearchProceduresRequest>,
-) -> HttpResult<Json<Value>> {
-    authorize_workspace_filter(
-        &state.app,
-        &headers,
-        payload.filter.workspace_root.as_deref(),
-    )?;
-    Ok(Json(serde_json::to_value(
-        state.app.find_runbook(payload.0)?,
-    )?))
-}
-
-#[derive(serde::Deserialize)]
-struct EvidenceBundleRequest {
-    subject_kind: String,
-    subject_id: String,
-}
-
-async fn get_evidence_bundle(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    payload: Json<EvidenceBundleRequest>,
-) -> HttpResult<Json<Value>> {
-    let workspace = match payload.subject_kind.as_str() {
-        "episode" => state.app.episode_workspace_id(&payload.subject_id)?,
-        "session" => state.app.session_workspace_id(&payload.subject_id)?,
-        "insight" => state.app.insight_workspace_id(&payload.subject_id)?,
-        "procedure" => state.app.procedure_workspace_id(&payload.subject_id)?,
-        _ => None,
-    };
-    authorize_workspace_resource(&state.app, &headers, workspace)?;
-    Ok(Json(serde_json::to_value(state.app.get_evidence_bundle(
-        &payload.subject_kind,
-        &payload.subject_id,
-    )?)?))
 }
 
 async fn get_case(
@@ -425,7 +210,7 @@ async fn get_case(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HttpResult<Json<Value>> {
-    authorize_workspace_resource(&state.app, &headers, state.app.episode_workspace_id(&id)?)?;
+    authorize_workspace_resource(&state.app, &headers, state.app.case_workspace_id(&id)?)?;
     Ok(Json(serde_json::to_value(state.app.get_case(&id)?)?))
 }
 
@@ -436,15 +221,6 @@ async fn get_thread(
 ) -> HttpResult<Json<Value>> {
     authorize_workspace_resource(&state.app, &headers, state.app.session_workspace_id(&id)?)?;
     Ok(Json(serde_json::to_value(state.app.get_thread(&id)?)?))
-}
-
-async fn get_runbook(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> HttpResult<Json<Value>> {
-    authorize_workspace_resource(&state.app, &headers, state.app.episode_workspace_id(&id)?)?;
-    Ok(Json(serde_json::to_value(state.app.get_runbook(&id)?)?))
 }
 
 async fn list_runs(headers: HeaderMap, State(state): State<AppState>) -> HttpResult<Json<Value>> {
@@ -555,7 +331,7 @@ fn authorize_workspace_filter(
     headers: &HeaderMap,
     workspace_root: Option<&str>,
 ) -> Result<Option<String>> {
-    let workspace_id = workspace_root.map(axiomsync_domain::domain::workspace_stable_id);
+    let workspace_id = workspace_root.map(axiomsync_domain::workspace_stable_id);
     authorize_workspace_resource(app, headers, workspace_id)
 }
 
@@ -579,7 +355,45 @@ fn reject_non_loopback(ip: IpAddr) -> Result<()> {
     }
 }
 
-#[allow(dead_code)]
-fn parse_json<T: DeserializeOwned>(value: Value) -> Result<T> {
-    Ok(serde_json::from_value(value)?)
+fn render_index_page(
+    cases: &[axiomsync_domain::CaseRecord],
+    thread_count: usize,
+    run_count: usize,
+    document_count: usize,
+) -> String {
+    let mut html = String::from(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>AxiomSync</title><style>body{font-family:ui-sans-serif,system-ui,sans-serif;margin:0;background:#f4f1ea;color:#1f2933}main{max-width:960px;margin:0 auto;padding:32px 20px 64px}section{background:#fff;border:1px solid #ddd7cc;border-radius:16px;padding:18px 20px;margin:14px 0}h1,h2{margin:0 0 12px}ul{padding-left:20px}a{color:#0f4c5c;text-decoration:none}code{font-family:ui-monospace,SFMono-Regular,monospace}</style></head><body><main>",
+    );
+    html.push_str("<h1>AxiomSync Knowledge Kernel</h1><p>Canonical read views for cases, threads, runs, documents, and evidence.</p>");
+    html.push_str("<section><h2>Cases</h2><ul>");
+    for case_record in cases {
+        html.push_str(&format!(
+            "<li>{} <code>{}</code></li>",
+            escape_html(&case_record.problem),
+            escape_html(&case_record.case_id)
+        ));
+    }
+    html.push_str("</ul></section>");
+    html.push_str(&format!(
+        "<section><h2>Threads</h2><p>{thread_count} thread records available.</p></section>"
+    ));
+    html.push_str(&format!(
+        "<section><h2>Runs</h2><p>{run_count} run records available.</p></section>"
+    ));
+    html.push_str(&format!(
+        "<section><h2>Documents</h2><p>{document_count} document records available.</p></section>"
+    ));
+    html.push_str(
+        "<section><h2>Evidence</h2><p>Evidence anchors are available through canonical case, thread, run, task, and document reads.</p></section>",
+    );
+    html.push_str("</main></body></html>");
+    html
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\"', "&quot;")
 }

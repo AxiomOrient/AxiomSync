@@ -8,6 +8,18 @@ use sha2::{Digest, Sha256};
 use crate::error::{AxiomError, Result};
 
 pub const KERNEL_SCHEMA_VERSION: &str = "axiomsync-kernel-v2";
+pub const RAW_EVENT_TAXONOMY: &[&str] = &[
+    "message_captured",
+    "selection_captured",
+    "command_started",
+    "command_finished",
+    "artifact_emitted",
+    "verification_recorded",
+    "task_state_imported",
+    "approval_requested",
+    "approval_resolved",
+    "note_recorded",
+];
 
 pub fn canonical_json(value: &Value) -> Value {
     match value {
@@ -92,29 +104,10 @@ impl RawArtifactInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BatchSourceInput {
-    pub source_kind: String,
-    pub connector_name: String,
-}
-
-impl BatchSourceInput {
-    pub fn validate(&self) -> Result<()> {
-        if self.source_kind.trim().is_empty() || self.connector_name.trim().is_empty() {
-            return Err(AxiomError::Validation(
-                "batch source requires source_kind and connector_name".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RawEventInput {
-    #[serde(default, rename = "source", alias = "connector")]
-    pub source: String,
-    #[serde(default)]
-    pub source_kind: Option<String>,
+    #[serde(default, alias = "source")]
+    pub connector: String,
     pub native_schema_version: Option<String>,
     #[serde(default)]
     pub session_kind: Option<String>,
@@ -151,31 +144,15 @@ pub struct RawEventInput {
 }
 
 impl RawEventInput {
-    pub fn resolved_connector(&self, batch_source: Option<&BatchSourceInput>) -> Result<String> {
-        if !self.source.trim().is_empty() {
-            Ok(self.source.clone())
-        } else if let Some(source) = batch_source {
-            Ok(source.connector_name.clone())
+    pub fn validate_event_type(&self) -> Result<()> {
+        let event_type = self.normalized_event_kind()?;
+        if RAW_EVENT_TAXONOMY.contains(&event_type.as_str()) {
+            Ok(())
         } else {
-            Err(AxiomError::Validation(
-                "raw event input requires source/connector or batch.source.connector_name"
-                    .to_string(),
-            ))
+            Err(AxiomError::Validation(format!(
+                "unsupported raw event event_type `{event_type}`"
+            )))
         }
-    }
-
-    pub fn resolved_source_kind(&self, batch_source: Option<&BatchSourceInput>) -> Result<String> {
-        self.source_kind
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map(ToOwned::to_owned)
-            .or_else(|| batch_source.map(|source| source.source_kind.clone()))
-            .or_else(|| (!self.source.trim().is_empty()).then(|| self.source.clone()))
-            .ok_or_else(|| {
-                AxiomError::Validation(
-                    "raw event input requires source_kind or batch.source.source_kind".to_string(),
-                )
-            })
     }
 
     pub fn normalized_session_kind(&self) -> &str {
@@ -188,7 +165,34 @@ impl RawEventInput {
                     .and_then(Value::as_str)
                     .filter(|value| !value.trim().is_empty())
             })
-            .unwrap_or("conversation")
+            .or_else(|| {
+                self.payload
+                    .get("session_kind")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+            })
+            .unwrap_or("thread")
+    }
+
+    pub fn normalized_workspace_root(&self) -> Option<String> {
+        self.workspace_root
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                self.hints
+                    .get("workspace_root")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(ToOwned::to_owned)
+            })
+            .or_else(|| {
+                self.payload
+                    .get("workspace_root")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(ToOwned::to_owned)
+            })
     }
 
     pub fn normalized_session_key(&self) -> Result<String> {
@@ -263,11 +267,14 @@ impl RawEventInput {
         Ok(hex::encode(hasher.finalize()))
     }
 
-    pub fn validate(&self, batch_source: Option<&BatchSourceInput>) -> Result<()> {
-        self.resolved_connector(batch_source)?;
-        self.resolved_source_kind(batch_source)?;
+    pub fn validate(&self) -> Result<()> {
+        if self.connector.trim().is_empty() {
+            return Err(AxiomError::Validation(
+                "raw event input requires connector".to_string(),
+            ));
+        }
         self.normalized_session_key()?;
-        self.normalized_event_kind()?;
+        self.validate_event_type()?;
         self.normalized_observed_at()?;
         for artifact in &self.artifacts {
             artifact.validate()?;
@@ -278,86 +285,256 @@ impl RawEventInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppendRawEventsRequest {
-    pub request_id: Option<String>,
-    #[serde(default)]
-    pub batch_id: Option<String>,
-    #[serde(default)]
-    pub source: Option<BatchSourceInput>,
+    pub batch_id: String,
+    pub producer: String,
+    pub received_at_ms: i64,
     pub events: Vec<RawEventInput>,
 }
 
 impl AppendRawEventsRequest {
     pub fn validate(&self) -> Result<()> {
+        if self.batch_id.trim().is_empty() {
+            return Err(AxiomError::Validation(
+                "append_raw_events requires batch_id".to_string(),
+            ));
+        }
+        if self.producer.trim().is_empty() {
+            return Err(AxiomError::Validation(
+                "append_raw_events requires producer".to_string(),
+            ));
+        }
+        if self.received_at_ms < 0 {
+            return Err(AxiomError::Validation(
+                "append_raw_events requires non-negative received_at_ms".to_string(),
+            ));
+        }
         if self.events.is_empty() {
             return Err(AxiomError::Validation(
                 "append_raw_events requires at least one event".to_string(),
             ));
         }
-        if let Some(source) = &self.source {
-            source.validate()?;
-        }
         for event in &self.events {
-            event.validate(self.source.as_ref())?;
+            event.validate()?;
         }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CursorInput {
-    pub cursor_key: String,
-    pub cursor_value: String,
-    #[serde(default)]
-    pub updated_at: Option<String>,
-    #[serde(default)]
-    pub updated_at_ms: Option<i64>,
-    #[serde(default = "empty_object")]
-    pub metadata: Value,
-}
-
-impl CursorInput {
-    pub fn normalized_updated_at(&self) -> Result<String> {
-        if let Some(value) = self
-            .updated_at
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            return Ok(value.to_string());
-        }
-        if let Some(ts_ms) = self.updated_at_ms {
-            return ts_ms_to_rfc3339(ts_ms);
-        }
-        Err(AxiomError::Validation(
-            "cursor input requires updated_at or updated_at_ms".to_string(),
-        ))
-    }
-
-    pub fn validate(&self) -> Result<()> {
-        if self.cursor_key.trim().is_empty() || self.cursor_value.trim().is_empty() {
-            return Err(AxiomError::Validation(
-                "cursor input requires cursor_key and cursor_value".to_string(),
-            ));
-        }
-        self.normalized_updated_at()?;
         Ok(())
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UpsertSourceCursorRequest {
-    #[serde(rename = "source", alias = "connector")]
-    pub source: String,
-    pub cursor: CursorInput,
+    pub connector: String,
+    pub cursor_key: String,
+    pub cursor_value: String,
+    pub updated_at_ms: i64,
 }
 
 impl UpsertSourceCursorRequest {
     pub fn validate(&self) -> Result<()> {
-        if self.source.trim().is_empty() {
+        if self.connector.trim().is_empty()
+            || self.cursor_key.trim().is_empty()
+            || self.cursor_value.trim().is_empty()
+        {
             return Err(AxiomError::Validation(
-                "upsert_source_cursor requires source".to_string(),
+                "upsert_source_cursor requires connector, cursor_key, and cursor_value".to_string(),
             ));
         }
-        self.cursor.validate()
+        if self.updated_at_ms < 0 {
+            return Err(AxiomError::Validation(
+                "upsert_source_cursor requires non-negative updated_at_ms".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactRef {
+    pub uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256_hex: Option<String>,
+}
+
+impl ArtifactRef {
+    pub fn validate(&self, field_name: &str) -> Result<()> {
+        if self.uri.trim().is_empty() {
+            return Err(AxiomError::Validation(format!(
+                "{field_name}.uri must not be empty"
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandPayload {
+    pub argv: Vec<String>,
+    pub cwd: String,
+    pub exit_code: i32,
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub env_keys: Vec<String>,
+}
+
+impl CommandPayload {
+    pub fn validate(&self) -> Result<()> {
+        if self.argv.is_empty() {
+            return Err(AxiomError::Validation(
+                "command.argv must not be empty".to_string(),
+            ));
+        }
+        if self.cwd.trim().is_empty() {
+            return Err(AxiomError::Validation(
+                "command.cwd must not be empty".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerificationPayload {
+    pub kind: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+impl VerificationPayload {
+    pub fn validate(&self) -> Result<()> {
+        if self.kind.trim().is_empty() || self.status.trim().is_empty() {
+            return Err(AxiomError::Validation(
+                "verification.kind and verification.status must not be empty".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatgptSelectionPayload {
+    pub conversation_id: String,
+    pub message_id: String,
+    pub role: String,
+    pub selected_text: String,
+    pub start_hint: String,
+    pub end_hint: String,
+    pub dom_fingerprint: String,
+    pub page_url: String,
+    pub page_title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_note: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+impl ChatgptSelectionPayload {
+    pub fn validate(&self) -> Result<()> {
+        for (field, value) in [
+            ("conversation_id", self.conversation_id.as_str()),
+            ("message_id", self.message_id.as_str()),
+            ("role", self.role.as_str()),
+            ("selected_text", self.selected_text.as_str()),
+            ("start_hint", self.start_hint.as_str()),
+            ("end_hint", self.end_hint.as_str()),
+            ("dom_fingerprint", self.dom_fingerprint.as_str()),
+            ("page_url", self.page_url.as_str()),
+            ("page_title", self.page_title.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(AxiomError::Validation(format!(
+                    "chatgpt selection field `{field}` must not be empty"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CliCommandPayload {
+    pub run_id: String,
+    pub command_event_id: String,
+    pub workspace_root: String,
+    pub task_id: String,
+    pub actor: String,
+    pub command: CommandPayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_artifact: Option<ArtifactRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_artifact: Option<ArtifactRef>,
+    #[serde(default)]
+    pub changed_files: Vec<String>,
+    pub verification: VerificationPayload,
+    pub finished_at_ms: u64,
+}
+
+impl CliCommandPayload {
+    pub fn validate(&self) -> Result<()> {
+        if self.run_id.trim().is_empty()
+            || self.command_event_id.trim().is_empty()
+            || self.workspace_root.trim().is_empty()
+            || self.task_id.trim().is_empty()
+            || self.actor.trim().is_empty()
+        {
+            return Err(AxiomError::Validation(
+                "cli command payload requires run_id, command_event_id, workspace_root, task_id, and actor".to_string(),
+            ));
+        }
+        self.command.validate()?;
+        self.verification.validate()?;
+        if let Some(artifact) = &self.stdout_artifact {
+            artifact.validate("stdout_artifact")?;
+        }
+        if let Some(artifact) = &self.stderr_artifact {
+            artifact.validate("stderr_artifact")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkStateExportPayload {
+    pub snapshot_id: String,
+    pub exported_at_ms: u64,
+    pub workspace_root: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub status: String,
+    pub progress_summary: String,
+    pub task_file_uri: String,
+    pub result_file_uri: String,
+    pub events_file_uri: String,
+    #[serde(default)]
+    pub evidence_uris: Vec<String>,
+}
+
+impl WorkStateExportPayload {
+    pub fn validate(&self) -> Result<()> {
+        for (field, value) in [
+            ("snapshot_id", self.snapshot_id.as_str()),
+            ("workspace_root", self.workspace_root.as_str()),
+            ("run_id", self.run_id.as_str()),
+            ("task_id", self.task_id.as_str()),
+            ("status", self.status.as_str()),
+            ("progress_summary", self.progress_summary.as_str()),
+            ("task_file_uri", self.task_file_uri.as_str()),
+            ("result_file_uri", self.result_file_uri.as_str()),
+            ("events_file_uri", self.events_file_uri.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(AxiomError::Validation(format!(
+                    "work state export field `{field}` must not be empty"
+                )));
+            }
+        }
+        if self.evidence_uris.iter().any(|uri| uri.trim().is_empty()) {
+            return Err(AxiomError::Validation(
+                "work state export evidence_uris must not contain empty values".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -567,6 +744,7 @@ pub struct ClaimEvidenceRow {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProcedureRow {
     pub procedure_id: String,
+    pub episode_id: Option<String>,
     pub title: String,
     pub goal: Option<String>,
     #[serde(default)]
@@ -611,52 +789,7 @@ pub struct SearchFilter {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SearchEntriesRequest {
-    pub query: String,
-    #[serde(default)]
-    pub limit: usize,
-    #[serde(default)]
-    pub filter: SearchFilter,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SearchEpisodesRequest {
-    pub query: String,
-    #[serde(default)]
-    pub limit: usize,
-    #[serde(default)]
-    pub filter: SearchFilter,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SearchClaimsRequest {
-    pub query: String,
-    #[serde(default)]
-    pub limit: usize,
-    #[serde(default)]
-    pub filter: SearchFilter,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SearchInsightsRequest {
-    pub query: String,
-    #[serde(default)]
-    pub limit: usize,
-    #[serde(default)]
-    pub filter: SearchFilter,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SearchDocsRequest {
-    pub query: String,
-    #[serde(default)]
-    pub limit: usize,
-    #[serde(default)]
-    pub filter: SearchFilter,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SearchProceduresRequest {
+pub struct SearchCasesRequest {
     pub query: String,
     #[serde(default)]
     pub limit: usize,
@@ -724,34 +857,12 @@ pub struct AnchorView {
 pub type EvidenceView = AnchorView;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct EpisodeView {
-    pub episode: EpisodeRow,
-    pub insights: Vec<InsightRow>,
-    pub verifications: Vec<VerificationRow>,
-    pub claims: Vec<ClaimRow>,
-    pub procedures: Vec<ProcedureRow>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CaseRecord {
     pub case_id: String,
     pub workspace_root: Option<String>,
     pub problem: String,
     pub root_cause: Option<String>,
     pub resolution: Option<String>,
-    pub commands: Vec<String>,
-    #[serde(default)]
-    pub verification: Vec<VerificationSummary>,
-    pub evidence: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RunbookRecord {
-    pub episode_id: String,
-    pub workspace_root: Option<String>,
-    pub problem: String,
-    pub root_cause: Option<String>,
-    pub fix: Option<String>,
     pub commands: Vec<String>,
     #[serde(default)]
     pub verification: Vec<VerificationSummary>,
@@ -770,18 +881,6 @@ pub struct SearchDocsRow {
     pub metadata_json: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct EvidenceBundle {
-    pub subject_kind: String,
-    pub subject_id: String,
-    pub title: Option<String>,
-    pub summary: Option<String>,
-    #[serde(default)]
-    pub verification: Vec<VerificationSummary>,
-    #[serde(default)]
-    pub evidence: Vec<EvidencePreview>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuthGrantRecord {
     pub workspace_id: String,
@@ -791,9 +890,7 @@ pub struct AuthGrantRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuthSnapshot {
     pub schema_version: String,
-    #[serde(default)]
     pub grants: Vec<AuthGrantRecord>,
-    #[serde(default)]
     pub admin_tokens: Vec<String>,
 }
 

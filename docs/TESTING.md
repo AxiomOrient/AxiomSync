@@ -4,7 +4,7 @@
 
 ## Required
 ```bash
-cargo fmt --all -- --check
+cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace -- --nocapture
 cargo run -p axiomsync -- --help
@@ -15,19 +15,19 @@ cargo run -p axiomsync -- mcp serve --help
 
 ## Regression Suites
 - `crates/axiomsync/tests/kernel_redesign.rs`
-- `crates/axiomsync/tests/final_form_compat.rs`
+- sink schema regression suite
 - `crates/axiomsync/tests/http_and_mcp_v2.rs`
 
-## Final-form Fixture Coverage
-- `axiomsync-final-form-docs-package/examples/raw_event.chatgpt_selection.json`
-- `axiomsync-final-form-docs-package/examples/raw_event.axiomrams_run_summary.json`
+## Sink Fixture Coverage
+- `crates/axiomsync/tests/fixtures/raw_event.chatgpt_selection.json`
+- `crates/axiomsync/tests/fixtures/raw_event.axiomrams_run_summary.json`
 - 검증 포인트:
-  - `kernel_sink_contract.json` schema validation
-  - root `source` envelope ingest
+  - `docs/contracts/kernel_sink_contract.json` schema validation
+  - canonical append envelope ingest
   - nested payload projection (`selection.text`, `source_message.role`, `payload.artifacts`, `hints.entry_kind`)
   - evidence-first derivation
-  - unified `search_docs` retrieval with evidence preview
-  - canonical HTTP/MCP helper surface
+  - canonical case/thread/run/document/evidence retrieval
+  - canonical HTTP/MCP helper surface only
   - pending projection/derivation/index counts
 
 ## Release Smoke

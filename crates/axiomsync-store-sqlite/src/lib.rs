@@ -3,7 +3,7 @@ pub mod error {
 }
 
 pub mod domain {
-    pub use axiomsync_domain::domain::*;
+    pub use axiomsync_domain::*;
 }
 
 pub mod ports {

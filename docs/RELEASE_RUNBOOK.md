@@ -10,12 +10,12 @@
 
 ## Required Gates
 ```bash
-cargo fmt --all -- --check
+cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace -- --nocapture
 cargo run -p axiomsync -- --help
 cargo run -p axiomsync -- sink --help
-cargo run -p axiomsync -- web --help
+cargo run -p axiomsync -- serve --help
 cargo run -p axiomsync -- mcp serve --help
 ```
 
@@ -24,7 +24,6 @@ cargo run -p axiomsync -- mcp serve --help
 tmp_root="$(mktemp -d)"
 cargo run -p axiomsync -- --root "$tmp_root" init
 cargo run -p axiomsync -- --root "$tmp_root" project doctor
-cargo run -p axiomsync -- --root "$tmp_root" search "smoke"
 ```
 
 ## Release Decision

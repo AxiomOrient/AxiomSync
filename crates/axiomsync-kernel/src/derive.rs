@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
-use axiomsync_domain::domain::{
+use axiomsync_domain::error::Result;
+use axiomsync_domain::{
     AnchorRow, ClaimEvidenceRow, ClaimRow, DerivePlan, EntryRow, EpisodeRow, InsightAnchorRow,
     InsightRow, ProcedureEvidenceRow, ProcedureRow, SearchDocsRow, SessionRow, VerificationRow,
     stable_id,
 };
-use axiomsync_domain::error::Result;
 use serde_json::json;
 
 pub fn plan_derivation(
@@ -195,6 +195,7 @@ pub fn plan_derivation(
             procedure_ids.push(procedure_id.clone());
             procedures.push(ProcedureRow {
                 procedure_id: procedure_id.clone(),
+                episode_id: Some(episode_id.clone()),
                 title: session
                     .title
                     .clone()

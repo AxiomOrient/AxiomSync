@@ -1,34 +1,20 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use axiomsync_domain::domain::{
-    AnchorRow, ArtifactRow, ClaimEvidenceRow, ClaimRow, DerivePlan, DoctorReport, EntryRow,
-    EpisodeRow, IngestPlan, IngressReceiptRow, InsightAnchorRow, InsightRow, ProcedureEvidenceRow,
-    ProcedureRow, ProjectionPlan, ReplayPlan, SearchDocsRow, SessionRow, SourceCursorRow,
-    SourceCursorUpsertPlan, VerificationRow, stable_id,
-};
 use axiomsync_domain::error::{AxiomError, Result};
+use axiomsync_domain::{
+    AnchorRow, ArtifactRow, ClaimRow, DerivePlan, DoctorReport, EntryRow, EpisodeRow, IngestPlan,
+    IngressReceiptRow, InsightAnchorRow, InsightRow, ProcedureRow, ProjectionPlan, ReplayPlan,
+    SessionRow, SourceCursorRow, SourceCursorUpsertPlan, VerificationRow,
+};
 use axiomsync_kernel::ports::RepositoryPort;
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, Transaction, params};
 use serde_json::{Value, json};
 
 #[derive(Debug, Clone)]
 pub struct ContextDb {
     root: PathBuf,
     db_path: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-struct LegacyRawEventRow {
-    stable_id: String,
-    connector: String,
-    native_schema_version: Option<String>,
-    native_session_id: String,
-    native_event_id: Option<String>,
-    event_type: String,
-    ts_ms: i64,
-    payload_json: String,
-    payload_sha256: Vec<u8>,
 }
 
 impl ContextDb {
@@ -44,36 +30,15 @@ impl ContextDb {
     }
 
     fn initialize(&self) -> Result<()> {
-        let mut conn = self.connection()?;
+        let conn = self.connection()?;
         conn.execute_batch(include_str!("schema.sql"))
             .map_err(map_db_err)?;
-        self.migrate_legacy(&mut conn)?;
         self.migrate_current(&conn)?;
         Ok(())
     }
 
     fn connection(&self) -> Result<Connection> {
         Connection::open(&self.db_path).map_err(map_db_err)
-    }
-
-    fn migrate_legacy(&self, conn: &mut Connection) -> Result<()> {
-        if !table_exists(conn, "raw_event")? {
-            return Ok(());
-        }
-        let current_count: i64 = conn
-            .query_row("select count(*) from ingress_receipts", [], |row| {
-                row.get(0)
-            })
-            .map_err(map_db_err)?;
-        if current_count == 0 {
-            let tx = conn.transaction().map_err(map_db_err)?;
-            let rows = load_legacy_raw_events(&tx)?;
-            let receipts = plan_legacy_backfill(&rows)?;
-            apply_legacy_backfill(&tx, &receipts)?;
-            tx.commit().map_err(map_db_err)?;
-        }
-        drop_legacy_tables(conn)?;
-        Ok(())
     }
 
     fn migrate_current(&self, conn: &Connection) -> Result<()> {
@@ -113,6 +78,7 @@ impl ContextDb {
             "status",
             "TEXT NOT NULL DEFAULT 'active'",
         )?;
+        ensure_column(conn, "procedures", "episode_id", "TEXT")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS insights (
                 insight_id TEXT PRIMARY KEY,
@@ -187,7 +153,7 @@ impl RepositoryPort for ContextDb {
         Ok(json!({
             "root": self.root,
             "db_path": self.db_path,
-            "schema_version": axiomsync_domain::domain::KERNEL_SCHEMA_VERSION,
+            "schema_version": axiomsync_domain::KERNEL_SCHEMA_VERSION,
         }))
     }
 
@@ -565,11 +531,12 @@ impl RepositoryPort for ContextDb {
             for procedure in &plan.derivation.procedures {
                 tx.execute(
                     "insert into procedures (
-                        procedure_id, title, goal, steps_json, status, confidence,
+                        procedure_id, episode_id, title, goal, steps_json, status, confidence,
                         extractor_version, stale
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
                         procedure.procedure_id,
+                        procedure.episode_id,
                         procedure.title,
                         procedure.goal,
                         serde_json::to_string(&procedure.steps_json)?,
@@ -911,11 +878,12 @@ impl RepositoryPort for ContextDb {
             for procedure in &plan.procedures {
                 tx.execute(
                     "insert into procedures (
-                        procedure_id, title, goal, steps_json, status, confidence,
+                        procedure_id, episode_id, title, goal, steps_json, status, confidence,
                         extractor_version, stale
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
                         procedure.procedure_id,
+                        procedure.episode_id,
                         procedure.title,
                         procedure.goal,
                         serde_json::to_string(&procedure.steps_json)?,
@@ -1231,32 +1199,11 @@ impl RepositoryPort for ContextDb {
         rows.map(|row| row.map_err(map_db_err)).collect()
     }
 
-    fn load_claim_evidence(&self) -> Result<Vec<ClaimEvidenceRow>> {
-        let conn = self.connection()?;
-        let mut stmt = conn
-            .prepare(
-                "select claim_id, anchor_id, support_kind
-                 from claim_evidence
-                 order by claim_id asc, anchor_id asc",
-            )
-            .map_err(map_db_err)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(ClaimEvidenceRow {
-                    claim_id: row.get(0)?,
-                    anchor_id: row.get(1)?,
-                    support_kind: row.get(2)?,
-                })
-            })
-            .map_err(map_db_err)?;
-        rows.map(|row| row.map_err(map_db_err)).collect()
-    }
-
     fn load_procedures(&self) -> Result<Vec<ProcedureRow>> {
         let conn = self.connection()?;
         let mut stmt = conn
             .prepare(
-                "select procedure_id, title, goal, steps_json, status, confidence, extractor_version, stale
+                "select procedure_id, episode_id, title, goal, steps_json, status, confidence, extractor_version, stale
                  from procedures
                  order by procedure_id asc",
             )
@@ -1265,59 +1212,14 @@ impl RepositoryPort for ContextDb {
             .query_map([], |row| {
                 Ok(ProcedureRow {
                     procedure_id: row.get(0)?,
-                    title: row.get(1)?,
-                    goal: row.get(2)?,
-                    steps_json: parse_json_value(row.get::<_, String>(3)?)?,
-                    status: row.get(4)?,
-                    confidence: row.get(5)?,
-                    extractor_version: row.get(6)?,
-                    stale: row.get::<_, i64>(7)? != 0,
-                })
-            })
-            .map_err(map_db_err)?;
-        rows.map(|row| row.map_err(map_db_err)).collect()
-    }
-
-    fn load_procedure_evidence(&self) -> Result<Vec<ProcedureEvidenceRow>> {
-        let conn = self.connection()?;
-        let mut stmt = conn
-            .prepare(
-                "select procedure_id, anchor_id, support_kind
-                 from procedure_evidence
-                 order by procedure_id asc, anchor_id asc",
-            )
-            .map_err(map_db_err)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(ProcedureEvidenceRow {
-                    procedure_id: row.get(0)?,
-                    anchor_id: row.get(1)?,
-                    support_kind: row.get(2)?,
-                })
-            })
-            .map_err(map_db_err)?;
-        rows.map(|row| row.map_err(map_db_err)).collect()
-    }
-
-    fn load_search_docs(&self) -> Result<Vec<SearchDocsRow>> {
-        let conn = self.connection()?;
-        let mut stmt = conn
-            .prepare(
-                "select doc_id, doc_kind, subject_kind, subject_id, title, body, metadata_json
-                 from search_docs
-                 order by doc_id asc",
-            )
-            .map_err(map_db_err)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(SearchDocsRow {
-                    doc_id: row.get(0)?,
-                    doc_kind: row.get(1)?,
-                    subject_kind: row.get(2)?,
-                    subject_id: row.get(3)?,
-                    title: row.get(4)?,
-                    body: row.get(5)?,
-                    metadata_json: parse_json_value(row.get::<_, String>(6)?)?,
+                    episode_id: row.get(1)?,
+                    title: row.get(2)?,
+                    goal: row.get(3)?,
+                    steps_json: parse_json_value(row.get::<_, String>(4)?)?,
+                    status: row.get(5)?,
+                    confidence: row.get(6)?,
+                    extractor_version: row.get(7)?,
+                    stale: row.get::<_, i64>(8)? != 0,
                 })
             })
             .map_err(map_db_err)?;
@@ -1339,7 +1241,7 @@ impl RepositoryPort for ContextDb {
             self.pending_counts()?;
         Ok(DoctorReport {
             db_path: self.db_path.display().to_string(),
-            schema_version: axiomsync_domain::domain::KERNEL_SCHEMA_VERSION.to_string(),
+            schema_version: axiomsync_domain::KERNEL_SCHEMA_VERSION.to_string(),
             ingress_receipts: count_rows(&conn, "ingress_receipts")?,
             sessions: count_rows(&conn, "sessions")?,
             entries: count_rows(&conn, "entries")?,
@@ -1353,142 +1255,6 @@ impl RepositoryPort for ContextDb {
             pending_index_count,
         })
     }
-}
-
-fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
-    let found = conn
-        .query_row(
-            "select 1 from sqlite_master where type = 'table' and name = ?1",
-            params![table],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(map_db_err)?;
-    Ok(found.is_some())
-}
-
-fn load_legacy_raw_events(tx: &Transaction<'_>) -> Result<Vec<LegacyRawEventRow>> {
-    let mut stmt = tx
-        .prepare(
-            "select stable_id, connector, native_schema_version, native_session_id,
-                    native_event_id, event_type, ts_ms, payload_json, payload_sha256
-             from raw_event
-             order by id asc",
-        )
-        .map_err(map_db_err)?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(LegacyRawEventRow {
-                stable_id: row.get(0)?,
-                connector: row.get(1)?,
-                native_schema_version: row.get(2)?,
-                native_session_id: row.get(3)?,
-                native_event_id: row.get(4)?,
-                event_type: row.get(5)?,
-                ts_ms: row.get(6)?,
-                payload_json: row.get(7)?,
-                payload_sha256: row.get(8)?,
-            })
-        })
-        .map_err(map_db_err)?;
-    rows.map(|row| row.map_err(map_db_err)).collect()
-}
-
-fn plan_legacy_backfill(rows: &[LegacyRawEventRow]) -> Result<Vec<IngressReceiptRow>> {
-    rows.iter()
-        .map(|row| {
-            Ok(IngressReceiptRow {
-                receipt_id: stable_id("receipt", &(row.stable_id.as_str(), row.connector.as_str())),
-                batch_id: stable_id("batch", &"legacy"),
-                source_kind: row.connector.clone(),
-                connector: row.connector.clone(),
-                session_kind: infer_legacy_session_kind(&row.event_type, &row.payload_json),
-                external_session_key: Some(row.native_session_id.clone()),
-                external_entry_key: row.native_event_id.clone(),
-                event_kind: row.event_type.clone(),
-                observed_at: axiomsync_domain::domain::ts_ms_to_rfc3339(row.ts_ms)?,
-                captured_at: None,
-                workspace_root: None,
-                content_hash: hex::encode(&row.payload_sha256),
-                dedupe_key: Some(row.stable_id.clone()),
-                payload_json: row.payload_json.clone(),
-                raw_payload_json: row.native_schema_version.clone(),
-                artifacts_json: "[]".to_string(),
-                normalized_json: row.payload_json.clone(),
-                projection_state: "pending".to_string(),
-                derived_state: "pending".to_string(),
-                index_state: "pending".to_string(),
-            })
-        })
-        .collect()
-}
-
-fn apply_legacy_backfill(tx: &Transaction<'_>, receipts: &[IngressReceiptRow]) -> Result<()> {
-    for receipt in receipts {
-        tx.execute(
-            "insert or ignore into ingress_receipts (
-                receipt_id, batch_id, source_kind, connector, session_kind,
-                external_session_key, external_entry_key, event_kind, observed_at,
-                captured_at, workspace_root, content_hash, dedupe_key, payload_json,
-                raw_payload_json, artifacts_json, normalized_json, projection_state,
-                derived_state, index_state
-            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
-            params![
-                receipt.receipt_id,
-                receipt.batch_id,
-                receipt.source_kind,
-                receipt.connector,
-                receipt.session_kind,
-                receipt.external_session_key,
-                receipt.external_entry_key,
-                receipt.event_kind,
-                receipt.observed_at,
-                receipt.captured_at,
-                receipt.workspace_root,
-                receipt.content_hash,
-                receipt.dedupe_key,
-                receipt.payload_json,
-                receipt.raw_payload_json,
-                receipt.artifacts_json,
-                receipt.normalized_json,
-                receipt.projection_state,
-                receipt.derived_state,
-                receipt.index_state,
-            ],
-        )
-        .map_err(map_db_err)?;
-    }
-    Ok(())
-}
-
-fn drop_legacy_tables(conn: &Connection) -> Result<()> {
-    for table in [
-        "workspace",
-        "raw_event",
-        "import_journal",
-        "conv_session",
-        "conv_turn",
-        "conv_item",
-        "artifact",
-        "evidence_anchor",
-        "execution_run",
-        "execution_task",
-        "execution_check",
-        "execution_approval",
-        "execution_event",
-        "document_record",
-        "episode",
-        "episode_member",
-        "insight",
-        "verification",
-        "search_doc_redacted",
-        "insight_fts",
-        "search_doc_redacted_fts",
-    ] {
-        conn.execute(&format!("drop table if exists {table}"), [])
-            .map_err(map_db_err)?;
-    }
-    Ok(())
 }
 
 fn count_rows(conn: &Connection, table: &str) -> Result<usize> {
@@ -1560,17 +1326,4 @@ fn parse_json_value(raw: String) -> std::result::Result<Value, rusqlite::Error> 
 
 fn map_db_err(error: rusqlite::Error) -> AxiomError {
     AxiomError::Internal(error.to_string())
-}
-
-fn infer_legacy_session_kind(event_type: &str, payload_json: &str) -> String {
-    let lowered = event_type.to_ascii_lowercase();
-    if lowered.contains("run") || lowered.contains("task") || lowered.contains("approval") {
-        "run".to_string()
-    } else if lowered.contains("document")
-        || payload_json.contains("\"subject\":{\"kind\":\"document\"")
-    {
-        "import".to_string()
-    } else {
-        "conversation".to_string()
-    }
 }

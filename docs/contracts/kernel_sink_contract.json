@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axiomorient.local/schemas/kernel_sink_contract.json",
+  "title": "AxiomSync Kernel Sink Contract",
+  "type": "object",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/appendRawEventsRequest"
+    },
+    {
+      "$ref": "#/$defs/upsertSourceCursorRequest"
+    }
+  ],
+  "$defs": {
+    "rawEvent": {
+      "type": "object",
+      "required": [
+        "connector",
+        "native_session_id",
+        "event_type",
+        "ts_ms",
+        "payload"
+      ],
+      "properties": {
+        "connector": {
+          "type": "string",
+          "minLength": 1
+        },
+        "native_schema_version": {
+          "type": "string"
+        },
+        "native_session_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "native_event_id": {
+          "type": "string"
+        },
+        "event_type": {
+          "type": "string",
+          "enum": [
+            "message_captured",
+            "selection_captured",
+            "command_started",
+            "command_finished",
+            "artifact_emitted",
+            "verification_recorded",
+            "task_state_imported",
+            "approval_requested",
+            "approval_resolved",
+            "note_recorded"
+          ]
+        },
+        "ts_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "payload": {}
+      },
+      "additionalProperties": false
+    },
+    "appendRawEventsRequest": {
+      "type": "object",
+      "required": [
+        "batch_id",
+        "producer",
+        "received_at_ms",
+        "events"
+      ],
+      "properties": {
+        "batch_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "received_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/rawEvent"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "upsertSourceCursorRequest": {
+      "type": "object",
+      "required": [
+        "connector",
+        "cursor_key",
+        "cursor_value",
+        "updated_at_ms"
+      ],
+      "properties": {
+        "connector": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cursor_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cursor_value": {
+          "type": "string",
+          "minLength": 1
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

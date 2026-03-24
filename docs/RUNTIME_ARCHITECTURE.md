@@ -28,7 +28,8 @@ External collectors or edge runtimes are expected to live outside this repositor
 - retrieval projection: `search_doc_redacted`
 - operational state: `source_cursor`, `import_journal`, schema meta rows
 
-public canonical noun은 `case`이고, 기존 `episode`/`runbook`는 compatibility alias로만 남긴다.
+public canonical noun은 `case / thread / run / task / document / evidence`다.
+`episode`, `insight`, `procedure`는 내부 derivation 모델로 유지한다.
 
 ## Boundary Rules
 - pure logic stays in `axiomsync-kernel::logic`
@@ -37,7 +38,7 @@ public canonical noun은 `case`이고, 기존 `episode`/`runbook`는 compatibili
 - dry-run never mutates store state
 - external edge repositories write through `/sink/*` on the main web router or the equivalent CLI plan/apply flow
 - capture/spool/retry/file watching/approval은 이 저장소 밖 책임이다
-- `program`/`state` 파일은 직접 정본으로 읽지 않고 external importer가 `document_snapshot` record로 전달한다
+- `program`/`state` 파일은 직접 정본으로 읽지 않고 external importer가 `artifact_emitted` 또는 `task_state_imported` raw event로 전달한다
 
 ## Retrieval Model
 - projection search uses `search_doc_redacted`

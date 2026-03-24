@@ -30,49 +30,52 @@ Canonical server entrypoint is `axiomsync serve`.
 ## Request Shapes
 
 ### `POST /sink/raw-events/plan`
-Legacy flat event shape:
-```json
-{
-  "request_id": "req-1",
-  "events": [
-    {
-      "source": "chatgpt",
-      "native_schema_version": "chatgpt-selection-v1",
-      "native_session_id": "/c/abc123",
-      "native_event_id": "evt-1",
-      "event_type": "selection_captured",
-      "ts_ms": 1710000000000,
-      "payload": {}
-    }
-  ]
-}
-```
-
-Final-form compatible envelope shape:
+AxiomSync accepts one canonical append envelope:
 ```json
 {
   "batch_id": "relay-2026-03-23T12:00:00Z-001",
-  "source": {
-    "source_kind": "axiomrelay",
-    "connector_name": "chatgpt_web_selection"
-  },
+  "producer": "axiomrelay",
+  "received_at_ms": 1710000000123,
   "events": [
     {
+      "connector": "chatgpt_web_selection",
+      "native_schema_version": "1",
       "native_session_id": "chatgpt:abc123",
-      "native_entry_id": "msg_42",
+      "native_event_id": "evt_42",
       "event_type": "selection_captured",
-      "captured_at_ms": 1710000000000,
-      "observed_at_ms": 1710000000123,
-      "payload": {},
-      "hints": {
-        "session_kind": "conversation",
-        "entry_kind": "message",
-        "workspace_root": "/workspace/demo"
+      "ts_ms": 1710000000123,
+      "payload": {
+        "session_kind": "thread",
+        "workspace_root": "/workspace/demo",
+        "page_url": "https://chatgpt.com/c/abc123",
+        "page_title": "ChatGPT - Architecture Review",
+        "source_message": {
+          "message_id": "msg_42",
+          "role": "assistant"
+        },
+        "selection": {
+          "text": "Use a narrow sink contract between relayd and AxiomSync.",
+          "start_hint": "Use a narrow sink contract",
+          "end_hint": "between relayd and AxiomSync.",
+          "dom_fingerprint": "sha1:dom:fp_001"
+        }
       }
     }
   ]
 }
 ```
+
+Supported `event_type` values:
+- `message_captured`
+- `selection_captured`
+- `command_started`
+- `command_finished`
+- `artifact_emitted`
+- `verification_recorded`
+- `task_state_imported`
+- `approval_requested`
+- `approval_resolved`
+- `note_recorded`
 
 ### `POST /sink/raw-events/apply`
 Request body is a serialized `IngestPlan`.
@@ -80,15 +83,10 @@ Request body is a serialized `IngestPlan`.
 ### `POST /sink/source-cursors/plan`
 ```json
 {
-  "source": "codex",
-  "cursor": {
-    "cursor_key": "events",
-    "cursor_value": "cursor-1",
-    "updated_at_ms": 1710000000000,
-    "metadata": {
-      "checkpoint": "spool-offset-1"
-    }
-  }
+  "connector": "codex",
+  "cursor_key": "events",
+  "cursor_value": "cursor-1",
+  "updated_at_ms": 1710000000000
 }
 ```
 

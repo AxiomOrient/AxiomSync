@@ -1,8 +1,8 @@
-use axiomsync_domain::domain::{
+use axiomsync_domain::error::Result;
+use axiomsync_domain::{
     AppendRawEventsRequest, IngestPlan, IngressReceiptRow, RawArtifactInput, SourceCursorRow,
     SourceCursorUpsertPlan, UpsertSourceCursorRequest, canonical_json_string, stable_id,
 };
-use axiomsync_domain::error::Result;
 use serde_json::{Value, json};
 
 pub fn plan_append_raw_events(
@@ -10,19 +10,13 @@ pub fn plan_append_raw_events(
     existing_dedupe_keys: &[String],
 ) -> Result<IngestPlan> {
     request.validate()?;
-    let batch_id = request
-        .batch_id
-        .clone()
-        .unwrap_or_else(|| stable_id("batch", &request.request_id));
+    let batch_id = request.batch_id.clone();
     let mut receipts = Vec::new();
     let mut skipped = Vec::new();
     for event in &request.events {
-        let connector = event.resolved_connector(request.source.as_ref())?;
-        let source_kind = event.resolved_source_kind(request.source.as_ref())?;
-        let workspace_root = event
-            .workspace_root
-            .clone()
-            .or_else(|| hint_string(&event.hints, "workspace_root"));
+        let connector = event.connector.clone();
+        let source_kind = request.producer.clone();
+        let workspace_root = event.normalized_workspace_root();
         let artifacts = normalized_artifacts(event)?;
         let dedupe_key = event.dedupe_key.clone().or_else(|| {
             Some(stable_id(
@@ -47,7 +41,7 @@ pub fn plan_append_raw_events(
         let artifacts_json = serde_json::to_string(&artifacts)?;
         let payload_json = canonical_json_string(&event.payload);
         let normalized_json = canonical_json_string(&json!({
-            "source_kind": source_kind.clone(),
+            "producer": source_kind.clone(),
             "connector_name": connector.clone(),
             "session_kind": event.normalized_session_kind(),
             "workspace_root": workspace_root.clone(),
@@ -109,26 +103,16 @@ pub fn plan_source_cursor_upsert(
     request.validate()?;
     Ok(SourceCursorUpsertPlan {
         cursor: SourceCursorRow {
-            connector: request.source.clone(),
-            cursor_key: request.cursor.cursor_key.clone(),
-            cursor_value: request.cursor.cursor_value.clone(),
-            updated_at: request.cursor.normalized_updated_at()?,
-            metadata_json: request.cursor.metadata.clone(),
+            connector: request.connector.clone(),
+            cursor_key: request.cursor_key.clone(),
+            cursor_value: request.cursor_value.clone(),
+            updated_at: axiomsync_domain::ts_ms_to_rfc3339(request.updated_at_ms)?,
+            metadata_json: Value::Object(serde_json::Map::new()),
         },
     })
 }
 
-fn hint_string(hints: &Value, key: &str) -> Option<String> {
-    hints
-        .get(key)
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(ToOwned::to_owned)
-}
-
-fn normalized_artifacts(
-    event: &axiomsync_domain::domain::RawEventInput,
-) -> Result<Vec<RawArtifactInput>> {
+fn normalized_artifacts(event: &axiomsync_domain::RawEventInput) -> Result<Vec<RawArtifactInput>> {
     let mut artifacts = event.artifacts.clone();
     if let Some(values) = event.payload.get("artifacts").and_then(Value::as_array) {
         for value in values {

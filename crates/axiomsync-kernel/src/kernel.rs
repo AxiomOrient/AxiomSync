@@ -2,35 +2,23 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::compat::{
-    case_from_episode, document_view_from_artifact, episode_view, session_view, session_workspace,
-    task_view,
-};
 use crate::derive::plan_derivation;
 use crate::domain::{
     AdminTokenPlan, AnchorView, AppendRawEventsRequest, ArtifactView, AuthSnapshot, CaseRecord,
-    DoctorReport, DocumentView, EntryRow, EpisodeView, EvidenceBundle, EvidencePreview,
-    EvidenceView, IngestPlan, ReplayPlan, RunView, RunbookRecord, SearchClaimsRequest,
-    SearchDocsRequest, SearchEntriesRequest, SearchEpisodesRequest, SearchHit,
-    SearchInsightsRequest, SearchProceduresRequest, SessionRow, SessionView,
-    SourceCursorUpsertPlan, TaskView, ThreadView, UpsertSourceCursorRequest, VerificationSummary,
-    WorkspaceTokenPlan,
+    DoctorReport, DocumentView, EntryBundle, EntryRow, EvidenceView, IngestPlan, ReplayPlan,
+    RunView, SearchCasesRequest, SearchHit, SessionRow, SessionView, SourceCursorUpsertPlan,
+    TaskView, ThreadView, UpsertSourceCursorRequest, VerificationSummary, WorkspaceTokenPlan,
+    workspace_stable_id,
 };
 use crate::error::{AxiomError, Result};
 use crate::ingest::{plan_append_raw_events, plan_source_cursor_upsert};
-use crate::ports::{
-    SharedAuthStorePort, SharedLlmExtractionPort, SharedRepositoryPort, filter_hits,
-};
+use crate::ports::{SharedAuthStorePort, SharedRepositoryPort, filter_hits};
 use crate::projection::plan_projection;
-
-mod auth;
 
 #[derive(Clone)]
 pub struct AxiomSync {
     repo: SharedRepositoryPort,
     auth: SharedAuthStorePort,
-    #[allow(dead_code)]
-    llm: SharedLlmExtractionPort,
 }
 
 impl std::fmt::Debug for AxiomSync {
@@ -42,12 +30,8 @@ impl std::fmt::Debug for AxiomSync {
 }
 
 impl AxiomSync {
-    pub fn new(
-        repo: SharedRepositoryPort,
-        auth: SharedAuthStorePort,
-        llm: SharedLlmExtractionPort,
-    ) -> Self {
-        Self { repo, auth, llm }
+    pub fn new(repo: SharedRepositoryPort, auth: SharedAuthStorePort) -> Self {
+        Self { repo, auth }
     }
 
     #[must_use]
@@ -119,7 +103,7 @@ impl AxiomSync {
             sessions: self.repo.load_sessions()?,
             actors: Vec::new(),
             entries: self.repo.load_entries()?,
-            artifacts: self.repo.load_artifacts()?,
+            artifacts: Vec::new(),
             anchors: self.repo.load_anchors()?,
         };
         self.build_derivation_plan_for_projection(&projection)
@@ -148,7 +132,7 @@ impl AxiomSync {
         self.repo.load_sessions()
     }
 
-    pub fn get_session(&self, session_id: &str) -> Result<SessionView> {
+    fn get_session(&self, session_id: &str) -> Result<SessionView> {
         let sessions = self.repo.load_sessions()?;
         let entries = self.repo.load_entries()?;
         let artifacts = self.repo.load_artifacts()?;
@@ -160,15 +144,7 @@ impl AxiomSync {
         Ok(session_view(session, &entries, &artifacts, &anchors))
     }
 
-    pub fn get_entry(&self, entry_id: &str) -> Result<EntryRow> {
-        self.repo
-            .load_entries()?
-            .into_iter()
-            .find(|entry| entry.entry_id == entry_id)
-            .ok_or_else(|| AxiomError::NotFound(format!("entry {entry_id}")))
-    }
-
-    pub fn get_artifact(&self, artifact_id: &str) -> Result<ArtifactView> {
+    fn get_artifact(&self, artifact_id: &str) -> Result<ArtifactView> {
         let sessions = self.repo.load_sessions()?;
         let entries = self.repo.load_entries()?;
         let artifacts = self.repo.load_artifacts()?;
@@ -179,7 +155,7 @@ impl AxiomSync {
         Ok(document_view_from_artifact(artifact, &sessions, &entries))
     }
 
-    pub fn get_anchor(&self, anchor_id: &str) -> Result<AnchorView> {
+    fn get_anchor(&self, anchor_id: &str) -> Result<AnchorView> {
         let sessions = self.repo.load_sessions()?;
         let entries = self.repo.load_entries()?;
         let artifacts = self.repo.load_artifacts()?;
@@ -188,144 +164,16 @@ impl AxiomSync {
             .iter()
             .find(|anchor| anchor.anchor_id == anchor_id)
             .ok_or_else(|| AxiomError::NotFound(format!("anchor {anchor_id}")))?;
-        let entry = anchor
-            .entry_id
-            .as_deref()
-            .and_then(|entry_id| entries.iter().find(|entry| entry.entry_id == entry_id))
-            .cloned();
-        let artifact = anchor
-            .artifact_id
-            .as_deref()
-            .and_then(|artifact_id| {
-                artifacts
-                    .iter()
-                    .find(|artifact| artifact.artifact_id == artifact_id)
-            })
-            .cloned();
-        let session = entry
-            .as_ref()
-            .and_then(|entry| {
-                sessions
-                    .iter()
-                    .find(|session| session.session_id == entry.session_id)
-            })
-            .cloned()
-            .or_else(|| {
-                artifact.as_ref().and_then(|artifact| {
-                    sessions
-                        .iter()
-                        .find(|session| session.session_id == artifact.session_id)
-                        .cloned()
-                })
-            });
-        Ok(AnchorView {
-            anchor: anchor.clone(),
-            entry,
-            artifact,
-            session,
-        })
+        Ok(anchor_view(anchor, &sessions, &entries, &artifacts))
     }
 
-    pub fn get_episode(&self, episode_id: &str) -> Result<EpisodeView> {
-        let episodes = self.repo.load_episodes()?;
-        let insights = self.repo.load_insights()?;
-        let verifications = self.repo.load_verifications()?;
-        let claims = self.repo.load_claims()?;
-        let procedures = self.repo.load_procedures()?;
-        let episode = episodes
-            .iter()
-            .find(|episode| episode.episode_id == episode_id)
-            .ok_or_else(|| AxiomError::NotFound(format!("episode {episode_id}")))?;
-        Ok(episode_view(
-            episode,
-            &insights,
-            &verifications,
-            &claims,
-            &procedures,
-        ))
-    }
-
-    pub fn get_claim(&self, claim_id: &str) -> Result<crate::domain::ClaimRow> {
-        self.repo
-            .load_claims()?
-            .into_iter()
-            .find(|claim| claim.claim_id == claim_id)
-            .ok_or_else(|| AxiomError::NotFound(format!("claim {claim_id}")))
-    }
-
-    pub fn get_procedure(&self, procedure_id: &str) -> Result<crate::domain::ProcedureRow> {
-        self.repo
-            .load_procedures()?
-            .into_iter()
-            .find(|procedure| procedure.procedure_id == procedure_id)
-            .ok_or_else(|| AxiomError::NotFound(format!("procedure {procedure_id}")))
-    }
-
-    pub fn search_entries(&self, request: SearchEntriesRequest) -> Result<Vec<SearchHit>> {
+    pub fn search_cases(&self, request: SearchCasesRequest) -> Result<Vec<SearchHit>> {
         Ok(filter_hits(
-            crate::query::search_entries(
-                &self.repo.load_sessions()?,
-                &self.repo.load_entries()?,
-                &request,
-            ),
-            effective_limit(request.limit),
-        ))
-    }
-
-    pub fn search_episodes(&self, request: SearchEpisodesRequest) -> Result<Vec<SearchHit>> {
-        Ok(filter_hits(
-            crate::query::search_episodes(
+            crate::query::search_cases(
                 &self.repo.load_sessions()?,
                 &self.repo.load_episodes()?,
                 &request,
             ),
-            effective_limit(request.limit),
-        ))
-    }
-
-    pub fn search_claims(&self, request: SearchClaimsRequest) -> Result<Vec<SearchHit>> {
-        Ok(filter_hits(
-            crate::query::search_claims(
-                &self.repo.load_sessions()?,
-                &self.repo.load_episodes()?,
-                &self.repo.load_claims()?,
-                &request,
-            ),
-            effective_limit(request.limit),
-        ))
-    }
-
-    pub fn search_insights(&self, request: SearchInsightsRequest) -> Result<Vec<SearchHit>> {
-        Ok(filter_hits(
-            crate::query::search_insights(
-                &self.repo.load_sessions()?,
-                &self.repo.load_episodes()?,
-                &self.repo.load_insights()?,
-                &self.repo.load_insight_anchors()?,
-                &self.repo.load_anchors()?,
-                &request,
-            ),
-            effective_limit(request.limit),
-        ))
-    }
-
-    pub fn search_procedures(&self, request: SearchProceduresRequest) -> Result<Vec<SearchHit>> {
-        Ok(filter_hits(
-            crate::query::search_procedures(
-                &self.repo.load_sessions()?,
-                &self.repo.load_procedures()?,
-                &request,
-            ),
-            effective_limit(request.limit),
-        ))
-    }
-
-    pub fn search_docs(&self, request: SearchDocsRequest) -> Result<Vec<SearchHit>> {
-        let hits = crate::query::search_docs(&self.repo.load_search_docs()?, &request);
-        Ok(filter_hits(
-            hits.into_iter()
-                .map(|hit| self.enrich_search_hit(hit))
-                .collect::<Result<Vec<_>>>()?,
             effective_limit(request.limit),
         ))
     }
@@ -372,151 +220,6 @@ impl AxiomSync {
             &claims,
             &procedures,
         ))
-    }
-
-    pub fn get_runbook(&self, episode_id: &str) -> Result<RunbookRecord> {
-        let case = self.get_case(episode_id)?;
-        Ok(RunbookRecord {
-            episode_id: case.case_id,
-            workspace_root: case.workspace_root,
-            problem: case.problem,
-            root_cause: case.root_cause,
-            fix: case.resolution,
-            commands: case.commands,
-            verification: case.verification,
-            evidence: case.evidence,
-        })
-    }
-
-    pub fn find_fix(&self, request: SearchInsightsRequest) -> Result<Option<EvidenceBundle>> {
-        self.find_first_bundle(&request, Some("fix"))
-    }
-
-    pub fn find_decision(&self, request: SearchInsightsRequest) -> Result<Option<EvidenceBundle>> {
-        self.find_first_bundle(&request, Some("decision"))
-    }
-
-    pub fn find_runbook(&self, request: SearchProceduresRequest) -> Result<Option<EvidenceBundle>> {
-        let hit = self.search_procedures(request)?.into_iter().next();
-        hit.map(|hit| self.get_evidence_bundle("procedure", &hit.id))
-            .transpose()
-    }
-
-    pub fn get_evidence_bundle(
-        &self,
-        subject_kind: &str,
-        subject_id: &str,
-    ) -> Result<EvidenceBundle> {
-        let anchors = self.repo.load_anchors()?;
-        let insight_anchors = self.repo.load_insight_anchors()?;
-        let claim_evidence = self.repo.load_claim_evidence()?;
-        let procedure_evidence = self.repo.load_procedure_evidence()?;
-        let verifications = self.repo.load_verifications()?;
-        match subject_kind {
-            "insight" => {
-                let insight = self
-                    .repo
-                    .load_insights()?
-                    .into_iter()
-                    .find(|insight| insight.insight_id == subject_id)
-                    .ok_or_else(|| AxiomError::NotFound(format!("insight {subject_id}")))?;
-                let evidence = insight_anchors
-                    .into_iter()
-                    .filter(|row| row.insight_id == insight.insight_id)
-                    .filter_map(|row| {
-                        anchors
-                            .iter()
-                            .find(|anchor| anchor.anchor_id == row.anchor_id)
-                    })
-                    .map(anchor_preview)
-                    .collect::<Vec<_>>();
-                Ok(EvidenceBundle {
-                    subject_kind: "insight".to_string(),
-                    subject_id: insight.insight_id,
-                    title: Some(insight.insight_kind),
-                    summary: Some(insight.statement),
-                    verification: self.collect_verification_summary(
-                        &verifications,
-                        "insight",
-                        subject_id,
-                    ),
-                    evidence,
-                })
-            }
-            "procedure" => {
-                let procedure = self
-                    .repo
-                    .load_procedures()?
-                    .into_iter()
-                    .find(|procedure| procedure.procedure_id == subject_id)
-                    .ok_or_else(|| AxiomError::NotFound(format!("procedure {subject_id}")))?;
-                let evidence = procedure_evidence
-                    .into_iter()
-                    .filter(|row| row.procedure_id == procedure.procedure_id)
-                    .filter_map(|row| {
-                        anchors
-                            .iter()
-                            .find(|anchor| anchor.anchor_id == row.anchor_id)
-                    })
-                    .map(anchor_preview)
-                    .collect::<Vec<_>>();
-                Ok(EvidenceBundle {
-                    subject_kind: "procedure".to_string(),
-                    subject_id: procedure.procedure_id,
-                    title: Some(procedure.title),
-                    summary: procedure.goal,
-                    verification: self.collect_verification_summary(
-                        &verifications,
-                        "procedure",
-                        subject_id,
-                    ),
-                    evidence,
-                })
-            }
-            "episode" => {
-                let episode = self
-                    .repo
-                    .load_episodes()?
-                    .into_iter()
-                    .find(|episode| episode.episode_id == subject_id)
-                    .ok_or_else(|| AxiomError::NotFound(format!("episode {subject_id}")))?;
-                let claim_rows = self
-                    .repo
-                    .load_claims()?
-                    .into_iter()
-                    .filter(|claim| claim.episode_id.as_deref() == Some(subject_id))
-                    .collect::<Vec<_>>();
-                let evidence = claim_evidence
-                    .into_iter()
-                    .filter(|row| {
-                        claim_rows
-                            .iter()
-                            .any(|claim| claim.claim_id == row.claim_id)
-                    })
-                    .filter_map(|row| {
-                        anchors
-                            .iter()
-                            .find(|anchor| anchor.anchor_id == row.anchor_id)
-                    })
-                    .map(anchor_preview)
-                    .collect::<Vec<_>>();
-                Ok(EvidenceBundle {
-                    subject_kind: "episode".to_string(),
-                    subject_id: episode.episode_id,
-                    title: Some(episode.episode_kind),
-                    summary: Some(episode.summary),
-                    verification: self.collect_verification_summary(
-                        &verifications,
-                        "episode",
-                        subject_id,
-                    ),
-                    evidence,
-                })
-            }
-            other => Err(AxiomError::Validation(format!(
-                "unsupported evidence bundle subject_kind {other}"
-            ))),
-        }
     }
 
     pub fn get_thread(&self, session_id: &str) -> Result<ThreadView> {
@@ -577,18 +280,12 @@ impl AxiomSync {
         self.get_anchor(evidence_id)
     }
 
-    pub fn episode_workspace_id(&self, episode_id: &str) -> Result<Option<String>> {
-        let episode = self
-            .repo
-            .load_episodes()?
-            .into_iter()
-            .find(|episode| episode.episode_id == episode_id)
-            .ok_or_else(|| AxiomError::NotFound(format!("episode {episode_id}")))?;
-        let sessions = self.repo.load_sessions()?;
-        Ok(episode
-            .session_id
+    pub fn case_workspace_id(&self, case_id: &str) -> Result<Option<String>> {
+        let case = self.get_case(case_id)?;
+        Ok(case
+            .workspace_root
             .as_deref()
-            .and_then(|session_id| session_workspace(&sessions, session_id)))
+            .map(crate::domain::workspace_stable_id))
     }
 
     pub fn session_workspace_id(&self, session_id: &str) -> Result<Option<String>> {
@@ -614,34 +311,38 @@ impl AxiomSync {
         }))
     }
 
-    pub fn insight_workspace_id(&self, insight_id: &str) -> Result<Option<String>> {
-        let insight = self
-            .repo
-            .load_insights()?
-            .into_iter()
-            .find(|insight| insight.insight_id == insight_id)
-            .ok_or_else(|| AxiomError::NotFound(format!("insight {insight_id}")))?;
-        match insight.episode_id {
-            Some(episode_id) => self.episode_workspace_id(&episode_id),
-            None => Ok(None),
-        }
-    }
-
-    pub fn procedure_workspace_id(&self, procedure_id: &str) -> Result<Option<String>> {
-        let procedure_anchor = self
-            .repo
-            .load_procedure_evidence()?
-            .into_iter()
-            .find(|row| row.procedure_id == procedure_id)
-            .ok_or_else(|| AxiomError::NotFound(format!("procedure {procedure_id}")))?;
-        self.anchor_workspace_id(&procedure_anchor.anchor_id)
-    }
-
     pub fn task_workspace_id(&self, task_id: &str) -> Result<Option<String>> {
         let task = self.get_task(task_id)?;
         Ok(task
             .session
             .workspace_root
+            .as_deref()
+            .map(crate::domain::workspace_stable_id))
+    }
+
+    pub fn run_workspace_id(&self, run_id: &str) -> Result<Option<String>> {
+        let run = self.get_run(run_id)?;
+        Ok(run
+            .session
+            .workspace_root
+            .as_deref()
+            .map(crate::domain::workspace_stable_id))
+    }
+
+    pub fn document_workspace_id(&self, document_id: &str) -> Result<Option<String>> {
+        let document = self.get_document(document_id)?;
+        Ok(document
+            .session
+            .and_then(|session| session.workspace_root)
+            .as_deref()
+            .map(crate::domain::workspace_stable_id))
+    }
+
+    pub fn evidence_workspace_id(&self, evidence_id: &str) -> Result<Option<String>> {
+        let evidence = self.get_evidence(evidence_id)?;
+        Ok(evidence
+            .session
+            .and_then(|session| session.workspace_root)
             .as_deref()
             .map(crate::domain::workspace_stable_id))
     }
@@ -679,76 +380,16 @@ impl AxiomSync {
         workspace_id: Option<&str>,
     ) -> Result<Option<String>> {
         let snapshot = self.auth.read()?;
-        let token_sha256 = crate::domain::stable_hash(&["workspace-token", token]);
-        let grant = snapshot
-            .grants
-            .iter()
-            .find(|grant| grant.token_sha256 == token_sha256)
-            .ok_or_else(|| {
-                AxiomError::PermissionDenied("token does not grant workspace access".to_string())
-            })?;
-        if let Some(expected) = workspace_id
-            && expected != grant.workspace_id
-        {
-            return Err(AxiomError::PermissionDenied(
-                "token does not grant access to requested workspace".to_string(),
-            ));
-        }
-        Ok(Some(grant.workspace_id.clone()))
+        crate::logic::auth::authorize_workspace_token(&snapshot, token, workspace_id)
     }
 
     pub fn authorize_admin(&self, token: &str) -> Result<()> {
         let snapshot: AuthSnapshot = self.auth.read()?;
-        let token_sha256 = crate::domain::stable_hash(&["admin-token", token]);
-        if snapshot.admin_tokens.contains(&token_sha256) {
-            Ok(())
-        } else {
-            Err(AxiomError::PermissionDenied(
-                "token does not grant admin access".to_string(),
-            ))
-        }
+        crate::logic::auth::authorize_admin_token(&snapshot, token)
     }
 
     pub fn pending_counts(&self) -> Result<(usize, usize, usize)> {
         self.repo.pending_counts()
-    }
-
-    fn find_first_bundle(
-        &self,
-        request: &SearchInsightsRequest,
-        kind: Option<&str>,
-    ) -> Result<Option<EvidenceBundle>> {
-        let hit = self
-            .search_insights(request.clone())?
-            .into_iter()
-            .find(|hit| kind.is_none_or(|expected| hit.title == expected));
-        hit.map(|hit| self.get_evidence_bundle("insight", &hit.id))
-            .transpose()
-    }
-
-    fn collect_verification_summary(
-        &self,
-        verifications: &[crate::domain::VerificationRow],
-        subject_kind: &str,
-        subject_id: &str,
-    ) -> Vec<VerificationSummary> {
-        verifications
-            .iter()
-            .filter(|verification| {
-                verification.subject_kind == subject_kind && verification.subject_id == subject_id
-            })
-            .map(|verification| VerificationSummary {
-                status: verification.status.clone(),
-                method: verification.method.clone(),
-            })
-            .collect()
-    }
-
-    fn enrich_search_hit(&self, mut hit: SearchHit) -> Result<SearchHit> {
-        if matches!(hit.kind.as_str(), "episode" | "insight" | "procedure") {
-            hit.evidence = self.get_evidence_bundle(&hit.kind, &hit.id)?.evidence;
-        }
-        Ok(hit)
     }
 }
 
@@ -756,9 +397,211 @@ fn effective_limit(limit: usize) -> usize {
     if limit == 0 { 10 } else { limit }
 }
 
-fn anchor_preview(anchor: &crate::domain::AnchorRow) -> EvidencePreview {
-    EvidencePreview {
-        anchor_id: anchor.anchor_id.clone(),
-        preview_text: anchor.preview_text.clone(),
+fn session_view(
+    session: &SessionRow,
+    entries: &[EntryRow],
+    artifacts: &[crate::domain::ArtifactRow],
+    anchors: &[crate::domain::AnchorRow],
+) -> SessionView {
+    let mut bundles = entries
+        .iter()
+        .filter(|entry| entry.session_id == session.session_id)
+        .map(|entry| EntryBundle {
+            entry: entry.clone(),
+            artifacts: artifacts
+                .iter()
+                .filter(|artifact| artifact.entry_id.as_deref() == Some(entry.entry_id.as_str()))
+                .cloned()
+                .collect(),
+            anchors: anchors
+                .iter()
+                .filter(|anchor| anchor.entry_id.as_deref() == Some(entry.entry_id.as_str()))
+                .cloned()
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    bundles.sort_by_key(|bundle| bundle.entry.seq_no);
+    SessionView {
+        session: session.clone(),
+        entries: bundles,
     }
+}
+
+fn document_view_from_artifact(
+    artifact: &crate::domain::ArtifactRow,
+    sessions: &[SessionRow],
+    entries: &[EntryRow],
+) -> ArtifactView {
+    ArtifactView {
+        artifact: artifact.clone(),
+        session: sessions
+            .iter()
+            .find(|session| session.session_id == artifact.session_id)
+            .cloned(),
+        entry: artifact
+            .entry_id
+            .as_deref()
+            .and_then(|entry_id| entries.iter().find(|entry| entry.entry_id == entry_id))
+            .cloned(),
+    }
+}
+
+fn anchor_view(
+    anchor: &crate::domain::AnchorRow,
+    sessions: &[SessionRow],
+    entries: &[EntryRow],
+    artifacts: &[crate::domain::ArtifactRow],
+) -> AnchorView {
+    let entry = anchor
+        .entry_id
+        .as_deref()
+        .and_then(|entry_id| entries.iter().find(|entry| entry.entry_id == entry_id))
+        .cloned();
+    let artifact = anchor
+        .artifact_id
+        .as_deref()
+        .and_then(|artifact_id| {
+            artifacts
+                .iter()
+                .find(|artifact| artifact.artifact_id == artifact_id)
+        })
+        .cloned();
+    let session = entry
+        .as_ref()
+        .and_then(|entry| {
+            sessions
+                .iter()
+                .find(|session| session.session_id == entry.session_id)
+        })
+        .cloned()
+        .or_else(|| {
+            artifact.as_ref().and_then(|artifact| {
+                sessions
+                    .iter()
+                    .find(|session| session.session_id == artifact.session_id)
+                    .cloned()
+            })
+        });
+    AnchorView {
+        anchor: anchor.clone(),
+        entry,
+        artifact,
+        session,
+    }
+}
+
+fn case_from_episode(
+    episode: &crate::domain::EpisodeRow,
+    sessions: &[SessionRow],
+    insights: &[crate::domain::InsightRow],
+    verifications: &[crate::domain::VerificationRow],
+    claims: &[crate::domain::ClaimRow],
+    procedures: &[crate::domain::ProcedureRow],
+) -> CaseRecord {
+    let workspace_root = episode
+        .session_id
+        .as_deref()
+        .and_then(|session_id| {
+            sessions
+                .iter()
+                .find(|session| session.session_id == session_id)
+        })
+        .and_then(|session| session.workspace_root.clone());
+    let related_claims = claims
+        .iter()
+        .filter(|claim| claim.episode_id.as_deref() == Some(episode.episode_id.as_str()))
+        .collect::<Vec<_>>();
+    let root_cause = related_claims
+        .iter()
+        .find(|claim| claim.claim_kind == "root_cause")
+        .map(|claim| claim.statement.clone())
+        .or_else(|| {
+            insights
+                .iter()
+                .find(|insight| {
+                    insight.episode_id.as_deref() == Some(episode.episode_id.as_str())
+                        && insight.insight_kind == "root_cause"
+                })
+                .map(|insight| insight.statement.clone())
+        });
+    let resolution = related_claims
+        .iter()
+        .find(|claim| claim.claim_kind == "fix")
+        .map(|claim| claim.statement.clone())
+        .or_else(|| {
+            insights
+                .iter()
+                .find(|insight| {
+                    insight.episode_id.as_deref() == Some(episode.episode_id.as_str())
+                        && insight.insight_kind == "fix"
+                })
+                .map(|insight| insight.statement.clone())
+        });
+    let related_procedures = procedures
+        .iter()
+        .filter(|procedure| procedure.episode_id.as_deref() == Some(episode.episode_id.as_str()))
+        .collect::<Vec<_>>();
+    let commands = related_procedures
+        .iter()
+        .flat_map(|procedure| {
+            procedure
+                .steps_json
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|step| step.as_str())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let related_insight_ids = insights
+        .iter()
+        .filter(|insight| insight.episode_id.as_deref() == Some(episode.episode_id.as_str()))
+        .map(|insight| insight.insight_id.as_str())
+        .collect::<Vec<_>>();
+    let related_procedure_ids = related_procedures
+        .iter()
+        .map(|procedure| procedure.procedure_id.as_str())
+        .collect::<Vec<_>>();
+    CaseRecord {
+        case_id: episode.episode_id.clone(),
+        workspace_root,
+        problem: episode.summary.clone(),
+        root_cause,
+        resolution,
+        commands,
+        verification: verifications
+            .iter()
+            .filter(|verification| {
+                (verification.subject_kind == "insight"
+                    && related_insight_ids.contains(&verification.subject_id.as_str()))
+                    || (verification.subject_kind == "procedure"
+                        && related_procedure_ids.contains(&verification.subject_id.as_str()))
+            })
+            .map(|verification| VerificationSummary {
+                status: verification.status.clone(),
+                method: verification.method.clone(),
+            })
+            .collect(),
+        evidence: related_claims
+            .iter()
+            .map(|claim| claim.claim_id.clone())
+            .collect(),
+    }
+}
+
+fn task_view(view: SessionView, task_id: &str) -> Result<TaskView> {
+    if view.session.session_kind == "task" {
+        Ok(view)
+    } else {
+        Err(AxiomError::NotFound(format!("task {task_id}")))
+    }
+}
+
+fn session_workspace(sessions: &[SessionRow], session_id: &str) -> Option<String> {
+    sessions
+        .iter()
+        .find(|session| session.session_id == session_id)
+        .and_then(|session| session.workspace_root.as_deref())
+        .map(workspace_stable_id)
 }

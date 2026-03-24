@@ -97,22 +97,6 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn auth_snapshot_reads_legacy_file_without_admin_tokens() {
-        let temp = tempdir().expect("tempdir");
-        let store = AuthStore::open(temp.path()).expect("store");
-        fs::write(
-            store.path(),
-            r#"{"schema_version":"renewal-sqlite-v1","grants":[{"workspace_id":"ws_1","token_sha256":"hash"}]}"#,
-        )
-        .expect("write legacy snapshot");
-
-        let snapshot = store.read().expect("read");
-
-        assert_eq!(snapshot.grants.len(), 1);
-        assert!(snapshot.admin_tokens.is_empty());
-    }
-
-    #[test]
     fn auth_snapshot_is_written_with_owner_only_permissions() {
         let temp = tempdir().expect("tempdir");
         let store = AuthStore::open(temp.path()).expect("store");

@@ -12,11 +12,7 @@ fn main() -> Result<()> {
         let repo = Arc::new(axiomsync_store_sqlite::ContextDb::open(root.clone())?)
             as axiomsync_kernel::ports::SharedRepositoryPort;
         let auth = Arc::new(AuthStore::open(root)?) as axiomsync_kernel::ports::SharedAuthStorePort;
-        Ok(axiomsync_kernel::AxiomSync::new(
-            repo,
-            auth,
-            Arc::new(NoopLlm) as axiomsync_kernel::ports::SharedLlmExtractionPort,
-        ))
+        Ok(axiomsync_kernel::AxiomSync::new(repo, auth))
     })
 }
 
@@ -35,17 +31,17 @@ impl AuthStore {
         self.root.join("auth.json")
     }
 
-    fn read_snapshot(&self) -> Result<axiomsync_domain::domain::AuthSnapshot> {
+    fn read_snapshot(&self) -> Result<axiomsync_domain::AuthSnapshot> {
         match fs::read(self.path()) {
             Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                Ok(axiomsync_domain::domain::AuthSnapshot::empty())
+                Ok(axiomsync_domain::AuthSnapshot::empty())
             }
             Err(error) => Err(error.into()),
         }
     }
 
-    fn write_snapshot(&self, snapshot: &axiomsync_domain::domain::AuthSnapshot) -> Result<()> {
+    fn write_snapshot(&self, snapshot: &axiomsync_domain::AuthSnapshot) -> Result<()> {
         fs::write(self.path(), serde_json::to_vec_pretty(snapshot)?)?;
         Ok(())
     }
@@ -60,21 +56,13 @@ impl axiomsync_kernel::ports::AuthStorePort for AuthStore {
         self.path()
     }
 
-    fn read(&self) -> axiomsync_domain::Result<axiomsync_domain::domain::AuthSnapshot> {
+    fn read(&self) -> axiomsync_domain::Result<axiomsync_domain::AuthSnapshot> {
         self.read_snapshot()
             .map_err(|error| axiomsync_domain::AxiomError::Internal(error.to_string()))
     }
 
-    fn write(
-        &self,
-        snapshot: &axiomsync_domain::domain::AuthSnapshot,
-    ) -> axiomsync_domain::Result<()> {
+    fn write(&self, snapshot: &axiomsync_domain::AuthSnapshot) -> axiomsync_domain::Result<()> {
         self.write_snapshot(snapshot)
             .map_err(|error| axiomsync_domain::AxiomError::Internal(error.to_string()))
     }
 }
-
-#[derive(Debug)]
-struct NoopLlm;
-
-impl axiomsync_kernel::ports::LlmExtractionPort for NoopLlm {}

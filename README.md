@@ -18,8 +18,8 @@ Universal agent memory kernel for recording immutable raw records into a single 
 - Public surfaces: CLI, HTTP API, MCP (`stdio` + HTTP), Maud web UI
 - Canonical HTTP base: `http://127.0.0.1:4400`
 - Canonical sink paths: `/sink/raw-events/plan`, `/sink/raw-events/apply`, `/sink/source-cursors/plan`, `/sink/source-cursors/apply`
-- Canonical query helpers: `search_insights`, `find_fix`, `find_decision`, `find_runbook`, `get_evidence_bundle`
-- Unified retrieval helper: `search_docs`
+- Canonical query helpers: `search_cases`, `get_case`, `get_thread`, `get_run`, `get_task`, `get_document`, `get_evidence`
+- Local trusted imports: `import-cli-run`, `import-work-state`
 
 ## Security Notes
 - `auth.json` stores hashed workspace grants plus hashed global admin tokens and is written with owner-only permissions on Unix.
@@ -39,10 +39,12 @@ cargo run -p axiomsync -- sink apply-source-cursor-plan --file /tmp/cursor-plan.
 cargo run -p axiomsync -- project plan-rebuild > /tmp/replay-plan.json
 cargo run -p axiomsync -- project apply-replay-plan --file /tmp/replay-plan.json
 cargo run -p axiomsync -- project doctor
-cargo run -p axiomsync -- query search-docs --file /tmp/search-docs.json
-cargo run -p axiomsync -- query search-insights --file /tmp/search-insights.json
-cargo run -p axiomsync -- query find-fix --file /tmp/find-fix.json
-cargo run -p axiomsync -- query get-evidence-bundle --subject-kind insight --subject-id insight_123
+cargo run -p axiomsync -- sink import-cli-run --file /tmp/cli-run.json
+cargo run -p axiomsync -- sink import-work-state --file /tmp/work-state.json
+cargo run -p axiomsync -- query search-cases --file /tmp/search-cases.json
+cargo run -p axiomsync -- query get-case --id case_123
+cargo run -p axiomsync -- query get-thread --id thread_123
+cargo run -p axiomsync -- query get-run --id run_123
 cargo run -p axiomsync -- project plan-auth-grant --workspace-root /repo/app --token secret-token
 cargo run -p axiomsync -- project plan-admin-grant --token admin-secret-token
 cargo run -p axiomsync -- serve --addr 127.0.0.1:4400
@@ -53,7 +55,8 @@ cargo run -p axiomsync -- serve --addr 127.0.0.1:4400
 - `sink apply-ingest-plan`: apply a previously serialized `IngestPlan`
 - `sink plan-upsert-source-cursor`: build `SourceCursorUpsertPlan` without mutating the store
 - `sink apply-source-cursor-plan`: apply a previously serialized cursor plan
-- sink input accepts both the legacy flat event shape and the final-form envelope shape with root `source.{source_kind,connector_name}` plus `events[]`
+- sink append request shape is `AppendRawEventsRequest { batch_id, producer, received_at_ms, events[] }`
+- source cursor request shape is `UpsertSourceCursorRequest { connector, cursor_key, cursor_value, updated_at_ms }`
 - `serve`: serves `GET /health`, query/admin routes, and `/sink/*` on one server
 - external collectors and edge runtimes integrate only through these `sink` routes or equivalent CLI commands
 
@@ -62,13 +65,12 @@ cargo run -p axiomsync -- serve --addr 127.0.0.1:4400
 - `project plan-derivations` / `project apply-derivation-plan`: rebuild derived rows through an explicit plan
 - `project plan-rebuild` / `project apply-replay-plan`: rebuild projection and derivation from the raw ledger through one replay plan
 - `project doctor`: report counts for receipts, projected rows, derived rows, and pending projection/derivation/index work
-- `mcp serve`: expose canonical session/episode/insight/procedure resources plus compatibility aliases
+- `mcp serve`: expose canonical `case/thread/run/task/document/evidence` resources and tools
 
 ## Canonical Query Model
-- canonical nouns: `session`, `entry`, `artifact`, `anchor`, `episode`, `insight`, `procedure`
-- compatibility aliases remain available: `claim`, `case`, `thread`, `runbook`, `task`, `document`, `evidence`
-- derived knowledge is centered on `episodes + insights + verifications + procedures`; `claims` remains a compatibility read model
-- record ingestion accepts multiple producers such as `codex`, `claude_code`, `gemini_cli`, AxiomRelay, and AxiomRams
+- public canonical nouns: `case`, `thread`, `run`, `task`, `document`, `evidence`
+- internal projection/derivation nouns such as `session`, `entry`, `artifact`, `anchor`, `episode`, `insight`, `procedure` remain implementation detail
+- record ingestion accepts multiple producers such as `axiomrelay`, `axiomrams`, local CLI importers, and other edge runtimes that target the sink seam
 
 ## Release Docs
 - Runtime/API: [`docs/API_CONTRACT.md`](./docs/API_CONTRACT.md)

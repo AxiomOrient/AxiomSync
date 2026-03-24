@@ -1,8 +1,6 @@
-use std::fs;
-
 use axiomsync::domain::{
-    AppendRawEventsRequest, SearchClaimsRequest, SearchEntriesRequest, SearchFilter,
-    SearchProceduresRequest, SessionRow, UpsertSourceCursorRequest, workspace_stable_id,
+    AppendRawEventsRequest, SearchCasesRequest, SearchFilter, SessionRow,
+    UpsertSourceCursorRequest, workspace_stable_id,
 };
 use rusqlite::Connection;
 use tempfile::tempdir;
@@ -14,18 +12,30 @@ fn apply_replay_plan(app: &axiomsync::AxiomSync) {
 
 fn sample_request() -> AppendRawEventsRequest {
     serde_json::from_value(serde_json::json!({
-        "request_id": "req-1",
+        "batch_id": "req-1",
+        "producer": "relay",
+        "received_at_ms": 1710000004000i64,
         "events": [
             {
-                "connector": "relay",
+                "connector": "chatgpt_web_selection",
                 "native_session_id": "session-1",
                 "native_event_id": "evt-1",
-                "event_type": "assistant_message",
+                "event_type": "selection_captured",
                 "ts_ms": 1710000000000i64,
-                "workspace_root": "/workspace/demo",
                 "payload": {
-                    "title": "Session title",
-                    "text": "Root cause: bad cursor handling\nFix: reset and rebuild\nDecision: keep sink narrow\n$ cargo test -q"
+                    "session_kind": "thread",
+                    "workspace_root": "/workspace/demo",
+                    "page_title": "Session title",
+                    "selection": {
+                        "text": "Root cause: bad cursor handling\nFix: reset and rebuild\nDecision: keep sink narrow\n$ cargo test -q",
+                        "start_hint": "Root cause: bad cursor handling",
+                        "end_hint": "$ cargo test -q",
+                        "dom_fingerprint": "sha1:demo:selection"
+                    },
+                    "source_message": {
+                        "message_id": "msg-1",
+                        "role": "assistant"
+                    }
                 },
                 "artifacts": [
                     {
@@ -36,53 +46,67 @@ fn sample_request() -> AppendRawEventsRequest {
                 ]
             },
             {
-                "source": "relay",
-                "source_kind": "relay",
-                "session_kind": "run",
-                "external_session_key": "run-1",
-                "external_entry_key": "run-evt-1",
-                "event_kind": "run_update",
-                "observed_at": "2024-03-09T16:00:01Z",
-                "workspace_root": "/workspace/demo",
+                "connector": "cli_local_exec",
+                "native_session_id": "run-1",
+                "native_event_id": "run-evt-1",
+                "event_type": "command_finished",
+                "ts_ms": 1710000001000i64,
                 "payload": {
+                    "session_kind": "run",
+                    "workspace_root": "/workspace/demo",
                     "title": "Run 1",
-                    "text": "Run completed successfully\n$ cargo test -q"
+                    "summary": "Run completed successfully\n$ cargo test -q",
+                    "command": {
+                        "argv": ["cargo", "test", "-q"],
+                        "cwd": "/workspace/demo",
+                        "exit_code": 0,
+                        "duration_ms": 500
+                    },
+                    "checks": [
+                        {
+                            "name": "cargo_test",
+                            "status": "passed"
+                        }
+                    ]
                 }
             },
             {
-                "source": "relay",
-                "session_kind": "task",
-                "external_session_key": "task-1",
-                "external_entry_key": "task-evt-1",
-                "event_kind": "task_update",
-                "observed_at": "2024-03-09T16:00:02Z",
-                "workspace_root": "/workspace/demo",
+                "connector": "work_state_export",
+                "native_session_id": "task-1",
+                "native_event_id": "task-evt-1",
+                "event_type": "task_state_imported",
+                "ts_ms": 1710000002000i64,
                 "payload": {
+                    "session_kind": "task",
+                    "workspace_root": "/workspace/demo",
                     "title": "Task 1",
                     "text": "Task started"
                 }
             },
             {
-                "source": "relay",
-                "session_kind": "task",
-                "external_session_key": "task-1",
-                "external_entry_key": "task-check-1",
-                "event_kind": "check_result",
-                "observed_at": "2024-03-09T16:00:03Z",
-                "workspace_root": "/workspace/demo",
+                "connector": "work_state_export",
+                "native_session_id": "task-1",
+                "native_event_id": "task-check-1",
+                "event_type": "verification_recorded",
+                "ts_ms": 1710000003000i64,
                 "payload": {
+                    "session_kind": "task",
+                    "workspace_root": "/workspace/demo",
                     "text": "Check passed for task 1"
+                },
+                "hints": {
+                    "entry_kind": "check_result"
                 }
             },
             {
-                "source": "relay",
-                "session_kind": "import",
-                "external_session_key": "import-1",
-                "external_entry_key": "doc-1",
-                "event_kind": "document_snapshot",
-                "observed_at": "2024-03-09T16:00:04Z",
-                "workspace_root": "/workspace/demo",
+                "connector": "work_state_export",
+                "native_session_id": "import-1",
+                "native_event_id": "doc-1",
+                "event_type": "artifact_emitted",
+                "ts_ms": 1710000004000i64,
                 "payload": {
+                    "session_kind": "import",
+                    "workspace_root": "/workspace/demo",
                     "title": "Imported document",
                     "text": "Imported notes for rebuild"
                 },
@@ -115,7 +139,7 @@ fn redesign_pipeline_projects_and_derives_generic_kernel_rows() {
     assert!(
         sessions
             .iter()
-            .any(|session| session.session_kind == "conversation")
+            .any(|session| session.session_kind == "thread")
     );
     assert!(sessions.iter().any(|session| session.session_kind == "run"));
     assert!(
@@ -129,10 +153,10 @@ fn redesign_pipeline_projects_and_derives_generic_kernel_rows() {
             .any(|session| session.session_kind == "import")
     );
 
-    let conversation_id = sessions
+    let thread_id = sessions
         .iter()
-        .find(|session| session.session_kind == "conversation")
-        .expect("conversation")
+        .find(|session| session.session_kind == "thread")
+        .expect("thread")
         .session_id
         .clone();
     let task_id = sessions
@@ -141,26 +165,25 @@ fn redesign_pipeline_projects_and_derives_generic_kernel_rows() {
         .expect("task")
         .session_id
         .clone();
-    let import_id = sessions
-        .iter()
-        .find(|session| session.session_kind == "import")
-        .expect("import")
-        .session_id
-        .clone();
-
-    let session = app.get_session(&conversation_id).expect("session");
-    assert_eq!(session.entries.len(), 1);
-    assert_eq!(session.entries[0].artifacts.len(), 1);
-    assert_eq!(session.entries[0].anchors.len(), 2);
+    let thread = app.get_thread(&thread_id).expect("thread");
+    assert_eq!(thread.entries.len(), 1);
+    assert_eq!(thread.entries[0].artifacts.len(), 1);
+    assert_eq!(thread.entries[0].anchors.len(), 2);
 
     let task = app.get_task(&task_id).expect("task view");
     assert_eq!(task.session.session_kind, "task");
     assert_eq!(task.entries.len(), 2);
 
-    let imported = app.get_session(&import_id).expect("import session");
-    assert_eq!(imported.session.session_kind, "import");
-    assert_eq!(imported.entries.len(), 1);
-    assert_eq!(imported.entries[0].artifacts.len(), 1);
+    let imported_documents = app
+        .list_documents(Some("/workspace/demo"), Some("document"))
+        .expect("imported documents");
+    assert_eq!(imported_documents.len(), 1);
+    assert!(
+        imported_documents[0]
+            .artifact
+            .uri
+            .ends_with("/workspace/demo/docs/notes.md")
+    );
 
     let episode_id = app
         .list_cases()
@@ -174,44 +197,12 @@ fn redesign_pipeline_projects_and_derives_generic_kernel_rows() {
         .expect("case with command")
         .case_id;
 
-    let claims_before = app
-        .search_claims(SearchClaimsRequest {
-            query: "root cause".to_string(),
-            limit: 10,
-            filter: SearchFilter::default(),
-        })
-        .expect("search claims");
-    assert!(!claims_before.is_empty());
-
-    let procedures_before = app
-        .search_procedures(SearchProceduresRequest {
-            query: "cargo test".to_string(),
-            limit: 10,
-            filter: SearchFilter::default(),
-        })
-        .expect("search procedures");
-    assert!(!procedures_before.is_empty());
+    let case_before = app.get_case(&episode_id).expect("case before replay");
 
     apply_replay_plan(&app);
 
-    let claims_after = app
-        .search_claims(SearchClaimsRequest {
-            query: "root cause".to_string(),
-            limit: 10,
-            filter: SearchFilter::default(),
-        })
-        .expect("search claims after rebuild");
-    let procedures_after = app
-        .search_procedures(SearchProceduresRequest {
-            query: "cargo test".to_string(),
-            limit: 10,
-            filter: SearchFilter::default(),
-        })
-        .expect("search procedures after rebuild");
-    assert_eq!(claims_before, claims_after);
-    assert_eq!(procedures_before, procedures_after);
-
-    let case = app.get_case(&episode_id).expect("case");
+    let case = app.get_case(&episode_id).expect("case after replay");
+    assert_eq!(case_before, case);
     assert_eq!(case.workspace_root.as_deref(), Some("/workspace/demo"));
     assert!(
         case.commands
@@ -242,18 +233,68 @@ fn auth_grants_and_search_filters_are_workspace_scoped() {
         Some(workspace_id)
     );
 
+    let case_query = app
+        .list_cases()
+        .expect("cases")
+        .into_iter()
+        .find(|case| {
+            case.workspace_root.as_deref() == Some("/workspace/demo") && case.root_cause.is_some()
+        })
+        .expect("thread-backed workspace case")
+        .problem;
     let hits = app
-        .search_entries(SearchEntriesRequest {
-            query: "cursor".to_string(),
+        .search_cases(SearchCasesRequest {
+            query: case_query,
             limit: 10,
             filter: SearchFilter {
-                session_kind: Some("conversation".to_string()),
-                connector: Some("relay".to_string()),
+                session_kind: Some("thread".to_string()),
+                connector: Some("chatgpt_web_selection".to_string()),
                 workspace_root: Some("/workspace/demo".to_string()),
             },
         })
-        .expect("search entries");
+        .expect("search cases");
     assert_eq!(hits.len(), 1);
+}
+
+#[test]
+fn case_commands_follow_stable_episode_relation_not_goal_text() {
+    let temp = tempdir().expect("tempdir");
+    let app = axiomsync::open(temp.path()).expect("app");
+    let ingest = app
+        .plan_append_raw_events(sample_request())
+        .expect("plan ingest");
+    app.apply_ingest_plan(&ingest).expect("apply ingest");
+    apply_replay_plan(&app);
+
+    let mut plan = app.build_derivation_plan().expect("derivation plan");
+    let procedure = plan
+        .procedures
+        .iter_mut()
+        .find(|procedure| {
+            procedure
+                .steps_json
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|step| step.as_str())
+                .any(|step| step.contains("cargo test -q"))
+        })
+        .expect("procedure with command");
+    procedure.goal = Some("mismatched free-text goal".to_string());
+
+    app.apply_derivation_plan(&plan).expect("apply derivation");
+
+    let case = app
+        .list_cases()
+        .expect("cases")
+        .into_iter()
+        .find(|case| case.workspace_root.as_deref() == Some("/workspace/demo"))
+        .expect("workspace case");
+    assert!(
+        case.commands
+            .iter()
+            .any(|command| command.contains("cargo test -q"))
+    );
 }
 
 #[test]
@@ -278,11 +319,9 @@ fn duplicate_dedupe_and_source_cursor_upsert_are_idempotent() {
 
     let cursor_request: UpsertSourceCursorRequest = serde_json::from_value(serde_json::json!({
         "connector": "relay",
-        "cursor": {
-            "cursor_key": "chat",
-            "cursor_value": "cursor-1",
-            "updated_at_ms": 1710000005000i64
-        }
+        "cursor_key": "chat",
+        "cursor_value": "cursor-1",
+        "updated_at_ms": 1710000005000i64
     }))
     .expect("cursor request");
     let cursor_plan = app
@@ -343,7 +382,7 @@ fn replay_apply_is_atomic_when_derivation_write_fails() {
     let mut plan = app.build_replay_plan().expect("replay plan");
     plan.projection.sessions.push(SessionRow {
         session_id: "session_extra".to_string(),
-        session_kind: "conversation".to_string(),
+        session_kind: "thread".to_string(),
         connector: "relay".to_string(),
         external_session_key: Some("extra".to_string()),
         title: Some("extra".to_string()),
@@ -419,46 +458,6 @@ fn schema_contains_only_new_projection_tables() {
             .expect("legacy table check");
         assert_eq!(exists, 0, "did not expect table {table}");
     }
-}
-
-#[test]
-fn legacy_raw_event_table_is_backfilled_into_ingress_receipts() {
-    let temp = tempdir().expect("tempdir");
-    let db_path = temp.path().join("context.db");
-    let conn = rusqlite::Connection::open(&db_path).expect("open sqlite");
-    conn.execute_batch(
-        r#"
-        create table raw_event (
-          id integer primary key autoincrement,
-          stable_id text not null default '',
-          connector text not null,
-          native_schema_version text,
-          native_session_id text not null,
-          native_event_id text,
-          event_type text not null,
-          ts_ms integer not null,
-          payload_json text not null,
-          payload_sha256 blob not null
-        );
-        insert into raw_event (
-          stable_id, connector, native_schema_version, native_session_id, native_event_id,
-          event_type, ts_ms, payload_json, payload_sha256
-        ) values (
-          'raw_1', 'relay', 'agent-record-v1', 'legacy-session', 'evt-1',
-          'assistant_message', 1710000000000,
-          '{"text":"legacy body"}',
-          x'0123'
-        );
-        "#,
-    )
-    .expect("seed legacy raw_event");
-    drop(conn);
-
-    let app = axiomsync::open(temp.path()).expect("app");
-    apply_replay_plan(&app);
-    let report = app.doctor_report().expect("doctor");
-    assert_eq!(report.ingress_receipts, 1);
-    assert!(fs::metadata(temp.path().join("context.db")).is_ok());
 }
 
 #[test]

@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS claim_evidence (
 
 CREATE TABLE IF NOT EXISTS procedures (
   procedure_id TEXT PRIMARY KEY,
+  episode_id TEXT REFERENCES episodes(episode_id) ON DELETE CASCADE,
   title TEXT NOT NULL,
   goal TEXT,
   steps_json TEXT NOT NULL,

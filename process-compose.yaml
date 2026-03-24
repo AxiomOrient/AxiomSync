@@ -3,7 +3,7 @@ version: "0.5"
 processes:
   web:
     command: >-
-      sh -lc 'mkdir -p logs && cargo run -p axiomsync -- --root .axiomsync web --addr 127.0.0.1:4400 >> logs/web.log 2>&1'
+      sh -lc 'mkdir -p logs && cargo run -p axiomsync -- --root .axiomsync serve --addr 127.0.0.1:4400 >> logs/web.log 2>&1'
     availability:
       restart: on_failure
   mcp_http:

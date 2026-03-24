@@ -22,12 +22,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-reqwest = { workspace = true }
-toml = { workspace = true }
-axum = { workspace = true }
 tokio = { workspace = true }
-maud = { workspace = true }
-tower = { workspace = true }
 axiomsync-domain = { workspace = true }
 axiomsync-store-sqlite = { workspace = true }
 axiomsync-kernel = { workspace = true }
@@ -39,3 +34,5 @@ axiomsync-cli = { workspace = true }
 tempfile = { workspace = true }
 rusqlite = { workspace = true }
 jsonschema = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }

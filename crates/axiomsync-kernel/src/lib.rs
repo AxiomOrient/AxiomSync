@@ -3,14 +3,13 @@ pub mod error {
 }
 
 pub mod domain {
-    pub use axiomsync_domain::domain::*;
+    pub use axiomsync_domain::*;
 }
 
-mod compat;
 mod derive;
 mod ingest;
 pub mod kernel;
-pub mod logic;
+mod logic;
 mod mcp;
 pub mod ports;
 mod projection;
