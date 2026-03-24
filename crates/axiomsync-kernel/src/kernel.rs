@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::derive::plan_derivation;
+use crate::derive::{DerivationCorpus, plan_derivation};
 use crate::domain::{
     AdminTokenPlan, AnchorView, AppendRawEventsRequest, ArtifactView, AuthSnapshot, CaseRecord,
     DoctorReport, DocumentView, EntryBundle, EntryRow, EvidenceView, IngestPlan, ReplayPlan,
@@ -99,14 +99,12 @@ impl AxiomSync {
     }
 
     pub fn build_derivation_plan(&self) -> Result<crate::domain::DerivePlan> {
-        let projection = crate::domain::ProjectionPlan {
-            sessions: self.repo.load_sessions()?,
-            actors: Vec::new(),
-            entries: self.repo.load_entries()?,
-            artifacts: Vec::new(),
-            anchors: self.repo.load_anchors()?,
-        };
-        self.build_derivation_plan_for_projection(&projection)
+        let corpus = self.load_derivation_corpus()?;
+        plan_derivation(DerivationCorpus {
+            sessions: &corpus.sessions,
+            entries: &corpus.entries,
+            anchors: &corpus.anchors,
+        })
     }
 
     pub fn apply_derivation_plan(&self, plan: &crate::domain::DerivePlan) -> Result<Value> {
@@ -117,11 +115,11 @@ impl AxiomSync {
         &self,
         projection: &crate::domain::ProjectionPlan,
     ) -> Result<crate::domain::DerivePlan> {
-        plan_derivation(
-            &projection.sessions,
-            &projection.entries,
-            &projection.anchors,
-        )
+        plan_derivation(DerivationCorpus {
+            sessions: &projection.sessions,
+            entries: &projection.entries,
+            anchors: &projection.anchors,
+        })
     }
 
     pub fn apply_replay(&self, plan: &ReplayPlan) -> Result<Value> {
@@ -133,45 +131,63 @@ impl AxiomSync {
     }
 
     fn get_session(&self, session_id: &str) -> Result<SessionView> {
-        let sessions = self.repo.load_sessions()?;
-        let entries = self.repo.load_entries()?;
-        let artifacts = self.repo.load_artifacts()?;
-        let anchors = self.repo.load_anchors()?;
-        let session = sessions
+        let corpus = self.load_view_corpus()?;
+        let session = corpus
+            .sessions
             .iter()
             .find(|session| session.session_id == session_id)
             .ok_or_else(|| AxiomError::NotFound(format!("session {session_id}")))?;
-        Ok(session_view(session, &entries, &artifacts, &anchors))
+        Ok(session_view(
+            session,
+            &corpus.entries,
+            &corpus.artifacts,
+            &corpus.anchors,
+        ))
     }
 
     fn get_artifact(&self, artifact_id: &str) -> Result<ArtifactView> {
-        let sessions = self.repo.load_sessions()?;
-        let entries = self.repo.load_entries()?;
-        let artifacts = self.repo.load_artifacts()?;
-        let artifact = artifacts
+        let corpus = self.load_view_corpus()?;
+        let artifact = corpus
+            .artifacts
             .iter()
             .find(|artifact| artifact.artifact_id == artifact_id)
             .ok_or_else(|| AxiomError::NotFound(format!("artifact {artifact_id}")))?;
-        Ok(document_view_from_artifact(artifact, &sessions, &entries))
+        Ok(document_view_from_artifact(
+            artifact,
+            &corpus.sessions,
+            &corpus.entries,
+        ))
     }
 
     fn get_anchor(&self, anchor_id: &str) -> Result<AnchorView> {
-        let sessions = self.repo.load_sessions()?;
-        let entries = self.repo.load_entries()?;
-        let artifacts = self.repo.load_artifacts()?;
-        let anchors = self.repo.load_anchors()?;
-        let anchor = anchors
+        let corpus = self.load_view_corpus()?;
+        let anchor = corpus
+            .anchors
             .iter()
             .find(|anchor| anchor.anchor_id == anchor_id)
             .ok_or_else(|| AxiomError::NotFound(format!("anchor {anchor_id}")))?;
-        Ok(anchor_view(anchor, &sessions, &entries, &artifacts))
+        Ok(anchor_view(
+            anchor,
+            &corpus.sessions,
+            &corpus.entries,
+            &corpus.artifacts,
+        ))
     }
 
     pub fn search_cases(&self, request: SearchCasesRequest) -> Result<Vec<SearchHit>> {
+        let corpus = self.load_search_corpus()?;
         Ok(filter_hits(
             crate::query::search_cases(
-                &self.repo.load_sessions()?,
-                &self.repo.load_episodes()?,
+                crate::query::SearchCorpus {
+                    sessions: &corpus.sessions,
+                    episodes: &corpus.episodes,
+                    insights: &corpus.insights,
+                    procedures: &corpus.procedures,
+                    insight_anchors: &corpus.insight_anchors,
+                    verifications: &corpus.verifications,
+                    search_docs: &corpus.search_docs,
+                    anchors: &corpus.anchors,
+                },
                 &request,
             ),
             effective_limit(request.limit),
@@ -179,46 +195,38 @@ impl AxiomSync {
     }
 
     pub fn list_cases(&self) -> Result<Vec<CaseRecord>> {
-        let sessions = self.repo.load_sessions()?;
-        let episodes = self.repo.load_episodes()?;
-        let insights = self.repo.load_insights()?;
-        let verifications = self.repo.load_verifications()?;
-        let claims = self.repo.load_claims()?;
-        let procedures = self.repo.load_procedures()?;
-        Ok(episodes
+        let corpus = self.load_case_corpus()?;
+        Ok(corpus
+            .episodes
             .iter()
             .map(|episode| {
                 case_from_episode(
                     episode,
-                    &sessions,
-                    &insights,
-                    &verifications,
-                    &claims,
-                    &procedures,
+                    &corpus.sessions,
+                    &corpus.insights,
+                    &corpus.verifications,
+                    &corpus.claims,
+                    &corpus.procedures,
                 )
             })
             .collect())
     }
 
     pub fn get_case(&self, case_id: &str) -> Result<CaseRecord> {
-        let sessions = self.repo.load_sessions()?;
-        let insights = self.repo.load_insights()?;
-        let verifications = self.repo.load_verifications()?;
-        let claims = self.repo.load_claims()?;
-        let procedures = self.repo.load_procedures()?;
-        let episode = self
-            .repo
-            .load_episodes()?
+        let corpus = self.load_case_corpus()?;
+        let episode = corpus
+            .episodes
+            .iter()
             .into_iter()
             .find(|episode| episode.episode_id == case_id)
             .ok_or_else(|| AxiomError::NotFound(format!("case {case_id}")))?;
         Ok(case_from_episode(
-            &episode,
-            &sessions,
-            &insights,
-            &verifications,
-            &claims,
-            &procedures,
+            episode,
+            &corpus.sessions,
+            &corpus.insights,
+            &corpus.verifications,
+            &corpus.claims,
+            &corpus.procedures,
         ))
     }
 
@@ -252,15 +260,14 @@ impl AxiomSync {
         workspace_root: Option<&str>,
         kind: Option<&str>,
     ) -> Result<Vec<ArtifactView>> {
-        let sessions = self.repo.load_sessions()?;
-        let entries = self.repo.load_entries()?;
-        Ok(self
-            .repo
-            .load_artifacts()?
-            .into_iter()
+        let corpus = self.load_view_corpus()?;
+        Ok(corpus
+            .artifacts
+            .iter()
             .filter(|artifact| {
                 workspace_root.is_none_or(|expected| {
-                    sessions
+                    corpus
+                        .sessions
                         .iter()
                         .find(|session| session.session_id == artifact.session_id)
                         .and_then(|session| session.workspace_root.as_deref())
@@ -268,7 +275,9 @@ impl AxiomSync {
                 })
             })
             .filter(|artifact| kind.is_none_or(|expected| artifact.artifact_kind == expected))
-            .map(|artifact| document_view_from_artifact(&artifact, &sessions, &entries))
+            .map(|artifact| {
+                document_view_from_artifact(artifact, &corpus.sessions, &corpus.entries)
+            })
             .collect())
     }
 
@@ -390,6 +399,82 @@ impl AxiomSync {
 
     pub fn pending_counts(&self) -> Result<(usize, usize, usize)> {
         self.repo.pending_counts()
+    }
+}
+
+struct ViewCorpus {
+    sessions: Vec<SessionRow>,
+    entries: Vec<EntryRow>,
+    artifacts: Vec<crate::domain::ArtifactRow>,
+    anchors: Vec<crate::domain::AnchorRow>,
+}
+
+struct DerivationInput {
+    sessions: Vec<SessionRow>,
+    entries: Vec<EntryRow>,
+    anchors: Vec<crate::domain::AnchorRow>,
+}
+
+struct SearchInput {
+    sessions: Vec<SessionRow>,
+    episodes: Vec<crate::domain::EpisodeRow>,
+    insights: Vec<crate::domain::InsightRow>,
+    procedures: Vec<crate::domain::ProcedureRow>,
+    insight_anchors: Vec<crate::domain::InsightAnchorRow>,
+    verifications: Vec<crate::domain::VerificationRow>,
+    search_docs: Vec<crate::domain::SearchDocsRow>,
+    anchors: Vec<crate::domain::AnchorRow>,
+}
+
+struct CaseInput {
+    sessions: Vec<SessionRow>,
+    episodes: Vec<crate::domain::EpisodeRow>,
+    insights: Vec<crate::domain::InsightRow>,
+    verifications: Vec<crate::domain::VerificationRow>,
+    claims: Vec<crate::domain::ClaimRow>,
+    procedures: Vec<crate::domain::ProcedureRow>,
+}
+
+impl AxiomSync {
+    fn load_view_corpus(&self) -> Result<ViewCorpus> {
+        Ok(ViewCorpus {
+            sessions: self.repo.load_sessions()?,
+            entries: self.repo.load_entries()?,
+            artifacts: self.repo.load_artifacts()?,
+            anchors: self.repo.load_anchors()?,
+        })
+    }
+
+    fn load_derivation_corpus(&self) -> Result<DerivationInput> {
+        Ok(DerivationInput {
+            sessions: self.repo.load_sessions()?,
+            entries: self.repo.load_entries()?,
+            anchors: self.repo.load_anchors()?,
+        })
+    }
+
+    fn load_search_corpus(&self) -> Result<SearchInput> {
+        Ok(SearchInput {
+            sessions: self.repo.load_sessions()?,
+            episodes: self.repo.load_episodes()?,
+            insights: self.repo.load_insights()?,
+            procedures: self.repo.load_procedures()?,
+            insight_anchors: self.repo.load_insight_anchors()?,
+            verifications: self.repo.load_verifications()?,
+            search_docs: self.repo.load_search_docs()?,
+            anchors: self.repo.load_anchors()?,
+        })
+    }
+
+    fn load_case_corpus(&self) -> Result<CaseInput> {
+        Ok(CaseInput {
+            sessions: self.repo.load_sessions()?,
+            episodes: self.repo.load_episodes()?,
+            insights: self.repo.load_insights()?,
+            verifications: self.repo.load_verifications()?,
+            claims: self.repo.load_claims()?,
+            procedures: self.repo.load_procedures()?,
+        })
     }
 }
 

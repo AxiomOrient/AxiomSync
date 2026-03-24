@@ -11,10 +11,10 @@
 - `apply-*` accepts only plan payload
 
 ## CLI Surface
-- `axiomsync sink plan-append-raw-events --file batch.json`
-- `axiomsync sink apply-ingest-plan --file ingest-plan.json`
-- `axiomsync sink plan-upsert-source-cursor --file cursor.json`
-- `axiomsync sink apply-source-cursor-plan --file cursor-plan.json`
+- `axiomsync-cli sink plan-append-raw-events --file batch.json`
+- `axiomsync-cli sink apply-ingest-plan --file ingest-plan.json`
+- `axiomsync-cli sink plan-upsert-source-cursor --file cursor.json`
+- `axiomsync-cli sink apply-source-cursor-plan --file cursor-plan.json`
 
 ## HTTP Surface
 - `GET /health`
@@ -25,7 +25,8 @@
 
 Sink routes live on the main `web` server. Default base URL is `http://127.0.0.1:4400`.
 These routes are intentionally unauthenticated but are enforced as loopback-only by source address.
-Canonical server entrypoint is `axiomsync serve`.
+Canonical server entrypoint is `axiomsync-cli serve`.
+Relay adapter sequencing과 sent-commit 규칙은 [`RELAY_INTEROP.md`](./RELAY_INTEROP.md) 를 따른다.
 
 ## Request Shapes
 
@@ -77,6 +78,9 @@ Supported `event_type` values:
 - `approval_resolved`
 - `note_recorded`
 
+Canonical sink example은 `native_event_id` 와 payload-contained metadata를 사용한다.
+현재 구현은 compatibility input으로 `native_entry_id`, optional `artifacts`, optional `hints` 도 수용한다.
+
 ### `POST /sink/raw-events/apply`
 Request body is a serialized `IngestPlan`.
 
@@ -99,8 +103,11 @@ Request body is a serialized `SourceCursorUpsertPlan`.
 - `/sink/source-cursors/plan` returns `SourceCursorUpsertPlan`
 - `/sink/source-cursors/apply` returns the apply transaction result
 - `/health` returns main runtime health metadata with DB path plus pending projection/derivation/index counts
+- duplicate append는 error가 아니라 idempotent success로 처리하며, skipped receipt는 `skipped_dedupe_keys`로 집계한다
+- duplicate source cursor upsert도 idempotent success semantics를 따른다
 
 ## Error Semantics
 - invalid payload: `400`
-- conflict: `409`
+- duplicate append는 `409`가 아니라 successful no-op semantics를 따른다
+- true conflict: `409`
 - transient/internal failure: `429`, `500`, or `503` depending on adapter policy

@@ -1,0 +1,8 @@
+[
+  {
+    "connector": "chatgpt_web_selection",
+    "cursor_key": "thread",
+    "cursor_value": "cursor-42",
+    "updated_at_ms": 1711000000300
+  }
+]

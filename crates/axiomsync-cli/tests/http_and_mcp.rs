@@ -1,10 +1,14 @@
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
 use axum::body::{Body, to_bytes};
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-use axiomsync::domain::{
+use axiomsync_domain::{
     AppendRawEventsRequest, DerivePlan, ProjectionPlan, ReplayPlan, SearchHit, workspace_stable_id,
 };
+use axiomsync_kernel::AxiomSync;
 use tempfile::tempdir;
 
 fn legacy(parts: &[&str]) -> String {
@@ -12,7 +16,7 @@ fn legacy(parts: &[&str]) -> String {
 }
 
 struct SeededApp {
-    app: axiomsync::AxiomSync,
+    app: AxiomSync,
     workspace_token: String,
     admin_token: String,
     case_id: String,
@@ -24,7 +28,7 @@ struct SeededApp {
     evidence_id: String,
 }
 
-fn apply_replay_plan(app: &axiomsync::AxiomSync) {
+fn apply_replay_plan(app: &AxiomSync) {
     let plan = app.build_replay_plan().expect("replay plan");
     app.apply_replay(&plan).expect("apply replay plan");
 }
@@ -138,7 +142,7 @@ fn seed_request() -> AppendRawEventsRequest {
 
 fn seed_app() -> SeededApp {
     let temp = tempdir().expect("tempdir");
-    let app = axiomsync::open(temp.path()).expect("app");
+    let app = axiomsync_cli::open(temp.path()).expect("app");
     let ingest = app
         .plan_append_raw_events(seed_request())
         .expect("plan ingest");
@@ -212,7 +216,7 @@ fn seed_app() -> SeededApp {
 #[tokio::test]
 async fn canonical_http_routes_work_with_auth() {
     let seeded = seed_app();
-    let router = axiomsync::http_api::router(seeded.app.clone());
+    let router = axiomsync_http::router(seeded.app.clone());
 
     let health = router
         .clone()
@@ -465,7 +469,7 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
         format!("axiom://documents/{}", seeded.document_id),
         format!("axiom://evidence/{}", seeded.evidence_id),
     ] {
-        let response = axiomsync::mcp::handle_request(
+        let response = axiomsync_mcp::handle_request(
             &seeded.app,
             serde_json::json!({
                 "jsonrpc": "2.0",
@@ -479,7 +483,7 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
         assert!(response.get("result").is_some());
     }
 
-    let resources = axiomsync::mcp::handle_request(
+    let resources = axiomsync_mcp::handle_request(
         &seeded.app,
         serde_json::json!({"jsonrpc":"2.0","id":2,"method":"resources/list"}),
         Some(&workspace_id),
@@ -510,7 +514,7 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
     );
     assert!(resource_uris.iter().all(|uri| !uri.contains("runbook")));
 
-    let tools = axiomsync::mcp::handle_request(
+    let tools = axiomsync_mcp::handle_request(
         &seeded.app,
         serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
         Some(&workspace_id),
@@ -551,7 +555,7 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
         );
     }
 
-    let task_tool = axiomsync::mcp::handle_request(
+    let task_tool = axiomsync_mcp::handle_request(
         &seeded.app,
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -564,7 +568,7 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
     .expect("task tool");
     assert!(task_tool.get("result").is_some());
 
-    let removed_alias = axiomsync::mcp::handle_request(
+    let removed_alias = axiomsync_mcp::handle_request(
         &seeded.app,
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -576,7 +580,7 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
     );
     assert!(removed_alias.is_err());
 
-    let search_cases = axiomsync::mcp::handle_request(
+    let search_cases = axiomsync_mcp::handle_request(
         &seeded.app,
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -601,7 +605,7 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
             .all(|hit| hit.get("kind").and_then(|value| value.as_str()) == Some("case"))
     );
 
-    let list_documents = axiomsync::mcp::handle_request(
+    let list_documents = axiomsync_mcp::handle_request(
         &seeded.app,
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -620,7 +624,7 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
     .expect("list documents tool");
     assert!(list_documents.get("result").is_some());
 
-    let unknown_legacy_tool = axiomsync::mcp::handle_request(
+    let unknown_legacy_tool = axiomsync_mcp::handle_request(
         &seeded.app,
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -635,4 +639,152 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
     )
     .expect("legacy tool response");
     assert!(unknown_legacy_tool.get("error").is_some());
+}
+
+#[tokio::test]
+async fn route_auth_and_loopback_matrix_is_enforced() {
+    let seeded = seed_app();
+    let router = axiomsync_http::router(seeded.app.clone());
+
+    let missing_workspace_auth = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/cases/{}", seeded.case_id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(missing_workspace_auth.status(), StatusCode::FORBIDDEN);
+
+    let workspace_on_admin_route = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/runs")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", seeded.workspace_token),
+                )
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(workspace_on_admin_route.status(), StatusCode::FORBIDDEN);
+
+    let admin_on_workspace_route = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/cases/{}", seeded.case_id))
+                .header("authorization", format!("Bearer {}", seeded.admin_token))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(admin_on_workspace_route.status(), StatusCode::FORBIDDEN);
+
+    let loopback_request = Request::builder()
+        .uri("/sink/raw-events/plan")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&seed_request()).expect("seed request json"),
+        ))
+        .expect("loopback request");
+    let mut loopback_request = loopback_request;
+    loopback_request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            4400,
+        )));
+    let loopback_response = router
+        .clone()
+        .oneshot(loopback_request)
+        .await
+        .expect("loopback response");
+    assert_eq!(loopback_response.status(), StatusCode::OK);
+
+    let denied_request = Request::builder()
+        .uri("/sink/raw-events/plan")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&seed_request()).expect("seed request json"),
+        ))
+        .expect("non-loopback request");
+    let mut denied_request = denied_request;
+    denied_request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7)),
+            4400,
+        )));
+    let denied_response = router
+        .oneshot(denied_request)
+        .await
+        .expect("denied response");
+    assert_eq!(denied_response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn http_and_mcp_return_equivalent_search_results() {
+    let seeded = seed_app();
+    let router = axiomsync_http::router(seeded.app.clone());
+    let workspace_id = workspace_stable_id("/workspace/http");
+
+    let http_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/query/search-cases")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", seeded.workspace_token),
+                )
+                .body(Body::from(
+                    serde_json::json!({
+                        "query": seeded.case_problem,
+                        "limit": 10,
+                        "filter": { "workspace_root": "/workspace/http" }
+                    })
+                    .to_string(),
+                ))
+                .expect("http request"),
+        )
+        .await
+        .expect("http response");
+    assert_eq!(http_response.status(), StatusCode::OK);
+    let http_hits: Vec<SearchHit> = decode_json(http_response).await;
+
+    let mcp_response = axiomsync_mcp::handle_request(
+        &seeded.app,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "search_cases",
+                "arguments": {
+                    "query": seeded.case_problem,
+                    "limit": 10,
+                    "filter": { "workspace_root": "/workspace/http" }
+                }
+            }
+        }),
+        Some(&workspace_id),
+    )
+    .expect("mcp response");
+    let mcp_hits: Vec<SearchHit> =
+        serde_json::from_value(mcp_response["result"].clone()).expect("mcp hits");
+
+    assert_eq!(http_hits.len(), mcp_hits.len());
+    assert_eq!(http_hits[0].id, mcp_hits[0].id);
+    assert_eq!(http_hits[0].title, mcp_hits[0].title);
 }

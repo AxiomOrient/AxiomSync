@@ -26,28 +26,29 @@ Universal agent memory kernel for recording immutable raw records into a single 
 - Workspace-scoped read routes require a workspace bearer token.
 - Admin HTTP and web routes require a global admin bearer token.
 - Sink routes are intentionally unauthenticated but loopback-only, even if `web` is bound to a non-loopback address.
+- Same-host relay adapter sequencing is fixed in `docs/RELAY_INTEROP.md`.
 
 ## Quick Start
 ```bash
-cargo run -p axiomsync -- --help
+cargo run -p axiomsync-cli -- --help
 
-cargo run -p axiomsync -- init
-cargo run -p axiomsync -- sink plan-append-raw-events --file /tmp/raw-events.json
-cargo run -p axiomsync -- sink apply-ingest-plan --file /tmp/ingest-plan.json
-cargo run -p axiomsync -- sink plan-upsert-source-cursor --file /tmp/cursor.json
-cargo run -p axiomsync -- sink apply-source-cursor-plan --file /tmp/cursor-plan.json
-cargo run -p axiomsync -- project plan-rebuild > /tmp/replay-plan.json
-cargo run -p axiomsync -- project apply-replay-plan --file /tmp/replay-plan.json
-cargo run -p axiomsync -- project doctor
-cargo run -p axiomsync -- sink import-cli-run --file /tmp/cli-run.json
-cargo run -p axiomsync -- sink import-work-state --file /tmp/work-state.json
-cargo run -p axiomsync -- query search-cases --file /tmp/search-cases.json
-cargo run -p axiomsync -- query get-case --id case_123
-cargo run -p axiomsync -- query get-thread --id thread_123
-cargo run -p axiomsync -- query get-run --id run_123
-cargo run -p axiomsync -- project plan-auth-grant --workspace-root /repo/app --token secret-token
-cargo run -p axiomsync -- project plan-admin-grant --token admin-secret-token
-cargo run -p axiomsync -- serve --addr 127.0.0.1:4400
+cargo run -p axiomsync-cli -- init
+cargo run -p axiomsync-cli -- sink plan-append-raw-events --file /tmp/raw-events.json
+cargo run -p axiomsync-cli -- sink apply-ingest-plan --file /tmp/ingest-plan.json
+cargo run -p axiomsync-cli -- sink plan-upsert-source-cursor --file /tmp/cursor.json
+cargo run -p axiomsync-cli -- sink apply-source-cursor-plan --file /tmp/cursor-plan.json
+cargo run -p axiomsync-cli -- project plan-rebuild > /tmp/replay-plan.json
+cargo run -p axiomsync-cli -- project apply-replay-plan --file /tmp/replay-plan.json
+cargo run -p axiomsync-cli -- project doctor
+cargo run -p axiomsync-cli -- sink import-cli-run --file /tmp/cli-run.json
+cargo run -p axiomsync-cli -- sink import-work-state --file /tmp/work-state.json
+cargo run -p axiomsync-cli -- query search-cases --file /tmp/search-cases.json
+cargo run -p axiomsync-cli -- query get-case --id case_123
+cargo run -p axiomsync-cli -- query get-thread --id thread_123
+cargo run -p axiomsync-cli -- query get-run --id run_123
+cargo run -p axiomsync-cli -- project plan-auth-grant --workspace-root /repo/app --token secret-token
+cargo run -p axiomsync-cli -- project plan-admin-grant --token admin-secret-token
+cargo run -p axiomsync-cli -- serve --addr 127.0.0.1:4400
 ```
 
 ## Canonical Sink Flow
@@ -75,17 +76,21 @@ cargo run -p axiomsync -- serve --addr 127.0.0.1:4400
 ## Release Docs
 - Runtime/API: [`docs/API_CONTRACT.md`](./docs/API_CONTRACT.md)
 - Sink contract: [`docs/KERNEL_SINK_CONTRACT.md`](./docs/KERNEL_SINK_CONTRACT.md)
+- Relay interop: [`docs/RELAY_INTEROP.md`](./docs/RELAY_INTEROP.md)
 - Architecture: [`docs/RUNTIME_ARCHITECTURE.md`](./docs/RUNTIME_ARCHITECTURE.md)
 - Testing: [`docs/TESTING.md`](./docs/TESTING.md)
 - Release checklist: [`docs/RELEASE_RUNBOOK.md`](./docs/RELEASE_RUNBOOK.md)
+
+The files above are split by role. `docs/` defines the release contract and verification surface.
 
 ## Verification
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace -- --nocapture
-cargo run -p axiomsync -- --help
-cargo run -p axiomsync -- sink --help
-cargo run -p axiomsync -- serve --help
-cargo run -p axiomsync -- mcp serve --help
+cargo test -p axiomsync-cli --test relay_interop relay_http_delivery_smoke_commits_only_after_both_apply_phases -- --nocapture
+cargo run -p axiomsync-cli -- --help
+cargo run -p axiomsync-cli -- sink --help
+cargo run -p axiomsync-cli -- serve --help
+cargo run -p axiomsync-cli -- mcp serve --help
 ```

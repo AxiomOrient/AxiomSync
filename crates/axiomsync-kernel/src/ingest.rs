@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axiomsync_domain::error::Result;
 use axiomsync_domain::{
     AppendRawEventsRequest, IngestPlan, IngressReceiptRow, RawArtifactInput, SourceCursorRow,
@@ -13,6 +15,7 @@ pub fn plan_append_raw_events(
     let batch_id = request.batch_id.clone();
     let mut receipts = Vec::new();
     let mut skipped = Vec::new();
+    let mut seen_dedupe_keys = existing_dedupe_keys.iter().cloned().collect::<HashSet<_>>();
     for event in &request.events {
         let connector = event.connector.clone();
         let source_kind = request.producer.clone();
@@ -32,17 +35,18 @@ pub fn plan_append_raw_events(
                 ),
             ))
         });
-        if let Some(key) = dedupe_key.as_ref()
-            && existing_dedupe_keys.iter().any(|existing| existing == key)
-        {
-            skipped.push(key.clone());
-            continue;
+        if let Some(key) = dedupe_key.as_ref() {
+            if seen_dedupe_keys.contains(key) {
+                skipped.push(key.clone());
+                continue;
+            }
+            seen_dedupe_keys.insert(key.clone());
         }
         let artifacts_json = serde_json::to_string(&artifacts)?;
         let payload_json = canonical_json_string(&event.payload);
         let normalized_json = canonical_json_string(&json!({
             "producer": source_kind.clone(),
-            "connector_name": connector.clone(),
+            "connector": connector.clone(),
             "session_kind": event.normalized_session_kind(),
             "workspace_root": workspace_root.clone(),
             "event_kind": event.normalized_event_kind()?,

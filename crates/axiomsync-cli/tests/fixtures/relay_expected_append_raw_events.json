@@ -1,0 +1,72 @@
+{
+  "batch_id": "relay-batch-001",
+  "producer": "axiomrelay",
+  "received_at_ms": 1711000000000,
+  "events": [
+    {
+      "connector": "chatgpt_web_selection",
+      "native_schema_version": "relay-v1",
+      "native_session_id": "chatgpt:abc123",
+      "native_event_id": "evt-42",
+      "event_type": "selection_captured",
+      "ts_ms": 1711000000100,
+      "payload": {
+        "session_kind": "thread",
+        "page_url": "https://chatgpt.com/c/abc123",
+        "page_title": "Relay Interop",
+        "selection": {
+          "text": "Use relay adapter plan/apply sequencing.",
+          "start_hint": "Use relay adapter",
+          "end_hint": "plan/apply sequencing.",
+          "dom_fingerprint": "sha1:relay:selection"
+        },
+        "source_message": {
+          "message_id": "msg-42",
+          "role": "assistant"
+        },
+        "relay": {
+          "packet_id": "pkt-1",
+          "source_kind": "chatgpt_web"
+        },
+        "workspace_root": "/workspace/demo",
+        "labels": ["assistant", "selection"],
+        "artifact_refs": [
+          {
+            "uri": "file:///workspace/demo/docs/spec.md",
+            "mime": "text/markdown"
+          }
+        ]
+      }
+    },
+    {
+      "connector": "cli_local_exec",
+      "native_session_id": "run-123",
+      "native_event_id": "cmd-1",
+      "event_type": "command_finished",
+      "ts_ms": 1711000000200,
+      "payload": {
+        "session_kind": "run",
+        "title": "cargo test",
+        "summary": "cargo test -q passed",
+        "command": {
+          "argv": ["cargo", "test", "-q"],
+          "cwd": "/workspace/demo",
+          "exit_code": 0,
+          "duration_ms": 250
+        },
+        "checks": [
+          {
+            "name": "cargo_test",
+            "status": "passed"
+          }
+        ],
+        "relay": {
+          "packet_id": "pkt-2",
+          "source_kind": "cli_local_exec"
+        },
+        "workspace_root": "/workspace/demo",
+        "labels": ["command"]
+      }
+    }
+  ]
+}

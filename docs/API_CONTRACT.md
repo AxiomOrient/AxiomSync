@@ -21,6 +21,8 @@
 - sink write route는 loopback source address만 허용한다.
 - canonical append request는 `AppendRawEventsRequest { batch_id, producer, received_at_ms, events[] }`다.
 - canonical cursor request는 `UpsertSourceCursorRequest { connector, cursor_key, cursor_value, updated_at_ms }`다.
+- relay same-host adapter semantics는 [`RELAY_INTEROP.md`](./RELAY_INTEROP.md) 에서 고정한다.
+- canonical wire example은 `native_event_id` 를 사용하지만, 현재 구현은 compatibility input으로 `native_entry_id`, optional `artifacts`, `hints` field도 수용한다.
 - `RawEvent.event_type`는 고정 taxonomy만 허용한다:
   - `message_captured`
   - `selection_captured`
@@ -34,33 +36,33 @@
   - `note_recorded`
 
 ## CLI Surface
-- `axiomsync init`
-- `axiomsync sink plan-append-raw-events`
-- `axiomsync sink apply-ingest-plan`
-- `axiomsync sink plan-upsert-source-cursor`
-- `axiomsync sink apply-source-cursor-plan`
-- `axiomsync project plan-projection`
-- `axiomsync project apply-projection-plan`
-- `axiomsync project plan-derivations`
-- `axiomsync project apply-derivation-plan`
-- `axiomsync project plan-rebuild`
-- `axiomsync project apply-replay-plan`
-- `axiomsync project doctor`
-- `axiomsync project plan-auth-grant`
-- `axiomsync project plan-admin-grant`
-- `axiomsync project apply-auth-grant-plan`
-- `axiomsync project apply-admin-grant-plan`
-- `axiomsync sink import-cli-run`
-- `axiomsync sink import-work-state`
-- `axiomsync query search-cases`
-- `axiomsync query get-case`
-- `axiomsync query get-thread`
-- `axiomsync query get-run`
-- `axiomsync query get-task`
-- `axiomsync query get-document`
-- `axiomsync query get-evidence`
-- `axiomsync mcp serve`
-- `axiomsync serve`
+- `axiomsync-cli init`
+- `axiomsync-cli sink plan-append-raw-events`
+- `axiomsync-cli sink apply-ingest-plan`
+- `axiomsync-cli sink plan-upsert-source-cursor`
+- `axiomsync-cli sink apply-source-cursor-plan`
+- `axiomsync-cli project plan-projection`
+- `axiomsync-cli project apply-projection-plan`
+- `axiomsync-cli project plan-derivations`
+- `axiomsync-cli project apply-derivation-plan`
+- `axiomsync-cli project plan-rebuild`
+- `axiomsync-cli project apply-replay-plan`
+- `axiomsync-cli project doctor`
+- `axiomsync-cli project plan-auth-grant`
+- `axiomsync-cli project plan-admin-grant`
+- `axiomsync-cli project apply-auth-grant-plan`
+- `axiomsync-cli project apply-admin-grant-plan`
+- `axiomsync-cli sink import-cli-run`
+- `axiomsync-cli sink import-work-state`
+- `axiomsync-cli query search-cases`
+- `axiomsync-cli query get-case`
+- `axiomsync-cli query get-thread`
+- `axiomsync-cli query get-run`
+- `axiomsync-cli query get-task`
+- `axiomsync-cli query get-document`
+- `axiomsync-cli query get-evidence`
+- `axiomsync-cli mcp serve`
+- `axiomsync-cli serve`
 
 ## HTTP Surface
 ### Canonical write
@@ -126,9 +128,12 @@ public canonical noun은 `case`, `thread`, `run`, `task`, `document`, `evidence`
 - derivation rebuild는 `build_derivation_plan -> apply_derivation_plan` 순서를 지원한다.
 - full replay rebuild는 `build_replay_plan -> apply_replay` 순서를 지원한다.
 - `apply-*`는 original request가 아니라 validated plan payload만 받는다.
+- duplicate append는 idempotent success로 처리하고 `skipped_dedupe_keys`로 노출한다.
+- duplicate source cursor upsert도 idempotent success semantics를 따른다.
 - `source_cursor`는 kernel 내부 operator metadata이며, spool/retry/approval/run-state 정본은 아니다.
 - health 응답은 `pending_projection_count`, `pending_derived_count`, `pending_index_count`를 포함한다.
 - fixture 회귀는 [`contracts/kernel_sink_contract.json`](./contracts/kernel_sink_contract.json) schema validation까지 포함한다.
+- relay interop fixture 회귀는 same-host loopback HTTP sink sequence까지 포함한다.
 
 ## Auth And Scope
 - workspace-scoped HTTP read surface는 workspace bearer token을 요구한다.

@@ -1,13 +1,14 @@
 use std::fs;
 use std::path::Path;
 
-use axiomsync::domain::AppendRawEventsRequest;
+use axiomsync_domain::{AppendRawEventsRequest, RAW_EVENT_TAXONOMY};
+use axiomsync_kernel::AxiomSync;
 use jsonschema::validator_for;
 use rusqlite::Connection;
 use serde_json::Value;
 use tempfile::tempdir;
 
-fn apply_replay_plan(app: &axiomsync::AxiomSync) {
+fn apply_replay_plan(app: &AxiomSync) {
     let plan = app.build_replay_plan().expect("replay plan");
     app.apply_replay(&plan).expect("apply replay plan");
 }
@@ -32,7 +33,7 @@ fn sink_schema() -> Value {
 #[test]
 fn final_form_examples_are_accepted_projected_and_derived() {
     let temp = tempdir().expect("tempdir");
-    let app = axiomsync::open(temp.path()).expect("app");
+    let app = axiomsync_cli::open(temp.path()).expect("app");
 
     for name in [
         "raw_event.chatgpt_selection.json",
@@ -145,7 +146,7 @@ fn final_form_examples_are_accepted_projected_and_derived() {
 #[test]
 fn reusable_derivations_require_evidence_anchors() {
     let temp = tempdir().expect("tempdir");
-    let app = axiomsync::open(temp.path()).expect("app");
+    let app = axiomsync_cli::open(temp.path()).expect("app");
     let request: AppendRawEventsRequest = serde_json::from_value(serde_json::json!({
         "batch_id": "no-anchor",
         "producer": "axiomrelay",
@@ -192,4 +193,52 @@ fn final_form_fixtures_match_documented_sink_schema() {
             "schema validation failed for {name}: {result:?}"
         );
     }
+}
+
+#[test]
+fn documented_sink_schema_matches_domain_contract() {
+    let schema = sink_schema();
+    let append_required = schema["$defs"]["appendRawEventsRequest"]["required"]
+        .as_array()
+        .expect("append required");
+    let cursor_required = schema["$defs"]["upsertSourceCursorRequest"]["required"]
+        .as_array()
+        .expect("cursor required");
+    let event_types = schema["$defs"]["rawEvent"]["properties"]["event_type"]["enum"]
+        .as_array()
+        .expect("event enum");
+
+    let expected_append = serde_json::json!(["batch_id", "producer", "received_at_ms", "events"]);
+    let expected_cursor =
+        serde_json::json!(["connector", "cursor_key", "cursor_value", "updated_at_ms"]);
+    let expected_event_types = RAW_EVENT_TAXONOMY
+        .iter()
+        .map(|value| Value::String((*value).to_string()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        append_required,
+        expected_append.as_array().expect("expected append array")
+    );
+    assert_eq!(
+        cursor_required,
+        expected_cursor.as_array().expect("expected cursor array")
+    );
+    assert_eq!(event_types, &expected_event_types);
+}
+
+#[test]
+fn normalized_receipts_use_canonical_connector_key() {
+    let temp = tempdir().expect("tempdir");
+    let app = axiomsync_cli::open(temp.path()).expect("app");
+    let request = fixture_request("raw_event.chatgpt_selection.json");
+    let plan = app.plan_append_raw_events(request).expect("plan ingest");
+    let normalized = serde_json::from_str::<Value>(&plan.receipts[0].normalized_json)
+        .expect("normalized receipt");
+
+    assert_eq!(
+        normalized.get("connector").and_then(Value::as_str),
+        Some("chatgpt_web_selection")
+    );
+    assert!(normalized.get("connector_name").is_none());
 }

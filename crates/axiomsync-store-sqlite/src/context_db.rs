@@ -5,11 +5,13 @@ use axiomsync_domain::error::{AxiomError, Result};
 use axiomsync_domain::{
     AnchorRow, ArtifactRow, ClaimRow, DerivePlan, DoctorReport, EntryRow, EpisodeRow, IngestPlan,
     IngressReceiptRow, InsightAnchorRow, InsightRow, ProcedureRow, ProjectionPlan, ReplayPlan,
-    SessionRow, SourceCursorRow, SourceCursorUpsertPlan, VerificationRow,
+    SearchDocsRow, SessionRow, SourceCursorRow, SourceCursorUpsertPlan, VerificationRow,
 };
 use axiomsync_kernel::ports::RepositoryPort;
 use rusqlite::{Connection, Transaction, params};
 use serde_json::{Value, json};
+
+const CONTEXT_DB_USER_VERSION: i32 = 2;
 
 #[derive(Debug, Clone)]
 pub struct ContextDb {
@@ -42,6 +44,9 @@ impl ContextDb {
     }
 
     fn migrate_current(&self, conn: &Connection) -> Result<()> {
+        // The repository only supports additive in-place upgrades into the
+        // current schema. Rebuildable projection/derivation state is recreated
+        // through replay after these column-level upgrades land.
         ensure_column(
             conn,
             "ingress_receipts",
@@ -128,6 +133,8 @@ impl ContextDb {
             );",
         )
         .map_err(map_db_err)?;
+        conn.pragma_update(None, "user_version", CONTEXT_DB_USER_VERSION)
+            .map_err(map_db_err)?;
         Ok(())
     }
 
@@ -1220,6 +1227,31 @@ impl RepositoryPort for ContextDb {
                     confidence: row.get(6)?,
                     extractor_version: row.get(7)?,
                     stale: row.get::<_, i64>(8)? != 0,
+                })
+            })
+            .map_err(map_db_err)?;
+        rows.map(|row| row.map_err(map_db_err)).collect()
+    }
+
+    fn load_search_docs(&self) -> Result<Vec<SearchDocsRow>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "select doc_id, doc_kind, subject_kind, subject_id, title, body, metadata_json
+                 from search_docs
+                 order by doc_kind asc, doc_id asc",
+            )
+            .map_err(map_db_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SearchDocsRow {
+                    doc_id: row.get(0)?,
+                    doc_kind: row.get(1)?,
+                    subject_kind: row.get(2)?,
+                    subject_id: row.get(3)?,
+                    title: row.get(4)?,
+                    body: row.get(5)?,
+                    metadata_json: parse_json_value(row.get::<_, String>(6)?)?,
                 })
             })
             .map_err(map_db_err)?;

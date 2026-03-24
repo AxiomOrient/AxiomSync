@@ -8,11 +8,13 @@ use axiomsync_domain::{
 };
 use serde_json::json;
 
-pub fn plan_derivation(
-    sessions: &[SessionRow],
-    entries: &[EntryRow],
-    anchors: &[AnchorRow],
-) -> Result<DerivePlan> {
+pub struct DerivationCorpus<'a> {
+    pub sessions: &'a [SessionRow],
+    pub entries: &'a [EntryRow],
+    pub anchors: &'a [AnchorRow],
+}
+
+pub fn plan_derivation(corpus: DerivationCorpus<'_>) -> Result<DerivePlan> {
     let mut episodes = Vec::new();
     let mut insights = Vec::new();
     let mut insight_anchors = Vec::new();
@@ -23,14 +25,15 @@ pub fn plan_derivation(
     let mut procedure_evidence = Vec::new();
 
     let mut anchors_by_entry: HashMap<&str, Vec<&AnchorRow>> = HashMap::new();
-    for anchor in anchors {
+    for anchor in corpus.anchors {
         if let Some(entry_id) = anchor.entry_id.as_deref() {
             anchors_by_entry.entry(entry_id).or_default().push(anchor);
         }
     }
 
-    for session in sessions {
-        let session_entries = entries
+    for session in corpus.sessions {
+        let session_entries = corpus
+            .entries
             .iter()
             .filter(|entry| entry.session_id == session.session_id)
             .collect::<Vec<_>>();
@@ -224,7 +227,7 @@ pub fn plan_derivation(
         verifications.extend(verification);
     }
 
-    let search_docs = plan_search_docs(sessions, &episodes, &insights, &procedures);
+    let search_docs = plan_search_docs(corpus.sessions, &episodes, &insights, &procedures);
 
     Ok(DerivePlan {
         episodes,
@@ -451,10 +454,12 @@ fn plan_search_docs(
                 .unwrap_or_else(|| procedure.steps_json.to_string()),
             metadata_json: search_doc_metadata(
                 sessions,
-                episodes
-                    .iter()
-                    .find(|episode| procedure.goal.as_deref() == Some(episode.summary.as_str()))
-                    .and_then(|episode| episode.session_id.as_deref()),
+                procedure.episode_id.as_deref().and_then(|episode_id| {
+                    episodes
+                        .iter()
+                        .find(|episode| episode.episode_id == episode_id)
+                        .and_then(|episode| episode.session_id.as_deref())
+                }),
             ),
         }
     }));

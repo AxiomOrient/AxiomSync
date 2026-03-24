@@ -13,21 +13,36 @@
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace -- --nocapture
-cargo run -p axiomsync -- --help
-cargo run -p axiomsync -- sink --help
-cargo run -p axiomsync -- serve --help
-cargo run -p axiomsync -- mcp serve --help
+cargo test -p axiomsync-cli --test relay_interop relay_http_delivery_smoke_commits_only_after_both_apply_phases -- --nocapture
+cargo run -p axiomsync-cli -- --help
+cargo run -p axiomsync-cli -- sink --help
+cargo run -p axiomsync-cli -- serve --help
+cargo run -p axiomsync-cli -- mcp serve --help
 ```
 
 ## Runtime Smoke
 ```bash
 tmp_root="$(mktemp -d)"
-cargo run -p axiomsync -- --root "$tmp_root" init
-cargo run -p axiomsync -- --root "$tmp_root" project doctor
+cargo run -p axiomsync-cli -- --root "$tmp_root" init
+cargo run -p axiomsync-cli -- --root "$tmp_root" project doctor
+```
+
+## One-Shot Verification
+```bash
+./scripts/verify-release.sh
+```
+
+relay interop focused smoke:
+
+```bash
+cargo test -p axiomsync-cli --test relay_interop relay_http_delivery_smoke_commits_only_after_both_apply_phases -- --nocapture
 ```
 
 ## Release Decision
 - commands above must succeed
+- `./scripts/verify-release.sh` must pass from a clean checkout
 - docs must describe only current commands and files
 - docs must describe this repository's owned surface only
+- relay interop docs and fixtures must match the same-host loopback sink contract
+- `CHANGELOG.md` must contain the current workspace release entry
 - no release guide may reference removed legacy commands or deleted helper scripts
