@@ -1,0 +1,58 @@
+{
+  "batch_id": "cli-batch-1",
+  "producer": "manual-cli",
+  "received_at_ms": 1710000004000,
+  "events": [
+    {
+      "connector": "chatgpt_web_selection",
+      "native_session_id": "thread-cli-1",
+      "native_event_id": "evt-cli-1",
+      "event_type": "selection_captured",
+      "ts_ms": 1710000001000,
+      "payload": {
+        "session_kind": "thread",
+        "workspace_root": "/workspace/cli-demo",
+        "page_title": "CLI Demo Thread",
+        "selection": {
+          "text": "Root cause: config drift\nFix: rebuild projection\nDecision: keep sink narrow\n$ cargo test -q",
+          "start_hint": "Root cause: config drift",
+          "end_hint": "$ cargo test -q",
+          "dom_fingerprint": "sha1:cli:selection"
+        },
+        "source_message": {
+          "message_id": "msg-cli-1",
+          "role": "assistant"
+        }
+      }
+    },
+    {
+      "connector": "cli_local_exec",
+      "native_session_id": "run-cli-1",
+      "native_event_id": "evt-cli-run-1",
+      "event_type": "command_finished",
+      "ts_ms": 1710000002000,
+      "payload": {
+        "session_kind": "run",
+        "workspace_root": "/workspace/cli-demo",
+        "title": "CLI Demo Run",
+        "summary": "cargo test passed",
+        "command": {
+          "argv": [
+            "cargo",
+            "test",
+            "-q"
+          ],
+          "cwd": "/workspace/cli-demo",
+          "exit_code": 0,
+          "duration_ms": 222
+        },
+        "checks": [
+          {
+            "name": "cargo_test",
+            "status": "passed"
+          }
+        ]
+      }
+    }
+  ]
+}

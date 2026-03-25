@@ -1,0 +1,6 @@
+{
+  "connector": "axiomrelay",
+  "cursor_key": "events",
+  "cursor_value": "cursor-1",
+  "updated_at_ms": 1712000005000
+}

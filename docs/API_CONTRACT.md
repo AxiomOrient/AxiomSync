@@ -97,6 +97,7 @@ public canonical noun은 `case`, `thread`, `run`, `task`, `document`, `evidence`
 
 ## MCP Surface
 - transports: `stdio`, HTTP
+- request envelope: JSON-RPC `2.0`
 - methods:
   - `initialize`
   - `roots/list`
@@ -121,6 +122,8 @@ public canonical noun은 `case`, `thread`, `run`, `task`, `document`, `evidence`
   - `get_evidence`
   - `list_runs`
   - `list_documents`
+- `initialize` returns protocol version `2025-06-18`
+- tool descriptors expose `inputSchema`
 
 ## Sink Contract
 - raw append는 `AppendRawEventsRequest -> IngestPlan -> apply_ingest` 순서만 허용한다.
@@ -140,7 +143,11 @@ public canonical noun은 `case`, `thread`, `run`, `task`, `document`, `evidence`
 ## Auth And Scope
 - workspace-scoped HTTP read surface는 workspace bearer token을 요구한다.
 - collection reads and search require an explicit workspace selector (`workspace_root`) before workspace bearer auth is evaluated.
+- missing `workspace_root` on scoped collection/search requests is a client error:
+  - HTTP: `400 Bad Request`
+  - MCP: JSON-RPC error `-32602`
 - admin rebuild surface와 admin MCP call은 global admin bearer token을 요구한다.
 - MCP HTTP binding은 resource/tool별 workspace requirement를 강제한다.
+- MCP는 parse/auth/tool failures를 JSON-RPC error object로 반환한다.
 - sink write surface는 bearer token 없이 loopback source address만 허용한다.
 - `auth.json`에는 hashed workspace grants와 hashed admin token만 저장한다.

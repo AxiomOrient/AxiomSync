@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -8,10 +9,9 @@ use crate::domain::{
     DoctorReport, DocumentView, EntryBundle, EntryRow, EvidenceView, IngestPlan, ReplayPlan,
     RunView, SearchCasesRequest, SearchHit, SessionRow, SessionView, SourceCursorUpsertPlan,
     TaskView, ThreadView, UpsertSourceCursorRequest, VerificationSummary, WorkspaceTokenPlan,
-    workspace_stable_id,
 };
 use crate::error::{AxiomError, Result};
-use crate::ingest::{plan_append_raw_events, plan_source_cursor_upsert};
+use crate::ingest::{dedupe_candidates, plan_append_raw_events, plan_source_cursor_upsert};
 use crate::ports::{SharedAuthStorePort, SharedRepositoryPort, filter_hits};
 use crate::projection::plan_projection;
 
@@ -62,7 +62,9 @@ impl AxiomSync {
     }
 
     pub fn plan_append_raw_events(&self, request: AppendRawEventsRequest) -> Result<IngestPlan> {
-        plan_append_raw_events(&request, &self.repo.existing_dedupe_keys()?)
+        let candidates = dedupe_candidates(&request)?;
+        let existing = self.repo.existing_dedupe_keys_for(&candidates)?;
+        plan_append_raw_events(&request, &existing)
     }
 
     pub fn apply_ingest_plan(&self, plan: &IngestPlan) -> Result<Value> {
@@ -235,16 +237,8 @@ impl AxiomSync {
     }
 
     pub fn list_runs(&self, workspace_root: Option<&str>) -> Result<Vec<SessionRow>> {
-        Ok(self
-            .repo
-            .load_sessions()?
-            .into_iter()
-            .filter(|session| session.session_kind == "run")
-            .filter(|session| {
-                workspace_root
-                    .is_none_or(|expected| session.workspace_root.as_deref() == Some(expected))
-            })
-            .collect())
+        self.repo
+            .load_sessions_filtered(Some("run"), workspace_root)
     }
 
     pub fn get_run(&self, run_id: &str) -> Result<RunView> {
@@ -261,16 +255,25 @@ impl AxiomSync {
         kind: Option<&str>,
     ) -> Result<Vec<ArtifactView>> {
         let corpus = self.load_view_corpus()?;
+        let session_workspace = corpus
+            .sessions
+            .iter()
+            .map(|session| {
+                (
+                    session.session_id.as_str(),
+                    session.workspace_root.as_deref(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
         Ok(corpus
             .artifacts
             .iter()
             .filter(|artifact| {
                 workspace_root.is_none_or(|expected| {
-                    corpus
-                        .sessions
-                        .iter()
-                        .find(|session| session.session_id == artifact.session_id)
-                        .and_then(|session| session.workspace_root.as_deref())
+                    session_workspace
+                        .get(artifact.session_id.as_str())
+                        .copied()
+                        .flatten()
                         == Some(expected)
                 })
             })
@@ -290,70 +293,35 @@ impl AxiomSync {
     }
 
     pub fn case_workspace_id(&self, case_id: &str) -> Result<Option<String>> {
-        let case = self.get_case(case_id)?;
-        Ok(case
-            .workspace_root
-            .as_deref()
-            .map(crate::domain::workspace_stable_id))
+        self.repo.workspace_id_for_case(case_id)
     }
 
     pub fn session_workspace_id(&self, session_id: &str) -> Result<Option<String>> {
-        Ok(session_workspace(&self.repo.load_sessions()?, session_id))
+        self.repo.workspace_id_for_session(session_id)
     }
 
     pub fn artifact_workspace_id(&self, artifact_id: &str) -> Result<Option<String>> {
-        let sessions = self.repo.load_sessions()?;
-        let artifact = self
-            .repo
-            .load_artifacts()?
-            .into_iter()
-            .find(|artifact| artifact.artifact_id == artifact_id)
-            .ok_or_else(|| AxiomError::NotFound(format!("artifact {artifact_id}")))?;
-        Ok(session_workspace(&sessions, &artifact.session_id))
+        self.repo.workspace_id_for_artifact(artifact_id)
     }
 
     pub fn anchor_workspace_id(&self, anchor_id: &str) -> Result<Option<String>> {
-        Ok(self.get_anchor(anchor_id)?.session.and_then(|session| {
-            session
-                .workspace_root
-                .map(|root| crate::domain::workspace_stable_id(&root))
-        }))
+        self.repo.workspace_id_for_anchor(anchor_id)
     }
 
     pub fn task_workspace_id(&self, task_id: &str) -> Result<Option<String>> {
-        let task = self.get_task(task_id)?;
-        Ok(task
-            .session
-            .workspace_root
-            .as_deref()
-            .map(crate::domain::workspace_stable_id))
+        self.session_workspace_id(task_id)
     }
 
     pub fn run_workspace_id(&self, run_id: &str) -> Result<Option<String>> {
-        let run = self.get_run(run_id)?;
-        Ok(run
-            .session
-            .workspace_root
-            .as_deref()
-            .map(crate::domain::workspace_stable_id))
+        self.session_workspace_id(run_id)
     }
 
     pub fn document_workspace_id(&self, document_id: &str) -> Result<Option<String>> {
-        let document = self.get_document(document_id)?;
-        Ok(document
-            .session
-            .and_then(|session| session.workspace_root)
-            .as_deref()
-            .map(crate::domain::workspace_stable_id))
+        self.artifact_workspace_id(document_id)
     }
 
     pub fn evidence_workspace_id(&self, evidence_id: &str) -> Result<Option<String>> {
-        let evidence = self.get_evidence(evidence_id)?;
-        Ok(evidence
-            .session
-            .and_then(|session| session.workspace_root)
-            .as_deref()
-            .map(crate::domain::workspace_stable_id))
+        self.anchor_workspace_id(evidence_id)
     }
 
     pub fn plan_workspace_token_grant(
@@ -399,6 +367,18 @@ impl AxiomSync {
 
     pub fn pending_counts(&self) -> Result<(usize, usize, usize)> {
         self.repo.pending_counts()
+    }
+
+    pub fn count_cases(&self) -> Result<usize> {
+        self.repo.count_cases()
+    }
+
+    pub fn count_sessions_by_kind(&self, kind: &str) -> Result<usize> {
+        self.repo.count_sessions_by_kind(kind)
+    }
+
+    pub fn count_documents(&self) -> Result<usize> {
+        self.repo.count_documents()
     }
 }
 
@@ -488,21 +468,35 @@ fn session_view(
     artifacts: &[crate::domain::ArtifactRow],
     anchors: &[crate::domain::AnchorRow],
 ) -> SessionView {
+    let mut artifacts_by_entry: HashMap<&str, Vec<crate::domain::ArtifactRow>> = HashMap::new();
+    for artifact in artifacts {
+        if let Some(entry_id) = artifact.entry_id.as_deref() {
+            artifacts_by_entry
+                .entry(entry_id)
+                .or_default()
+                .push(artifact.clone());
+        }
+    }
+    let mut anchors_by_entry: HashMap<&str, Vec<crate::domain::AnchorRow>> = HashMap::new();
+    for anchor in anchors {
+        if let Some(entry_id) = anchor.entry_id.as_deref() {
+            anchors_by_entry
+                .entry(entry_id)
+                .or_default()
+                .push(anchor.clone());
+        }
+    }
     let mut bundles = entries
         .iter()
         .filter(|entry| entry.session_id == session.session_id)
         .map(|entry| EntryBundle {
             entry: entry.clone(),
-            artifacts: artifacts
-                .iter()
-                .filter(|artifact| artifact.entry_id.as_deref() == Some(entry.entry_id.as_str()))
-                .cloned()
-                .collect(),
-            anchors: anchors
-                .iter()
-                .filter(|anchor| anchor.entry_id.as_deref() == Some(entry.entry_id.as_str()))
-                .cloned()
-                .collect(),
+            artifacts: artifacts_by_entry
+                .remove(entry.entry_id.as_str())
+                .unwrap_or_default(),
+            anchors: anchors_by_entry
+                .remove(entry.entry_id.as_str())
+                .unwrap_or_default(),
         })
         .collect::<Vec<_>>();
     bundles.sort_by_key(|bundle| bundle.entry.seq_no);
@@ -681,12 +675,4 @@ fn task_view(view: SessionView, task_id: &str) -> Result<TaskView> {
     } else {
         Err(AxiomError::NotFound(format!("task {task_id}")))
     }
-}
-
-fn session_workspace(sessions: &[SessionRow], session_id: &str) -> Option<String> {
-    sessions
-        .iter()
-        .find(|session| session.session_id == session_id)
-        .and_then(|session| session.workspace_root.as_deref())
-        .map(workspace_stable_id)
 }

@@ -1,3 +1,5 @@
+mod common;
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use axum::body::{Body, to_bytes};
@@ -9,13 +11,12 @@ use axiomsync_domain::{
     AppendRawEventsRequest, DerivePlan, ProjectionPlan, ReplayPlan, SearchHit, workspace_stable_id,
 };
 use axiomsync_kernel::AxiomSync;
-use tempfile::tempdir;
+use tempfile::TempDir;
 
-fn legacy(parts: &[&str]) -> String {
-    parts.concat()
-}
+use common::apply_replay_plan;
 
 struct SeededApp {
+    _temp: TempDir,
     app: AxiomSync,
     workspace_token: String,
     admin_token: String,
@@ -28,9 +29,8 @@ struct SeededApp {
     evidence_id: String,
 }
 
-fn apply_replay_plan(app: &AxiomSync) {
-    let plan = app.build_replay_plan().expect("replay plan");
-    app.apply_replay(&plan).expect("apply replay plan");
+fn legacy(parts: &[&str]) -> String {
+    parts.concat()
 }
 
 async fn decode_json<T: serde::de::DeserializeOwned>(response: axum::response::Response) -> T {
@@ -141,7 +141,7 @@ fn seed_request() -> AppendRawEventsRequest {
 }
 
 fn seed_app() -> SeededApp {
-    let temp = tempdir().expect("tempdir");
+    let temp = tempfile::tempdir().expect("tempdir");
     let app = axiomsync_cli::open(temp.path()).expect("app");
     let ingest = app
         .plan_append_raw_events(seed_request())
@@ -198,8 +198,8 @@ fn seed_app() -> SeededApp {
         .artifact_id
         .clone();
 
-    std::mem::forget(temp);
     SeededApp {
+        _temp: temp,
         app,
         workspace_token,
         admin_token,
@@ -464,6 +464,19 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
     let seeded = seed_app();
     let workspace_id = workspace_stable_id("/workspace/http");
 
+    let initialize = axiomsync_mcp::handle_request(
+        &seeded.app,
+        serde_json::json!({"jsonrpc":"2.0","id":0,"method":"initialize"}),
+        Some(&workspace_id),
+    )
+    .expect("initialize");
+    assert_eq!(
+        initialize["result"]["protocolVersion"].as_str(),
+        Some("2025-06-18")
+    );
+    assert!(initialize["result"]["capabilities"]["tools"].is_object());
+    assert!(initialize["result"]["serverInfo"]["name"].is_string());
+
     for uri in [
         format!("axiom://cases/{}", seeded.case_id),
         format!("axiom://threads/{}", seeded.thread_id),
@@ -529,6 +542,13 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap_or_default().to_string())
         .collect::<Vec<_>>();
+    assert!(
+        tools["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .all(|tool| tool.get("inputSchema").is_some())
+    );
     for name in [
         "search_cases",
         "get_case",
@@ -580,8 +600,9 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
             "params": { "name": "get_task", "arguments": { "task_id": seeded.task_id } }
         }),
         Some(&workspace_id),
-    );
-    assert!(removed_alias.is_err());
+    )
+    .expect("removed alias response");
+    assert_eq!(removed_alias["error"]["code"].as_i64(), Some(-32602));
 
     let search_cases = axiomsync_mcp::handle_request(
         &seeded.app,
@@ -661,8 +682,12 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
             }
         }),
         Some(&workspace_id),
+    )
+    .expect("missing workspace filter response");
+    assert_eq!(
+        missing_workspace_filter["error"]["code"].as_i64(),
+        Some(-32602)
     );
-    assert!(missing_workspace_filter.is_err());
 
     let missing_workspace_runs = axiomsync_mcp::handle_request(
         &seeded.app,
@@ -676,8 +701,12 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
             }
         }),
         Some(&workspace_id),
+    )
+    .expect("missing workspace runs response");
+    assert_eq!(
+        missing_workspace_runs["error"]["code"].as_i64(),
+        Some(-32602)
     );
-    assert!(missing_workspace_runs.is_err());
 
     let unknown_legacy_tool = axiomsync_mcp::handle_request(
         &seeded.app,
@@ -765,7 +794,7 @@ async fn route_auth_and_loopback_matrix_is_enforced() {
         )
         .await
         .expect("response");
-    assert_eq!(missing_workspace_filter.status(), StatusCode::FORBIDDEN);
+    assert_eq!(missing_workspace_filter.status(), StatusCode::BAD_REQUEST);
 
     let workspace_scoped_run_list = router
         .clone()

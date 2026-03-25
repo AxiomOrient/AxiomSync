@@ -80,6 +80,7 @@ cargo run -p axiomsync-cli -- serve --addr 127.0.0.1:4400
 - Relay interop: [`docs/RELAY_INTEROP.md`](./docs/RELAY_INTEROP.md)
 - Architecture: [`docs/RUNTIME_ARCHITECTURE.md`](./docs/RUNTIME_ARCHITECTURE.md)
 - Verification script: [`scripts/verify-release.sh`](./scripts/verify-release.sh)
+- Real-user QA package: [`qa/README.md`](./qa/README.md)
 
 `docs/` defines the release contract surface. `scripts/verify-release.sh` is the canonical verification entrypoint.
 
@@ -102,3 +103,6 @@ Primary regression suites:
 - `crates/axiomsync-cli/tests/http_and_mcp.rs`
 - `crates/axiomsync-cli/tests/relay_interop.rs`
 - `crates/axiomsync-cli/tests/public_surface_guard.rs`
+
+Deeper user-journey validation:
+- `qa/bin/run-real-user-qa.sh`

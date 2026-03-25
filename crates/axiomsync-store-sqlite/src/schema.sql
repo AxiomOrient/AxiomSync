@@ -29,6 +29,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ingress_receipts_dedupe
   ON ingress_receipts(dedupe_key)
   WHERE dedupe_key IS NOT NULL;
 
+CREATE INDEX IF NOT EXISTS idx_ingress_receipts_projection_state
+  ON ingress_receipts(projection_state);
+
+CREATE INDEX IF NOT EXISTS idx_ingress_receipts_derived_state
+  ON ingress_receipts(derived_state);
+
+CREATE INDEX IF NOT EXISTS idx_ingress_receipts_index_state
+  ON ingress_receipts(index_state);
+
+CREATE INDEX IF NOT EXISTS idx_ingress_receipts_observed_at
+  ON ingress_receipts(observed_at, receipt_id);
+
 CREATE TABLE IF NOT EXISTS source_cursor (
   connector TEXT NOT NULL,
   cursor_key TEXT NOT NULL,

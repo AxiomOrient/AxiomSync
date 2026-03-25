@@ -130,7 +130,15 @@ impl ContextDb {
                 subject_id UNINDEXED,
                 title,
                 body
-            );",
+            );
+            CREATE INDEX IF NOT EXISTS idx_ingress_receipts_projection_state
+              ON ingress_receipts(projection_state);
+            CREATE INDEX IF NOT EXISTS idx_ingress_receipts_derived_state
+              ON ingress_receipts(derived_state);
+            CREATE INDEX IF NOT EXISTS idx_ingress_receipts_index_state
+              ON ingress_receipts(index_state);
+            CREATE INDEX IF NOT EXISTS idx_ingress_receipts_observed_at
+              ON ingress_receipts(observed_at, receipt_id);",
         )
         .map_err(map_db_err)?;
         conn.pragma_update(None, "user_version", CONTEXT_DB_USER_VERSION)
@@ -164,13 +172,21 @@ impl RepositoryPort for ContextDb {
         }))
     }
 
-    fn existing_dedupe_keys(&self) -> Result<Vec<String>> {
+    fn existing_dedupe_keys_for(&self, keys: &[String]) -> Result<Vec<String>> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
         let conn = self.connection()?;
+        let placeholders = repeat_placeholders(keys.len());
         let mut stmt = conn
-            .prepare("select dedupe_key from ingress_receipts where dedupe_key is not null")
+            .prepare(&format!(
+                "select dedupe_key from ingress_receipts where dedupe_key in ({placeholders})"
+            ))
             .map_err(map_db_err)?;
         let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
+            .query_map(rusqlite::params_from_iter(keys.iter()), |row| {
+                row.get::<_, String>(0)
+            })
             .map_err(map_db_err)?;
         rows.map(|row| row.map_err(map_db_err)).collect()
     }
@@ -298,322 +314,12 @@ impl RepositoryPort for ContextDb {
 
     fn apply_replay(&self, plan: &ReplayPlan) -> Result<Value> {
         self.with_tx(|tx| {
-            tx.execute("delete from anchors", []).map_err(map_db_err)?;
-            tx.execute("delete from artifacts", []).map_err(map_db_err)?;
-            tx.execute("delete from entries", []).map_err(map_db_err)?;
-            tx.execute("delete from actors", []).map_err(map_db_err)?;
-            tx.execute("delete from sessions", []).map_err(map_db_err)?;
-            tx.execute("delete from entry_search_fts", []).map_err(map_db_err)?;
-
-            for session in &plan.projection.sessions {
-                tx.execute(
-                    "insert into sessions (
-                        session_id, session_kind, connector, external_session_key, title,
-                        workspace_root, opened_at, closed_at, metadata_json
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
-                        session.session_id,
-                        session.session_kind,
-                        session.connector,
-                        session.external_session_key,
-                        session.title,
-                        session.workspace_root,
-                        session.opened_at,
-                        session.closed_at,
-                        serde_json::to_string(&session.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            for actor in &plan.projection.actors {
-                tx.execute(
-                    "insert into actors (actor_id, actor_kind, stable_key, display_name, metadata_json)
-                     values (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        actor.actor_id,
-                        actor.actor_kind,
-                        actor.stable_key,
-                        actor.display_name,
-                        serde_json::to_string(&actor.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            for entry in &plan.projection.entries {
-                tx.execute(
-                    "insert into entries (
-                        entry_id, session_id, seq_no, entry_kind, actor_id, parent_entry_id,
-                        external_entry_key, text_body, started_at, ended_at, metadata_json
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    params![
-                        entry.entry_id,
-                        entry.session_id,
-                        entry.seq_no,
-                        entry.entry_kind,
-                        entry.actor_id,
-                        entry.parent_entry_id,
-                        entry.external_entry_key,
-                        entry.text_body,
-                        entry.started_at,
-                        entry.ended_at,
-                        serde_json::to_string(&entry.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-                tx.execute(
-                    "insert into entry_search_fts (entry_id, session_id, entry_kind, text_body)
-                     values (?1, ?2, ?3, ?4)",
-                    params![
-                        entry.entry_id,
-                        entry.session_id,
-                        entry.entry_kind,
-                        entry.text_body.clone().unwrap_or_default(),
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            for artifact in &plan.projection.artifacts {
-                tx.execute(
-                    "insert into artifacts (
-                        artifact_id, session_id, entry_id, artifact_kind, uri, mime_type,
-                        sha256, size_bytes, metadata_json
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
-                        artifact.artifact_id,
-                        artifact.session_id,
-                        artifact.entry_id,
-                        artifact.artifact_kind,
-                        artifact.uri,
-                        artifact.mime_type,
-                        artifact.sha256,
-                        artifact.size_bytes,
-                        serde_json::to_string(&artifact.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            for anchor in &plan.projection.anchors {
-                tx.execute(
-                    "insert into anchors (
-                        anchor_id, entry_id, artifact_id, anchor_kind, locator_json,
-                        preview_text, fingerprint
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![
-                        anchor.anchor_id,
-                        anchor.entry_id,
-                        anchor.artifact_id,
-                        anchor.anchor_kind,
-                        anchor.locator_json,
-                        anchor.preview_text,
-                        anchor.fingerprint,
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            tx.execute(
-                "update ingress_receipts
-                 set projection_state = 'projected',
-                     derived_state = 'pending',
-                     index_state = 'pending'",
-                [],
-            )
-            .map_err(map_db_err)?;
-
-            tx.execute("delete from insight_anchors", []).map_err(map_db_err)?;
-            tx.execute("delete from verifications", []).map_err(map_db_err)?;
-            tx.execute("delete from claim_evidence", []).map_err(map_db_err)?;
-            tx.execute("delete from procedure_evidence", []).map_err(map_db_err)?;
-            tx.execute("delete from insights", []).map_err(map_db_err)?;
-            tx.execute("delete from claims", []).map_err(map_db_err)?;
-            tx.execute("delete from procedures", []).map_err(map_db_err)?;
-            tx.execute("delete from episodes", []).map_err(map_db_err)?;
-            tx.execute("delete from episode_search_fts", []).map_err(map_db_err)?;
-            tx.execute("delete from insight_search_fts", []).map_err(map_db_err)?;
-            tx.execute("delete from claim_search_fts", []).map_err(map_db_err)?;
-            tx.execute("delete from procedure_search_fts", []).map_err(map_db_err)?;
-            tx.execute("delete from search_docs", []).map_err(map_db_err)?;
-            tx.execute("delete from search_docs_fts", []).map_err(map_db_err)?;
-
-            for episode in &plan.derivation.episodes {
-                tx.execute(
-                    "insert into episodes (
-                        episode_id, session_id, episode_kind, summary, status, confidence,
-                        extractor_version, stale
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    params![
-                        episode.episode_id,
-                        episode.session_id,
-                        episode.episode_kind,
-                        episode.summary,
-                        episode.status,
-                        episode.confidence,
-                        episode.extractor_version,
-                        if episode.stale { 1 } else { 0 },
-                    ],
-                )
-                .map_err(map_db_err)?;
-                tx.execute(
-                    "insert into episode_search_fts (episode_id, episode_kind, summary)
-                     values (?1, ?2, ?3)",
-                    params![episode.episode_id, episode.episode_kind, episode.summary],
-                )
-                .map_err(map_db_err)?;
-            }
-            for insight in &plan.derivation.insights {
-                tx.execute(
-                    "insert into insights (
-                        insight_id, episode_id, insight_kind, statement, confidence, scope_json, metadata_json
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![
-                        insight.insight_id,
-                        insight.episode_id,
-                        insight.insight_kind,
-                        insight.statement,
-                        insight.confidence,
-                        serde_json::to_string(&insight.scope_json)?,
-                        serde_json::to_string(&insight.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-                tx.execute(
-                    "insert into insight_search_fts (insight_id, insight_kind, statement)
-                     values (?1, ?2, ?3)",
-                    params![insight.insight_id, insight.insight_kind, insight.statement],
-                )
-                .map_err(map_db_err)?;
-            }
-            for row in &plan.derivation.insight_anchors {
-                tx.execute(
-                    "insert into insight_anchors (insight_id, anchor_id) values (?1, ?2)",
-                    params![row.insight_id, row.anchor_id],
-                )
-                .map_err(map_db_err)?;
-            }
-            for verification in &plan.derivation.verifications {
-                tx.execute(
-                    "insert into verifications (
-                        verification_id, subject_kind, subject_id, method, status, checked_at, checker, details_json
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    params![
-                        verification.verification_id,
-                        verification.subject_kind,
-                        verification.subject_id,
-                        verification.method,
-                        verification.status,
-                        verification.checked_at,
-                        verification.checker,
-                        serde_json::to_string(&verification.details_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            for claim in &plan.derivation.claims {
-                tx.execute(
-                    "insert into claims (claim_id, episode_id, claim_kind, statement, confidence, metadata_json)
-                     values (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        claim.claim_id,
-                        claim.episode_id,
-                        claim.claim_kind,
-                        claim.statement,
-                        claim.confidence,
-                        serde_json::to_string(&claim.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-                tx.execute(
-                    "insert into claim_search_fts (claim_id, claim_kind, statement)
-                     values (?1, ?2, ?3)",
-                    params![claim.claim_id, claim.claim_kind, claim.statement],
-                )
-                .map_err(map_db_err)?;
-            }
-            for row in &plan.derivation.claim_evidence {
-                tx.execute(
-                    "insert into claim_evidence (claim_id, anchor_id, support_kind) values (?1, ?2, ?3)",
-                    params![row.claim_id, row.anchor_id, row.support_kind],
-                )
-                .map_err(map_db_err)?;
-            }
-            for procedure in &plan.derivation.procedures {
-                tx.execute(
-                    "insert into procedures (
-                        procedure_id, episode_id, title, goal, steps_json, status, confidence,
-                        extractor_version, stale
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
-                        procedure.procedure_id,
-                        procedure.episode_id,
-                        procedure.title,
-                        procedure.goal,
-                        serde_json::to_string(&procedure.steps_json)?,
-                        procedure
-                            .status
-                            .clone()
-                            .unwrap_or_else(|| "active".to_string()),
-                        procedure.confidence,
-                        procedure.extractor_version,
-                        if procedure.stale { 1 } else { 0 },
-                    ],
-                )
-                .map_err(map_db_err)?;
-                tx.execute(
-                    "insert into procedure_search_fts (procedure_id, title, goal, steps_text)
-                     values (?1, ?2, ?3, ?4)",
-                    params![
-                        procedure.procedure_id,
-                        procedure.title,
-                        procedure.goal,
-                        procedure.steps_json.to_string(),
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            for row in &plan.derivation.procedure_evidence {
-                tx.execute(
-                    "insert into procedure_evidence (procedure_id, anchor_id, support_kind)
-                     values (?1, ?2, ?3)",
-                    params![row.procedure_id, row.anchor_id, row.support_kind],
-                )
-                .map_err(map_db_err)?;
-            }
-            for doc in &plan.derivation.search_docs {
-                tx.execute(
-                    "insert into search_docs (doc_id, doc_kind, subject_kind, subject_id, title, body, metadata_json)
-                     values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![
-                        doc.doc_id,
-                        doc.doc_kind,
-                        doc.subject_kind,
-                        doc.subject_id,
-                        doc.title,
-                        doc.body,
-                        serde_json::to_string(&doc.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-                tx.execute(
-                    "insert into search_docs_fts (doc_id, doc_kind, subject_kind, subject_id, title, body)
-                     values (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        doc.doc_id,
-                        doc.doc_kind,
-                        doc.subject_kind,
-                        doc.subject_id,
-                        doc.title,
-                        doc.body,
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            tx.execute(
-                "update ingress_receipts
-                 set derived_state = 'derived',
-                     index_state = 'indexed'
-                 where projection_state = 'projected'",
-                [],
-            )
-            .map_err(map_db_err)?;
+            clear_projection_tables(tx)?;
+            insert_projection_rows(tx, &plan.projection)?;
+            mark_projection_complete(tx)?;
+            clear_derivation_tables(tx)?;
+            insert_derivation_rows(tx, &plan.derivation)?;
+            mark_derivation_complete(tx)?;
             Ok(json!({
                 "projection": {
                     "sessions": plan.projection.sessions.len(),
@@ -635,126 +341,9 @@ impl RepositoryPort for ContextDb {
 
     fn replace_projection(&self, plan: &ProjectionPlan) -> Result<Value> {
         self.with_tx(|tx| {
-            tx.execute("delete from anchors", []).map_err(map_db_err)?;
-            tx.execute("delete from artifacts", []).map_err(map_db_err)?;
-            tx.execute("delete from entries", []).map_err(map_db_err)?;
-            tx.execute("delete from actors", []).map_err(map_db_err)?;
-            tx.execute("delete from sessions", []).map_err(map_db_err)?;
-            tx.execute("delete from entry_search_fts", []).map_err(map_db_err)?;
-
-            for session in &plan.sessions {
-                tx.execute(
-                    "insert into sessions (
-                        session_id, session_kind, connector, external_session_key, title,
-                        workspace_root, opened_at, closed_at, metadata_json
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
-                        session.session_id,
-                        session.session_kind,
-                        session.connector,
-                        session.external_session_key,
-                        session.title,
-                        session.workspace_root,
-                        session.opened_at,
-                        session.closed_at,
-                        serde_json::to_string(&session.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            for actor in &plan.actors {
-                tx.execute(
-                    "insert into actors (actor_id, actor_kind, stable_key, display_name, metadata_json)
-                     values (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        actor.actor_id,
-                        actor.actor_kind,
-                        actor.stable_key,
-                        actor.display_name,
-                        serde_json::to_string(&actor.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            for entry in &plan.entries {
-                tx.execute(
-                    "insert into entries (
-                        entry_id, session_id, seq_no, entry_kind, actor_id, parent_entry_id,
-                        external_entry_key, text_body, started_at, ended_at, metadata_json
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    params![
-                        entry.entry_id,
-                        entry.session_id,
-                        entry.seq_no,
-                        entry.entry_kind,
-                        entry.actor_id,
-                        entry.parent_entry_id,
-                        entry.external_entry_key,
-                        entry.text_body,
-                        entry.started_at,
-                        entry.ended_at,
-                        serde_json::to_string(&entry.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-                tx.execute(
-                    "insert into entry_search_fts (entry_id, session_id, entry_kind, text_body)
-                     values (?1, ?2, ?3, ?4)",
-                    params![
-                        entry.entry_id,
-                        entry.session_id,
-                        entry.entry_kind,
-                        entry.text_body.clone().unwrap_or_default(),
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            for artifact in &plan.artifacts {
-                tx.execute(
-                    "insert into artifacts (
-                        artifact_id, session_id, entry_id, artifact_kind, uri, mime_type,
-                        sha256, size_bytes, metadata_json
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
-                        artifact.artifact_id,
-                        artifact.session_id,
-                        artifact.entry_id,
-                        artifact.artifact_kind,
-                        artifact.uri,
-                        artifact.mime_type,
-                        artifact.sha256,
-                        artifact.size_bytes,
-                        serde_json::to_string(&artifact.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            for anchor in &plan.anchors {
-                tx.execute(
-                    "insert into anchors (
-                        anchor_id, entry_id, artifact_id, anchor_kind, locator_json,
-                        preview_text, fingerprint
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![
-                        anchor.anchor_id,
-                        anchor.entry_id,
-                        anchor.artifact_id,
-                        anchor.anchor_kind,
-                        anchor.locator_json,
-                        anchor.preview_text,
-                        anchor.fingerprint,
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            tx.execute(
-                "update ingress_receipts
-                 set projection_state = 'projected',
-                     derived_state = 'pending',
-                     index_state = 'pending'",
-                [],
-            )
-            .map_err(map_db_err)?;
+            clear_projection_tables(tx)?;
+            insert_projection_rows(tx, plan)?;
+            mark_projection_complete(tx)?;
             Ok(json!({
                 "sessions": plan.sessions.len(),
                 "entries": plan.entries.len(),
@@ -766,201 +355,9 @@ impl RepositoryPort for ContextDb {
 
     fn replace_derivation(&self, plan: &DerivePlan) -> Result<Value> {
         self.with_tx(|tx| {
-            tx.execute("delete from insight_anchors", []).map_err(map_db_err)?;
-            tx.execute("delete from verifications", []).map_err(map_db_err)?;
-            tx.execute("delete from claim_evidence", []).map_err(map_db_err)?;
-            tx.execute("delete from procedure_evidence", []).map_err(map_db_err)?;
-            tx.execute("delete from insights", []).map_err(map_db_err)?;
-            tx.execute("delete from claims", []).map_err(map_db_err)?;
-            tx.execute("delete from procedures", []).map_err(map_db_err)?;
-            tx.execute("delete from episodes", []).map_err(map_db_err)?;
-            tx.execute("delete from episode_search_fts", []).map_err(map_db_err)?;
-            tx.execute("delete from insight_search_fts", []).map_err(map_db_err)?;
-            tx.execute("delete from claim_search_fts", []).map_err(map_db_err)?;
-            tx.execute("delete from procedure_search_fts", []).map_err(map_db_err)?;
-            tx.execute("delete from search_docs", []).map_err(map_db_err)?;
-            tx.execute("delete from search_docs_fts", []).map_err(map_db_err)?;
-
-            for episode in &plan.episodes {
-                tx.execute(
-                    "insert into episodes (
-                        episode_id, session_id, episode_kind, summary, status, confidence,
-                        extractor_version, stale
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    params![
-                        episode.episode_id,
-                        episode.session_id,
-                        episode.episode_kind,
-                        episode.summary,
-                        episode.status,
-                        episode.confidence,
-                        episode.extractor_version,
-                        if episode.stale { 1 } else { 0 },
-                    ],
-                )
-                .map_err(map_db_err)?;
-                tx.execute(
-                    "insert into episode_search_fts (episode_id, episode_kind, summary)
-                     values (?1, ?2, ?3)",
-                    params![episode.episode_id, episode.episode_kind, episode.summary],
-                )
-                .map_err(map_db_err)?;
-            }
-            for insight in &plan.insights {
-                tx.execute(
-                    "insert into insights (
-                        insight_id, episode_id, insight_kind, statement, confidence, scope_json, metadata_json
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![
-                        insight.insight_id,
-                        insight.episode_id,
-                        insight.insight_kind,
-                        insight.statement,
-                        insight.confidence,
-                        serde_json::to_string(&insight.scope_json)?,
-                        serde_json::to_string(&insight.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-                tx.execute(
-                    "insert into insight_search_fts (insight_id, insight_kind, statement)
-                     values (?1, ?2, ?3)",
-                    params![insight.insight_id, insight.insight_kind, insight.statement],
-                )
-                .map_err(map_db_err)?;
-            }
-            for row in &plan.insight_anchors {
-                tx.execute(
-                    "insert into insight_anchors (insight_id, anchor_id) values (?1, ?2)",
-                    params![row.insight_id, row.anchor_id],
-                )
-                .map_err(map_db_err)?;
-            }
-            for verification in &plan.verifications {
-                tx.execute(
-                    "insert into verifications (
-                        verification_id, subject_kind, subject_id, method, status, checked_at, checker, details_json
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    params![
-                        verification.verification_id,
-                        verification.subject_kind,
-                        verification.subject_id,
-                        verification.method,
-                        verification.status,
-                        verification.checked_at,
-                        verification.checker,
-                        serde_json::to_string(&verification.details_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            for claim in &plan.claims {
-                tx.execute(
-                    "insert into claims (claim_id, episode_id, claim_kind, statement, confidence, metadata_json)
-                     values (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        claim.claim_id,
-                        claim.episode_id,
-                        claim.claim_kind,
-                        claim.statement,
-                        claim.confidence,
-                        serde_json::to_string(&claim.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-                tx.execute(
-                    "insert into claim_search_fts (claim_id, claim_kind, statement)
-                     values (?1, ?2, ?3)",
-                    params![claim.claim_id, claim.claim_kind, claim.statement],
-                )
-                .map_err(map_db_err)?;
-            }
-            for row in &plan.claim_evidence {
-                tx.execute(
-                    "insert into claim_evidence (claim_id, anchor_id, support_kind) values (?1, ?2, ?3)",
-                    params![row.claim_id, row.anchor_id, row.support_kind],
-                )
-                .map_err(map_db_err)?;
-            }
-            for procedure in &plan.procedures {
-                tx.execute(
-                    "insert into procedures (
-                        procedure_id, episode_id, title, goal, steps_json, status, confidence,
-                        extractor_version, stale
-                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
-                        procedure.procedure_id,
-                        procedure.episode_id,
-                        procedure.title,
-                        procedure.goal,
-                        serde_json::to_string(&procedure.steps_json)?,
-                        procedure
-                            .status
-                            .clone()
-                            .unwrap_or_else(|| "active".to_string()),
-                        procedure.confidence,
-                        procedure.extractor_version,
-                        if procedure.stale { 1 } else { 0 },
-                    ],
-                )
-                .map_err(map_db_err)?;
-                tx.execute(
-                    "insert into procedure_search_fts (procedure_id, title, goal, steps_text)
-                     values (?1, ?2, ?3, ?4)",
-                    params![
-                        procedure.procedure_id,
-                        procedure.title,
-                        procedure.goal,
-                        procedure.steps_json.to_string(),
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            for row in &plan.procedure_evidence {
-                tx.execute(
-                    "insert into procedure_evidence (procedure_id, anchor_id, support_kind)
-                     values (?1, ?2, ?3)",
-                    params![row.procedure_id, row.anchor_id, row.support_kind],
-                )
-                .map_err(map_db_err)?;
-            }
-            for doc in &plan.search_docs {
-                tx.execute(
-                    "insert into search_docs (doc_id, doc_kind, subject_kind, subject_id, title, body, metadata_json)
-                     values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![
-                        doc.doc_id,
-                        doc.doc_kind,
-                        doc.subject_kind,
-                        doc.subject_id,
-                        doc.title,
-                        doc.body,
-                        serde_json::to_string(&doc.metadata_json)?,
-                    ],
-                )
-                .map_err(map_db_err)?;
-                tx.execute(
-                    "insert into search_docs_fts (doc_id, doc_kind, subject_kind, subject_id, title, body)
-                     values (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        doc.doc_id,
-                        doc.doc_kind,
-                        doc.subject_kind,
-                        doc.subject_id,
-                        doc.title,
-                        doc.body,
-                    ],
-                )
-                .map_err(map_db_err)?;
-            }
-            tx.execute(
-                "update ingress_receipts
-                 set derived_state = 'derived',
-                     index_state = 'indexed'
-                 where projection_state = 'projected'",
-                [],
-            )
-            .map_err(map_db_err)?;
+            clear_derivation_tables(tx)?;
+            insert_derivation_rows(tx, plan)?;
+            mark_derivation_complete(tx)?;
             Ok(json!({
                 "episodes": plan.episodes.len(),
                 "insights": plan.insights.len(),
@@ -973,30 +370,61 @@ impl RepositoryPort for ContextDb {
     }
 
     fn load_sessions(&self) -> Result<Vec<SessionRow>> {
+        self.load_sessions_filtered(None, None)
+    }
+
+    fn load_sessions_filtered(
+        &self,
+        kind: Option<&str>,
+        workspace_root: Option<&str>,
+    ) -> Result<Vec<SessionRow>> {
         let conn = self.connection()?;
-        let mut stmt = conn
-            .prepare(
-                "select session_id, session_kind, connector, external_session_key, title,
-                        workspace_root, opened_at, closed_at, metadata_json
-                 from sessions
-                 order by opened_at asc, session_id asc",
-            )
-            .map_err(map_db_err)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(SessionRow {
-                    session_id: row.get(0)?,
-                    session_kind: row.get(1)?,
-                    connector: row.get(2)?,
-                    external_session_key: row.get(3)?,
-                    title: row.get(4)?,
-                    workspace_root: row.get(5)?,
-                    opened_at: row.get(6)?,
-                    closed_at: row.get(7)?,
-                    metadata_json: parse_json_value(row.get::<_, String>(8)?)?,
-                })
-            })
-            .map_err(map_db_err)?;
+        let mut stmt = match (kind, workspace_root) {
+            (Some(_), Some(_)) => conn
+                .prepare(
+                    "select session_id, session_kind, connector, external_session_key, title,
+                            workspace_root, opened_at, closed_at, metadata_json
+                     from sessions
+                     where session_kind = ?1 and workspace_root = ?2
+                     order by opened_at asc, session_id asc",
+                )
+                .map_err(map_db_err)?,
+            (Some(_), None) => conn
+                .prepare(
+                    "select session_id, session_kind, connector, external_session_key, title,
+                            workspace_root, opened_at, closed_at, metadata_json
+                     from sessions
+                     where session_kind = ?1
+                     order by opened_at asc, session_id asc",
+                )
+                .map_err(map_db_err)?,
+            (None, Some(_)) => conn
+                .prepare(
+                    "select session_id, session_kind, connector, external_session_key, title,
+                            workspace_root, opened_at, closed_at, metadata_json
+                     from sessions
+                     where workspace_root = ?1
+                     order by opened_at asc, session_id asc",
+                )
+                .map_err(map_db_err)?,
+            (None, None) => conn
+                .prepare(
+                    "select session_id, session_kind, connector, external_session_key, title,
+                            workspace_root, opened_at, closed_at, metadata_json
+                     from sessions
+                     order by opened_at asc, session_id asc",
+                )
+                .map_err(map_db_err)?,
+        };
+        let rows = match (kind, workspace_root) {
+            (Some(kind), Some(workspace_root)) => {
+                stmt.query_map([kind, workspace_root], read_session_row)
+            }
+            (Some(kind), None) => stmt.query_map([kind], read_session_row),
+            (None, Some(workspace_root)) => stmt.query_map([workspace_root], read_session_row),
+            (None, None) => stmt.query_map([], read_session_row),
+        }
+        .map_err(map_db_err)?;
         rows.map(|row| row.map_err(map_db_err)).collect()
     }
 
@@ -1258,6 +686,104 @@ impl RepositoryPort for ContextDb {
         rows.map(|row| row.map_err(map_db_err)).collect()
     }
 
+    fn count_cases(&self) -> Result<usize> {
+        let conn = self.connection()?;
+        count_rows(&conn, "episodes")
+    }
+
+    fn count_sessions_by_kind(&self, kind: &str) -> Result<usize> {
+        let conn = self.connection()?;
+        conn.query_row(
+            "select count(*) from sessions where session_kind = ?1",
+            [kind],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|value| value as usize)
+        .map_err(map_db_err)
+    }
+
+    fn count_documents(&self) -> Result<usize> {
+        let conn = self.connection()?;
+        conn.query_row(
+            "select count(*) from artifacts where artifact_kind = 'document'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|value| value as usize)
+        .map_err(map_db_err)
+    }
+
+    fn workspace_id_for_case(&self, case_id: &str) -> Result<Option<String>> {
+        let conn = self.connection()?;
+        match conn.query_row(
+            "select sessions.workspace_root
+             from episodes
+             join sessions on sessions.session_id = episodes.session_id
+             where episodes.episode_id = ?1",
+            [case_id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            Ok(root) => Ok(root.map(|value| axiomsync_domain::workspace_stable_id(&value))),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                Err(AxiomError::NotFound(format!("case {case_id}")))
+            }
+            Err(error) => Err(map_db_err(error)),
+        }
+    }
+
+    fn workspace_id_for_session(&self, session_id: &str) -> Result<Option<String>> {
+        let conn = self.connection()?;
+        match conn.query_row(
+            "select workspace_root from sessions where session_id = ?1",
+            [session_id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            Ok(root) => Ok(root.map(|value| axiomsync_domain::workspace_stable_id(&value))),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                Err(AxiomError::NotFound(format!("session {session_id}")))
+            }
+            Err(error) => Err(map_db_err(error)),
+        }
+    }
+
+    fn workspace_id_for_artifact(&self, artifact_id: &str) -> Result<Option<String>> {
+        let conn = self.connection()?;
+        match conn.query_row(
+            "select sessions.workspace_root
+             from artifacts
+             join sessions on sessions.session_id = artifacts.session_id
+             where artifacts.artifact_id = ?1",
+            [artifact_id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            Ok(root) => Ok(root.map(|value| axiomsync_domain::workspace_stable_id(&value))),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                Err(AxiomError::NotFound(format!("artifact {artifact_id}")))
+            }
+            Err(error) => Err(map_db_err(error)),
+        }
+    }
+
+    fn workspace_id_for_anchor(&self, anchor_id: &str) -> Result<Option<String>> {
+        let conn = self.connection()?;
+        match conn.query_row(
+            "select sessions.workspace_root
+             from anchors
+             left join entries on entries.entry_id = anchors.entry_id
+             left join artifacts on artifacts.artifact_id = anchors.artifact_id
+             left join sessions on sessions.session_id = coalesce(entries.session_id, artifacts.session_id)
+             where anchors.anchor_id = ?1",
+            [anchor_id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            Ok(root) => Ok(root.map(|value| axiomsync_domain::workspace_stable_id(&value))),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                Err(AxiomError::NotFound(format!("anchor {anchor_id}")))
+            }
+            Err(error) => Err(map_db_err(error)),
+        }
+    }
+
     fn pending_counts(&self) -> Result<(usize, usize, usize)> {
         let conn = self.connection()?;
         Ok((
@@ -1287,6 +813,390 @@ impl RepositoryPort for ContextDb {
             pending_index_count,
         })
     }
+}
+
+fn clear_projection_tables(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute("delete from anchors", []).map_err(map_db_err)?;
+    tx.execute("delete from artifacts", [])
+        .map_err(map_db_err)?;
+    tx.execute("delete from entries", []).map_err(map_db_err)?;
+    tx.execute("delete from actors", []).map_err(map_db_err)?;
+    tx.execute("delete from sessions", []).map_err(map_db_err)?;
+    tx.execute("delete from entry_search_fts", [])
+        .map_err(map_db_err)?;
+    Ok(())
+}
+
+fn insert_projection_rows(tx: &Transaction<'_>, plan: &ProjectionPlan) -> Result<()> {
+    for session in &plan.sessions {
+        tx.execute(
+            "insert into sessions (
+                session_id, session_kind, connector, external_session_key, title,
+                workspace_root, opened_at, closed_at, metadata_json
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                session.session_id,
+                session.session_kind,
+                session.connector,
+                session.external_session_key,
+                session.title,
+                session.workspace_root,
+                session.opened_at,
+                session.closed_at,
+                serde_json::to_string(&session.metadata_json)?,
+            ],
+        )
+        .map_err(map_db_err)?;
+    }
+    for actor in &plan.actors {
+        tx.execute(
+            "insert into actors (actor_id, actor_kind, stable_key, display_name, metadata_json)
+             values (?1, ?2, ?3, ?4, ?5)",
+            params![
+                actor.actor_id,
+                actor.actor_kind,
+                actor.stable_key,
+                actor.display_name,
+                serde_json::to_string(&actor.metadata_json)?,
+            ],
+        )
+        .map_err(map_db_err)?;
+    }
+    for entry in &plan.entries {
+        tx.execute(
+            "insert into entries (
+                entry_id, session_id, seq_no, entry_kind, actor_id, parent_entry_id,
+                external_entry_key, text_body, started_at, ended_at, metadata_json
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                entry.entry_id,
+                entry.session_id,
+                entry.seq_no,
+                entry.entry_kind,
+                entry.actor_id,
+                entry.parent_entry_id,
+                entry.external_entry_key,
+                entry.text_body,
+                entry.started_at,
+                entry.ended_at,
+                serde_json::to_string(&entry.metadata_json)?,
+            ],
+        )
+        .map_err(map_db_err)?;
+        tx.execute(
+            "insert into entry_search_fts (entry_id, session_id, entry_kind, text_body)
+             values (?1, ?2, ?3, ?4)",
+            params![
+                entry.entry_id,
+                entry.session_id,
+                entry.entry_kind,
+                entry.text_body.clone().unwrap_or_default(),
+            ],
+        )
+        .map_err(map_db_err)?;
+    }
+    for artifact in &plan.artifacts {
+        tx.execute(
+            "insert into artifacts (
+                artifact_id, session_id, entry_id, artifact_kind, uri, mime_type,
+                sha256, size_bytes, metadata_json
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                artifact.artifact_id,
+                artifact.session_id,
+                artifact.entry_id,
+                artifact.artifact_kind,
+                artifact.uri,
+                artifact.mime_type,
+                artifact.sha256,
+                artifact.size_bytes,
+                serde_json::to_string(&artifact.metadata_json)?,
+            ],
+        )
+        .map_err(map_db_err)?;
+    }
+    for anchor in &plan.anchors {
+        tx.execute(
+            "insert into anchors (
+                anchor_id, entry_id, artifact_id, anchor_kind, locator_json,
+                preview_text, fingerprint
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                anchor.anchor_id,
+                anchor.entry_id,
+                anchor.artifact_id,
+                anchor.anchor_kind,
+                anchor.locator_json,
+                anchor.preview_text,
+                anchor.fingerprint,
+            ],
+        )
+        .map_err(map_db_err)?;
+    }
+    Ok(())
+}
+
+fn mark_projection_complete(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute(
+        "update ingress_receipts
+         set projection_state = 'projected',
+             derived_state = 'pending',
+             index_state = 'pending'",
+        [],
+    )
+    .map_err(map_db_err)?;
+    Ok(())
+}
+
+fn clear_derivation_tables(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute("delete from insight_anchors", [])
+        .map_err(map_db_err)?;
+    tx.execute("delete from verifications", [])
+        .map_err(map_db_err)?;
+    tx.execute("delete from claim_evidence", [])
+        .map_err(map_db_err)?;
+    tx.execute("delete from procedure_evidence", [])
+        .map_err(map_db_err)?;
+    tx.execute("delete from insights", []).map_err(map_db_err)?;
+    tx.execute("delete from claims", []).map_err(map_db_err)?;
+    tx.execute("delete from procedures", [])
+        .map_err(map_db_err)?;
+    tx.execute("delete from episodes", []).map_err(map_db_err)?;
+    tx.execute("delete from episode_search_fts", [])
+        .map_err(map_db_err)?;
+    tx.execute("delete from insight_search_fts", [])
+        .map_err(map_db_err)?;
+    tx.execute("delete from claim_search_fts", [])
+        .map_err(map_db_err)?;
+    tx.execute("delete from procedure_search_fts", [])
+        .map_err(map_db_err)?;
+    tx.execute("delete from search_docs", [])
+        .map_err(map_db_err)?;
+    tx.execute("delete from search_docs_fts", [])
+        .map_err(map_db_err)?;
+    Ok(())
+}
+
+fn insert_derivation_rows(tx: &Transaction<'_>, plan: &DerivePlan) -> Result<()> {
+    for episode in &plan.episodes {
+        tx.execute(
+            "insert into episodes (
+                episode_id, session_id, episode_kind, summary, status, confidence,
+                extractor_version, stale
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                episode.episode_id,
+                episode.session_id,
+                episode.episode_kind,
+                episode.summary,
+                episode.status,
+                episode.confidence,
+                episode.extractor_version,
+                if episode.stale { 1 } else { 0 },
+            ],
+        )
+        .map_err(map_db_err)?;
+        tx.execute(
+            "insert into episode_search_fts (episode_id, episode_kind, summary)
+             values (?1, ?2, ?3)",
+            params![episode.episode_id, episode.episode_kind, episode.summary],
+        )
+        .map_err(map_db_err)?;
+    }
+    for insight in &plan.insights {
+        tx.execute(
+            "insert into insights (
+                insight_id, episode_id, insight_kind, statement, confidence, scope_json, metadata_json
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                insight.insight_id,
+                insight.episode_id,
+                insight.insight_kind,
+                insight.statement,
+                insight.confidence,
+                serde_json::to_string(&insight.scope_json)?,
+                serde_json::to_string(&insight.metadata_json)?,
+            ],
+        )
+        .map_err(map_db_err)?;
+        tx.execute(
+            "insert into insight_search_fts (insight_id, insight_kind, statement)
+             values (?1, ?2, ?3)",
+            params![insight.insight_id, insight.insight_kind, insight.statement],
+        )
+        .map_err(map_db_err)?;
+    }
+    for row in &plan.insight_anchors {
+        tx.execute(
+            "insert into insight_anchors (insight_id, anchor_id) values (?1, ?2)",
+            params![row.insight_id, row.anchor_id],
+        )
+        .map_err(map_db_err)?;
+    }
+    for verification in &plan.verifications {
+        tx.execute(
+            "insert into verifications (
+                verification_id, subject_kind, subject_id, method, status, checked_at, checker, details_json
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                verification.verification_id,
+                verification.subject_kind,
+                verification.subject_id,
+                verification.method,
+                verification.status,
+                verification.checked_at,
+                verification.checker,
+                serde_json::to_string(&verification.details_json)?,
+            ],
+        )
+        .map_err(map_db_err)?;
+    }
+    for claim in &plan.claims {
+        tx.execute(
+            "insert into claims (claim_id, episode_id, claim_kind, statement, confidence, metadata_json)
+             values (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                claim.claim_id,
+                claim.episode_id,
+                claim.claim_kind,
+                claim.statement,
+                claim.confidence,
+                serde_json::to_string(&claim.metadata_json)?,
+            ],
+        )
+        .map_err(map_db_err)?;
+        tx.execute(
+            "insert into claim_search_fts (claim_id, claim_kind, statement)
+             values (?1, ?2, ?3)",
+            params![claim.claim_id, claim.claim_kind, claim.statement],
+        )
+        .map_err(map_db_err)?;
+    }
+    for row in &plan.claim_evidence {
+        tx.execute(
+            "insert into claim_evidence (claim_id, anchor_id, support_kind) values (?1, ?2, ?3)",
+            params![row.claim_id, row.anchor_id, row.support_kind],
+        )
+        .map_err(map_db_err)?;
+    }
+    for procedure in &plan.procedures {
+        tx.execute(
+            "insert into procedures (
+                procedure_id, episode_id, title, goal, steps_json, status, confidence,
+                extractor_version, stale
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                procedure.procedure_id,
+                procedure.episode_id,
+                procedure.title,
+                procedure.goal,
+                serde_json::to_string(&procedure.steps_json)?,
+                procedure
+                    .status
+                    .clone()
+                    .unwrap_or_else(|| "active".to_string()),
+                procedure.confidence,
+                procedure.extractor_version,
+                if procedure.stale { 1 } else { 0 },
+            ],
+        )
+        .map_err(map_db_err)?;
+        tx.execute(
+            "insert into procedure_search_fts (procedure_id, title, goal, steps_text)
+             values (?1, ?2, ?3, ?4)",
+            params![
+                procedure.procedure_id,
+                procedure.title,
+                procedure.goal,
+                procedure_steps_text(procedure.steps_json.as_array()),
+            ],
+        )
+        .map_err(map_db_err)?;
+    }
+    for row in &plan.procedure_evidence {
+        tx.execute(
+            "insert into procedure_evidence (procedure_id, anchor_id, support_kind)
+             values (?1, ?2, ?3)",
+            params![row.procedure_id, row.anchor_id, row.support_kind],
+        )
+        .map_err(map_db_err)?;
+    }
+    for doc in &plan.search_docs {
+        tx.execute(
+            "insert into search_docs (doc_id, doc_kind, subject_kind, subject_id, title, body, metadata_json)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                doc.doc_id,
+                doc.doc_kind,
+                doc.subject_kind,
+                doc.subject_id,
+                doc.title,
+                doc.body,
+                serde_json::to_string(&doc.metadata_json)?,
+            ],
+        )
+        .map_err(map_db_err)?;
+        tx.execute(
+            "insert into search_docs_fts (doc_id, doc_kind, subject_kind, subject_id, title, body)
+             values (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                doc.doc_id,
+                doc.doc_kind,
+                doc.subject_kind,
+                doc.subject_id,
+                doc.title,
+                doc.body,
+            ],
+        )
+        .map_err(map_db_err)?;
+    }
+    Ok(())
+}
+
+fn mark_derivation_complete(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute(
+        "update ingress_receipts
+         set derived_state = 'derived',
+             index_state = 'indexed'
+         where projection_state = 'projected'",
+        [],
+    )
+    .map_err(map_db_err)?;
+    Ok(())
+}
+
+fn read_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
+    let metadata_json = row.get::<_, String>(8)?;
+    Ok(SessionRow {
+        session_id: row.get(0)?,
+        session_kind: row.get(1)?,
+        connector: row.get(2)?,
+        external_session_key: row.get(3)?,
+        title: row.get(4)?,
+        workspace_root: row.get(5)?,
+        opened_at: row.get(6)?,
+        closed_at: row.get(7)?,
+        metadata_json: serde_json::from_str(&metadata_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                8,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+    })
+}
+
+fn repeat_placeholders(len: usize) -> String {
+    std::iter::repeat_n("?", len).collect::<Vec<_>>().join(", ")
+}
+
+fn procedure_steps_text(steps: Option<&Vec<Value>>) -> String {
+    steps
+        .into_iter()
+        .flatten()
+        .filter_map(|step| step.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn count_rows(conn: &Connection, table: &str) -> Result<usize> {

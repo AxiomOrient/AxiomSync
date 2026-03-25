@@ -1,17 +1,15 @@
+mod common;
+
 use std::fs;
 use std::path::Path;
 
 use axiomsync_domain::{AppendRawEventsRequest, RAW_EVENT_TAXONOMY};
-use axiomsync_kernel::AxiomSync;
 use jsonschema::validator_for;
 use rusqlite::Connection;
 use serde_json::Value;
 use tempfile::tempdir;
 
-fn apply_replay_plan(app: &AxiomSync) {
-    let plan = app.build_replay_plan().expect("replay plan");
-    app.apply_replay(&plan).expect("apply replay plan");
-}
+use common::apply_replay_plan;
 
 fn fixture_request(name: &str) -> AppendRawEventsRequest {
     serde_json::from_value(fixture_value(name)).expect("fixture request")

@@ -14,7 +14,7 @@ pub trait RepositoryPort: Send + Sync {
     fn root(&self) -> &Path;
     fn db_path(&self) -> &Path;
     fn init_report(&self) -> Result<Value>;
-    fn existing_dedupe_keys(&self) -> Result<Vec<String>>;
+    fn existing_dedupe_keys_for(&self, keys: &[String]) -> Result<Vec<String>>;
     fn load_receipts(&self) -> Result<Vec<IngressReceiptRow>>;
     fn load_source_cursors(&self) -> Result<Vec<SourceCursorRow>>;
     fn apply_ingest(&self, plan: &IngestPlan) -> Result<Value>;
@@ -23,6 +23,11 @@ pub trait RepositoryPort: Send + Sync {
     fn replace_projection(&self, plan: &ProjectionPlan) -> Result<Value>;
     fn replace_derivation(&self, plan: &DerivePlan) -> Result<Value>;
     fn load_sessions(&self) -> Result<Vec<SessionRow>>;
+    fn load_sessions_filtered(
+        &self,
+        kind: Option<&str>,
+        workspace_root: Option<&str>,
+    ) -> Result<Vec<SessionRow>>;
     fn load_entries(&self) -> Result<Vec<EntryRow>>;
     fn load_artifacts(&self) -> Result<Vec<ArtifactRow>>;
     fn load_anchors(&self) -> Result<Vec<AnchorRow>>;
@@ -33,6 +38,13 @@ pub trait RepositoryPort: Send + Sync {
     fn load_claims(&self) -> Result<Vec<ClaimRow>>;
     fn load_procedures(&self) -> Result<Vec<ProcedureRow>>;
     fn load_search_docs(&self) -> Result<Vec<SearchDocsRow>>;
+    fn count_cases(&self) -> Result<usize>;
+    fn count_sessions_by_kind(&self, kind: &str) -> Result<usize>;
+    fn count_documents(&self) -> Result<usize>;
+    fn workspace_id_for_case(&self, case_id: &str) -> Result<Option<String>>;
+    fn workspace_id_for_session(&self, session_id: &str) -> Result<Option<String>>;
+    fn workspace_id_for_artifact(&self, artifact_id: &str) -> Result<Option<String>>;
+    fn workspace_id_for_anchor(&self, anchor_id: &str) -> Result<Option<String>>;
     fn pending_counts(&self) -> Result<(usize, usize, usize)>;
     fn doctor_report(&self) -> Result<DoctorReport>;
 }

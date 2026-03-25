@@ -16,9 +16,6 @@ pub enum AxiomError {
     #[error("permission denied: {0}")]
     PermissionDenied(String),
 
-    #[error("llm is not configured: {0}")]
-    LlmUnavailable(String),
-
     #[error("internal error: {0}")]
     Internal(String),
 

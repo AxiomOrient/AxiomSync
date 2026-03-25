@@ -27,49 +27,25 @@ impl McpResourcePort for AxiomSync {
     }
 
     fn read_mcp_resource(&self, uri: &str) -> crate::Result<Value> {
-        if let Some(id) = uri.strip_prefix("axiom://cases/") {
-            return Ok(serde_json::to_value(self.get_case(id)?)?);
+        match parse_resource_uri(uri)? {
+            ResourceTarget::Case(id) => Ok(serde_json::to_value(self.get_case(id)?)?),
+            ResourceTarget::Thread(id) => Ok(serde_json::to_value(self.get_thread(id)?)?),
+            ResourceTarget::Run(id) => Ok(serde_json::to_value(self.get_run(id)?)?),
+            ResourceTarget::Task(id) => Ok(serde_json::to_value(self.get_task(id)?)?),
+            ResourceTarget::Document(id) => Ok(serde_json::to_value(self.get_document(id)?)?),
+            ResourceTarget::Evidence(id) => Ok(serde_json::to_value(self.get_evidence(id)?)?),
         }
-        if let Some(id) = uri.strip_prefix("axiom://threads/") {
-            return Ok(serde_json::to_value(self.get_thread(id)?)?);
-        }
-        if let Some(id) = uri.strip_prefix("axiom://runs/") {
-            return Ok(serde_json::to_value(self.get_run(id)?)?);
-        }
-        if let Some(id) = uri.strip_prefix("axiom://tasks/") {
-            return Ok(serde_json::to_value(self.get_task(id)?)?);
-        }
-        if let Some(id) = uri.strip_prefix("axiom://documents/") {
-            return Ok(serde_json::to_value(self.get_document(id)?)?);
-        }
-        if let Some(id) = uri.strip_prefix("axiom://evidence/") {
-            return Ok(serde_json::to_value(self.get_evidence(id)?)?);
-        }
-        Err(crate::AxiomError::Validation(format!(
-            "unknown resource {uri}"
-        )))
     }
 
     fn resource_workspace_requirement(&self, uri: &str) -> crate::Result<Option<String>> {
-        if let Some(id) = uri.strip_prefix("axiom://cases/") {
-            return self.case_workspace_id(id);
+        match parse_resource_uri(uri)? {
+            ResourceTarget::Case(id) => self.case_workspace_id(id),
+            ResourceTarget::Thread(id) => self.session_workspace_id(id),
+            ResourceTarget::Run(id) => self.run_workspace_id(id),
+            ResourceTarget::Task(id) => self.task_workspace_id(id),
+            ResourceTarget::Document(id) => self.document_workspace_id(id),
+            ResourceTarget::Evidence(id) => self.evidence_workspace_id(id),
         }
-        if let Some(id) = uri.strip_prefix("axiom://threads/") {
-            return self.session_workspace_id(id);
-        }
-        if let Some(id) = uri.strip_prefix("axiom://runs/") {
-            return self.run_workspace_id(id);
-        }
-        if let Some(id) = uri.strip_prefix("axiom://tasks/") {
-            return self.task_workspace_id(id);
-        }
-        if let Some(id) = uri.strip_prefix("axiom://documents/") {
-            return self.document_workspace_id(id);
-        }
-        if let Some(id) = uri.strip_prefix("axiom://evidence/") {
-            return self.evidence_workspace_id(id);
-        }
-        Ok(None)
     }
 }
 
@@ -77,15 +53,15 @@ impl McpToolPort for AxiomSync {
     fn mcp_tools(&self) -> crate::Result<Value> {
         Ok(json!({
             "tools": [
-                {"name": "search_cases"},
-                {"name": "get_case"},
-                {"name": "get_thread"},
-                {"name": "get_run"},
-                {"name": "get_task"},
-                {"name": "get_document"},
-                {"name": "get_evidence"},
-                {"name": "list_runs"},
-                {"name": "list_documents"}
+                {"name": "search_cases", "inputSchema": search_cases_schema()},
+                {"name": "get_case", "inputSchema": id_schema()},
+                {"name": "get_thread", "inputSchema": id_schema()},
+                {"name": "get_run", "inputSchema": id_schema()},
+                {"name": "get_task", "inputSchema": id_schema()},
+                {"name": "get_document", "inputSchema": id_schema()},
+                {"name": "get_evidence", "inputSchema": id_schema()},
+                {"name": "list_runs", "inputSchema": workspace_root_schema(false)},
+                {"name": "list_documents", "inputSchema": workspace_root_schema(true)}
             ]
         }))
     }
@@ -171,4 +147,84 @@ fn required_workspace_root_arg(arguments: &Value) -> crate::Result<&str> {
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| crate::AxiomError::Validation("workspace_root is required".to_string()))
+}
+
+#[derive(Clone, Copy)]
+enum ResourceTarget<'a> {
+    Case(&'a str),
+    Thread(&'a str),
+    Run(&'a str),
+    Task(&'a str),
+    Document(&'a str),
+    Evidence(&'a str),
+}
+
+fn parse_resource_uri(uri: &str) -> crate::Result<ResourceTarget<'_>> {
+    if let Some(id) = uri.strip_prefix("axiom://cases/") {
+        return Ok(ResourceTarget::Case(id));
+    }
+    if let Some(id) = uri.strip_prefix("axiom://threads/") {
+        return Ok(ResourceTarget::Thread(id));
+    }
+    if let Some(id) = uri.strip_prefix("axiom://runs/") {
+        return Ok(ResourceTarget::Run(id));
+    }
+    if let Some(id) = uri.strip_prefix("axiom://tasks/") {
+        return Ok(ResourceTarget::Task(id));
+    }
+    if let Some(id) = uri.strip_prefix("axiom://documents/") {
+        return Ok(ResourceTarget::Document(id));
+    }
+    if let Some(id) = uri.strip_prefix("axiom://evidence/") {
+        return Ok(ResourceTarget::Evidence(id));
+    }
+    Err(crate::AxiomError::Validation(format!(
+        "unknown resource {uri}"
+    )))
+}
+
+fn id_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+            "id": { "type": "string", "minLength": 1 }
+        }
+    })
+}
+
+fn search_cases_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["query", "filter"],
+        "properties": {
+            "query": { "type": "string" },
+            "limit": { "type": "integer", "minimum": 0 },
+            "filter": {
+                "type": "object",
+                "required": ["workspace_root"],
+                "properties": {
+                    "workspace_root": { "type": "string", "minLength": 1 }
+                }
+            }
+        }
+    })
+}
+
+fn workspace_root_schema(include_kind: bool) -> Value {
+    let mut properties = serde_json::Map::from_iter([(
+        "workspace_root".to_string(),
+        json!({ "type": "string", "minLength": 1 }),
+    )]);
+    if include_kind {
+        properties.insert(
+            "kind".to_string(),
+            json!({ "type": "string", "minLength": 1 }),
+        );
+    }
+    Value::Object(serde_json::Map::from_iter([
+        ("type".to_string(), json!("object")),
+        ("required".to_string(), json!(["workspace_root"])),
+        ("properties".to_string(), Value::Object(properties)),
+    ]))
 }

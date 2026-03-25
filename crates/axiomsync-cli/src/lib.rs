@@ -461,10 +461,11 @@ impl axiomsync_kernel::ports::AuthStorePort for AuthStore {
 
 fn compile_cli_run_import(payload: CliCommandPayload) -> Result<AppendRawEventsRequest> {
     payload.validate()?;
+    let finished_at_ms = millis_to_i64(payload.finished_at_ms, "finished_at_ms")?;
     Ok(AppendRawEventsRequest {
         batch_id: format!("cli-run-{}", payload.command_event_id),
         producer: "axiomsync-cli".to_string(),
-        received_at_ms: payload.finished_at_ms as i64,
+        received_at_ms: finished_at_ms,
         events: vec![axiomsync_domain::RawEventInput {
             connector: "cli_local_exec".to_string(),
             native_schema_version: Some("1".to_string()),
@@ -477,7 +478,7 @@ fn compile_cli_run_import(payload: CliCommandPayload) -> Result<AppendRawEventsR
             workspace_root: Some(payload.workspace_root.clone()),
             content_hash: None,
             dedupe_key: None,
-            ts_ms: Some(payload.finished_at_ms as i64),
+            ts_ms: Some(finished_at_ms),
             observed_at_ms: None,
             captured_at_ms: None,
             payload: json!({
@@ -500,10 +501,11 @@ fn compile_cli_run_import(payload: CliCommandPayload) -> Result<AppendRawEventsR
 
 fn compile_work_state_import(payload: WorkStateExportPayload) -> Result<AppendRawEventsRequest> {
     payload.validate()?;
+    let exported_at_ms = millis_to_i64(payload.exported_at_ms, "exported_at_ms")?;
     Ok(AppendRawEventsRequest {
         batch_id: format!("work-state-{}", payload.snapshot_id),
         producer: "axiomsync-cli".to_string(),
-        received_at_ms: payload.exported_at_ms as i64,
+        received_at_ms: exported_at_ms,
         events: vec![axiomsync_domain::RawEventInput {
             connector: "work_state_export".to_string(),
             native_schema_version: Some("1".to_string()),
@@ -516,7 +518,7 @@ fn compile_work_state_import(payload: WorkStateExportPayload) -> Result<AppendRa
             workspace_root: Some(payload.workspace_root.clone()),
             content_hash: None,
             dedupe_key: None,
-            ts_ms: Some(payload.exported_at_ms as i64),
+            ts_ms: Some(exported_at_ms),
             observed_at_ms: None,
             captured_at_ms: None,
             payload: json!({
@@ -536,4 +538,75 @@ fn compile_work_state_import(payload: WorkStateExportPayload) -> Result<AppendRa
             hints: json!({}),
         }],
     })
+}
+
+fn millis_to_i64(value: u64, field: &str) -> Result<i64> {
+    Ok(i64::try_from(value).map_err(|_| {
+        axiomsync_domain::AxiomError::Validation(format!(
+            "{field} exceeds supported timestamp range"
+        ))
+    })?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_run_import_rejects_timestamp_overflow() {
+        let payload = CliCommandPayload {
+            run_id: "run-1".to_string(),
+            command_event_id: "evt-1".to_string(),
+            workspace_root: "/workspace/demo".to_string(),
+            task_id: "task-1".to_string(),
+            actor: "assistant".to_string(),
+            command: axiomsync_domain::CommandPayload {
+                argv: vec!["cargo".to_string(), "test".to_string()],
+                cwd: "/workspace/demo".to_string(),
+                exit_code: 0,
+                duration_ms: 1,
+                env_keys: Vec::new(),
+            },
+            stdout_artifact: None,
+            stderr_artifact: None,
+            changed_files: Vec::new(),
+            verification: axiomsync_domain::VerificationPayload {
+                kind: "command".to_string(),
+                status: "passed".to_string(),
+                summary: None,
+            },
+            finished_at_ms: u64::MAX,
+        };
+
+        let error = compile_cli_run_import(payload).expect_err("overflow should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("finished_at_ms exceeds supported timestamp range")
+        );
+    }
+
+    #[test]
+    fn work_state_import_rejects_timestamp_overflow() {
+        let payload = WorkStateExportPayload {
+            snapshot_id: "snap-1".to_string(),
+            exported_at_ms: u64::MAX,
+            workspace_root: "/workspace/demo".to_string(),
+            run_id: "run-1".to_string(),
+            task_id: "task-1".to_string(),
+            status: "running".to_string(),
+            progress_summary: "in progress".to_string(),
+            task_file_uri: "file:///workspace/demo/task.md".to_string(),
+            result_file_uri: "file:///workspace/demo/result.md".to_string(),
+            events_file_uri: "file:///workspace/demo/events.json".to_string(),
+            evidence_uris: Vec::new(),
+        };
+
+        let error = compile_work_state_import(payload).expect_err("overflow should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("exported_at_ms exceeds supported timestamp range")
+        );
+    }
 }

@@ -21,20 +21,7 @@ pub fn plan_append_raw_events(
         let source_kind = request.producer.clone();
         let workspace_root = event.normalized_workspace_root();
         let artifacts = normalized_artifacts(event)?;
-        let dedupe_key = event.dedupe_key.clone().or_else(|| {
-            Some(stable_id(
-                "dedupe",
-                &(
-                    source_kind.as_str(),
-                    event.normalized_session_kind(),
-                    event.normalized_session_key().ok(),
-                    event.external_entry_key.as_deref(),
-                    event.normalized_event_kind().ok(),
-                    event.normalized_observed_at().ok(),
-                    event.normalized_content_hash().ok(),
-                ),
-            ))
-        });
+        let dedupe_key = computed_dedupe_key(source_kind.as_str(), event)?;
         if let Some(key) = dedupe_key.as_ref() {
             if seen_dedupe_keys.contains(key) {
                 skipped.push(key.clone());
@@ -101,6 +88,19 @@ pub fn plan_append_raw_events(
     })
 }
 
+pub fn dedupe_candidates(request: &AppendRawEventsRequest) -> Result<Vec<String>> {
+    request.validate()?;
+    let mut candidates = Vec::with_capacity(request.events.len());
+    for event in &request.events {
+        if let Some(key) = computed_dedupe_key(request.producer.as_str(), event)? {
+            candidates.push(key);
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    Ok(candidates)
+}
+
 pub fn plan_source_cursor_upsert(
     request: &UpsertSourceCursorRequest,
 ) -> Result<SourceCursorUpsertPlan> {
@@ -158,4 +158,24 @@ fn normalized_artifacts(event: &axiomsync_domain::RawEventInput) -> Result<Vec<R
         }
     }
     Ok(artifacts)
+}
+
+fn computed_dedupe_key(
+    source_kind: &str,
+    event: &axiomsync_domain::RawEventInput,
+) -> Result<Option<String>> {
+    Ok(event.dedupe_key.clone().or_else(|| {
+        Some(stable_id(
+            "dedupe",
+            &(
+                source_kind,
+                event.normalized_session_kind(),
+                event.normalized_session_key().ok(),
+                event.external_entry_key.as_deref(),
+                event.normalized_event_kind().ok(),
+                event.normalized_observed_at().ok(),
+                event.normalized_content_hash().ok(),
+            ),
+        ))
+    }))
 }

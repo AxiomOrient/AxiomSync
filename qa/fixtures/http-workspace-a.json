@@ -1,0 +1,58 @@
+{
+  "batch_id": "http-batch-a",
+  "producer": "manual-http",
+  "received_at_ms": 1711000004000,
+  "events": [
+    {
+      "connector": "chatgpt_web_selection",
+      "native_session_id": "thread-http-a",
+      "native_event_id": "evt-http-a-1",
+      "event_type": "selection_captured",
+      "ts_ms": 1711000001000,
+      "payload": {
+        "session_kind": "thread",
+        "workspace_root": "/workspace/team-a",
+        "page_title": "Team A Incident",
+        "selection": {
+          "text": "Root cause: queue drift\nFix: clear stuck row\nDecision: keep relay loopback",
+          "start_hint": "Root cause: queue drift",
+          "end_hint": "Decision: keep relay loopback",
+          "dom_fingerprint": "sha1:http:a"
+        },
+        "source_message": {
+          "message_id": "msg-http-a",
+          "role": "assistant"
+        }
+      }
+    },
+    {
+      "connector": "cli_local_exec",
+      "native_session_id": "run-http-a",
+      "native_event_id": "evt-http-a-2",
+      "event_type": "command_finished",
+      "ts_ms": 1711000002000,
+      "payload": {
+        "session_kind": "run",
+        "workspace_root": "/workspace/team-a",
+        "title": "Team A Run",
+        "summary": "doctor ok",
+        "command": {
+          "argv": [
+            "axiomsync-cli",
+            "project",
+            "doctor"
+          ],
+          "cwd": "/workspace/team-a",
+          "exit_code": 0,
+          "duration_ms": 120
+        },
+        "checks": [
+          {
+            "name": "doctor",
+            "status": "passed"
+          }
+        ]
+      }
+    }
+  ]
+}

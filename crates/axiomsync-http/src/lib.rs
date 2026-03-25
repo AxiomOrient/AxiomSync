@@ -80,16 +80,12 @@ async fn health(State(state): State<AppState>) -> HttpResult<Json<Value>> {
 
 async fn index(headers: HeaderMap, State(state): State<AppState>) -> HttpResult<Html<String>> {
     authorize_admin(&state.app, &headers)?;
-    let cases = state.app.list_cases()?;
-    let sessions = state.app.list_sessions()?;
-    let thread_count = sessions
-        .iter()
-        .filter(|session| session.session_kind == "thread")
-        .count();
-    let run_count = state.app.list_runs(None)?.len();
-    let document_count = state.app.list_documents(None, None)?.len();
+    let cases = state.app.count_cases()?;
+    let thread_count = state.app.count_sessions_by_kind("thread")?;
+    let run_count = state.app.count_sessions_by_kind("run")?;
+    let document_count = state.app.count_documents()?;
     Ok(Html(render_index_page(
-        &cases,
+        cases,
         thread_count,
         run_count,
         document_count,
@@ -200,9 +196,10 @@ async fn search_cases(
     State(state): State<AppState>,
     payload: Json<SearchCasesRequest>,
 ) -> HttpResult<Json<Value>> {
-    let workspace_root = payload.filter.workspace_root.as_deref().ok_or_else(|| {
-        AxiomError::PermissionDenied("workspace_root filter is required".to_string())
-    })?;
+    let workspace_root =
+        payload.filter.workspace_root.as_deref().ok_or_else(|| {
+            AxiomError::Validation("workspace_root filter is required".to_string())
+        })?;
     authorize_workspace_filter(&state.app, &headers, Some(workspace_root))?;
     Ok(Json(serde_json::to_value(
         state.app.search_cases(payload.0)?,
@@ -280,17 +277,26 @@ async fn mcp_http(
     payload: std::result::Result<Json<Value>, JsonRejection>,
 ) -> HttpResult<Json<Value>> {
     let Json(request) = payload.map_err(|error| AxiomError::Validation(error.body_text()))?;
-    let workspace_id = mcp::workspace_requirement(&state.app, &request)?;
+    let id = mcp::rpc_id(&request);
+    let parsed = match mcp::parse_request(&request) {
+        Ok(parsed) => parsed,
+        Err(error) => return Ok(Json(mcp::error_response(id, &error))),
+    };
+    let workspace_id = match mcp::workspace_requirement(&state.app, &parsed) {
+        Ok(workspace_id) => workspace_id,
+        Err(error) => return Ok(Json(mcp::error_response(parsed.id.clone(), &error))),
+    };
     if let Some(required) = workspace_id.as_deref() {
         authorize_workspace_resource(&state.app, &headers, Some(required.to_string()))?;
     } else {
         authorize_admin(&state.app, &headers)?;
     }
-    Ok(Json(mcp::handle_request(
-        &state.app,
-        request,
-        workspace_id.as_deref(),
-    )?))
+    Ok(Json(
+        match mcp::handle_parsed_request(&state.app, parsed, workspace_id.as_deref()) {
+            Ok(response) => response,
+            Err(error) => mcp::error_response(mcp::rpc_id(&request), &error),
+        },
+    ))
 }
 
 type HttpResult<T> = std::result::Result<T, HttpError>;
@@ -366,7 +372,7 @@ fn reject_non_loopback(ip: IpAddr) -> Result<()> {
 }
 
 fn render_index_page(
-    cases: &[axiomsync_domain::CaseRecord],
+    case_count: usize,
     thread_count: usize,
     run_count: usize,
     document_count: usize,
@@ -375,15 +381,9 @@ fn render_index_page(
         "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>AxiomSync</title><style>body{font-family:ui-sans-serif,system-ui,sans-serif;margin:0;background:#f4f1ea;color:#1f2933}main{max-width:960px;margin:0 auto;padding:32px 20px 64px}section{background:#fff;border:1px solid #ddd7cc;border-radius:16px;padding:18px 20px;margin:14px 0}h1,h2{margin:0 0 12px}ul{padding-left:20px}a{color:#0f4c5c;text-decoration:none}code{font-family:ui-monospace,SFMono-Regular,monospace}</style></head><body><main>",
     );
     html.push_str("<h1>AxiomSync Knowledge Kernel</h1><p>Canonical read views for cases, threads, runs, documents, and evidence.</p>");
-    html.push_str("<section><h2>Cases</h2><ul>");
-    for case_record in cases {
-        html.push_str(&format!(
-            "<li>{} <code>{}</code></li>",
-            escape_html(&case_record.problem),
-            escape_html(&case_record.case_id)
-        ));
-    }
-    html.push_str("</ul></section>");
+    html.push_str(&format!(
+        "<section><h2>Cases</h2><p>{case_count} case records available.</p></section>"
+    ));
     html.push_str(&format!(
         "<section><h2>Threads</h2><p>{thread_count} thread records available.</p></section>"
     ));
@@ -398,12 +398,4 @@ fn render_index_page(
     );
     html.push_str("</main></body></html>");
     html
-}
-
-fn escape_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('\"', "&quot;")
 }

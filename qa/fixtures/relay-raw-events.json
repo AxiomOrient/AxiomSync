@@ -1,0 +1,29 @@
+{
+  "batch_id": "relay-batch-1",
+  "producer": "axiomrelay",
+  "received_at_ms": 1712000004000,
+  "events": [
+    {
+      "connector": "chatgpt_web_selection",
+      "native_session_id": "thread-relay-1",
+      "native_event_id": "evt-relay-1",
+      "event_type": "selection_captured",
+      "ts_ms": 1712000001000,
+      "payload": {
+        "session_kind": "thread",
+        "workspace_root": "/workspace/relay",
+        "page_title": "Relay Thread",
+        "selection": {
+          "text": "Root cause: duplicate delivery\nFix: idempotent success",
+          "start_hint": "Root cause: duplicate delivery",
+          "end_hint": "Fix: idempotent success",
+          "dom_fingerprint": "sha1:relay:selection"
+        },
+        "source_message": {
+          "message_id": "msg-relay-1",
+          "role": "assistant"
+        }
+      }
+    }
+  ]
+}

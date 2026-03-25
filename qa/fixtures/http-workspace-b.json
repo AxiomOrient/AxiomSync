@@ -1,0 +1,58 @@
+{
+  "batch_id": "http-batch-b",
+  "producer": "manual-http",
+  "received_at_ms": 1711000104000,
+  "events": [
+    {
+      "connector": "chatgpt_web_selection",
+      "native_session_id": "thread-http-b",
+      "native_event_id": "evt-http-b-1",
+      "event_type": "selection_captured",
+      "ts_ms": 1711000101000,
+      "payload": {
+        "session_kind": "thread",
+        "workspace_root": "/workspace/team-b",
+        "page_title": "Team B Incident",
+        "selection": {
+          "text": "Root cause: auth mismatch\nFix: require workspace selector\nDecision: deny unscoped reads",
+          "start_hint": "Root cause: auth mismatch",
+          "end_hint": "Decision: deny unscoped reads",
+          "dom_fingerprint": "sha1:http:b"
+        },
+        "source_message": {
+          "message_id": "msg-http-b",
+          "role": "assistant"
+        }
+      }
+    },
+    {
+      "connector": "cli_local_exec",
+      "native_session_id": "run-http-b",
+      "native_event_id": "evt-http-b-2",
+      "event_type": "command_finished",
+      "ts_ms": 1711000102000,
+      "payload": {
+        "session_kind": "run",
+        "workspace_root": "/workspace/team-b",
+        "title": "Team B Run",
+        "summary": "search ok",
+        "command": {
+          "argv": [
+            "axiomsync-cli",
+            "query",
+            "search-cases"
+          ],
+          "cwd": "/workspace/team-b",
+          "exit_code": 0,
+          "duration_ms": 150
+        },
+        "checks": [
+          {
+            "name": "search",
+            "status": "passed"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- added a real-user QA package under `qa/` with scripted CLI, HTTP, MCP, and relay scenarios
+- aligned MCP behavior around JSON-RPC `initialize`, structured error responses, and workspace-selector failures
+- tightened ingest/replay validation and store query paths to avoid timestamp overflow and full-table dedupe scans
+
 ## v1.4.0 - 2026-03-25
 
 - tightened canonical HTTP and MCP workspace/admin scope enforcement and parity coverage

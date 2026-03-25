@@ -1,15 +1,13 @@
+mod common;
+
 use axiomsync_domain::{
     AppendRawEventsRequest, SearchCasesRequest, SearchFilter, SessionRow,
     UpsertSourceCursorRequest, workspace_stable_id,
 };
-use axiomsync_kernel::AxiomSync;
 use rusqlite::Connection;
 use tempfile::tempdir;
 
-fn apply_replay_plan(app: &AxiomSync) {
-    let plan = app.build_replay_plan().expect("replay plan");
-    app.apply_replay(&plan).expect("apply replay plan");
-}
+use common::apply_replay_plan;
 
 fn sample_request() -> AppendRawEventsRequest {
     serde_json::from_value(serde_json::json!({
