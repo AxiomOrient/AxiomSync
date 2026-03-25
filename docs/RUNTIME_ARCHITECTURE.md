@@ -9,7 +9,7 @@
 - `axiomsync-http`: unified HTTP router and auth enforcement
 - `axiomsync-mcp`: MCP request/response adapter
 - `axiomsync-cli`: CLI contract and command dispatch
-- `axiomsync`: composition root, auth store adapter, runtime entrypoints, web UI
+- workspace root: release docs, verification script, and Cargo workspace composition
 
 ## Data Flow
 1. external input enters through CLI or HTTP sink
@@ -55,6 +55,7 @@ public canonical noun은 `case / thread / run / task / document / evidence`다. 
 - dry-run never mutates store state
 - sink write routes are unauthenticated but loopback-only
 - workspace-scoped read routes require workspace bearer auth
+- collection reads and search require an explicit workspace selector before workspace auth is evaluated
 - admin rebuild, web UI, and MCP admin operations require admin bearer auth
 - external edge repositories write through `/sink/*` on the main `serve` router or equivalent CLI plan/apply flow
 - capture, spool, retry, approval, browser integration are outside this repository
@@ -70,3 +71,4 @@ public canonical noun은 `case / thread / run / task / document / evidence`다. 
 - 저장소는 현재 schema에 필요한 additive migration만 수행한다
 - replay와 derivation rebuild는 transaction 경계 안에서 search state까지 함께 갱신한다
 - `project doctor`의 pending count는 `projection_state`, `derived_state`, `index_state`와 일치해야 한다
+- canonical verification entrypoint는 [`../scripts/verify-release.sh`](../scripts/verify-release.sh) 다

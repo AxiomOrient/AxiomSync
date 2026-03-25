@@ -36,6 +36,9 @@
         "native_event_id": {
           "type": "string"
         },
+        "native_entry_id": {
+          "type": "string"
+        },
         "event_type": {
           "type": "string",
           "enum": [
@@ -55,7 +58,13 @@
           "type": "integer",
           "minimum": 0
         },
-        "payload": {}
+        "payload": {},
+        "artifacts": {
+          "type": "array"
+        },
+        "hints": {
+          "type": "object"
+        }
       },
       "additionalProperties": false
     },

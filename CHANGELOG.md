@@ -2,13 +2,17 @@
 
 ## Unreleased
 
-- narrowed `client.rs` bootstrapping responsibilities and split resource ingest from filesystem convenience APIs
-- reduced the documentation entrypoints to active runtime, release, and testing references
-- aligned repository release metadata with the existing `v1.3.1` tag
+## v1.4.0 - 2026-03-25
+
+- tightened canonical HTTP and MCP workspace/admin scope enforcement and parity coverage
+- expanded replay, sink, and public-surface regression coverage around idempotency, ranking, and release guards
+- reduced repository docs to the core contract set and made `scripts/verify-release.sh` the canonical verification entrypoint
 
 ## v1.3.1 - 2026-03-18
 
-- release branch cut that included the pending workspace changes shipped as `v1.3.1`
+- aligned the standalone spec package, runtime docs, and execution plans around the current `serve`/`mcp serve` contract
+- documented sink schema compatibility fields (`native_entry_id`, optional `artifacts`, optional `hints`) without changing the canonical request shape
+- tightened release planning and contract-audit artifacts under `plans/` to match the current repository-owned surface
 
 ## v1.3.0 - 2026-03-16
 

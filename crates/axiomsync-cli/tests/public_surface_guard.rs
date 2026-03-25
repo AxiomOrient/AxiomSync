@@ -61,8 +61,6 @@ fn public_surface_excludes_legacy_terms() {
         root.join("docs/KERNEL_SINK_CONTRACT.md"),
         root.join("docs/RELAY_INTEROP.md"),
         root.join("docs/RUNTIME_ARCHITECTURE.md"),
-        root.join("docs/TESTING.md"),
-        root.join("docs/RELEASE_RUNBOOK.md"),
         root.join("crates/axiomsync-cli/src/lib.rs"),
         root.join("crates/axiomsync-http/src/lib.rs"),
         root.join("crates/axiomsync-kernel/src/mcp.rs"),
@@ -108,8 +106,6 @@ fn release_docs_do_not_reference_deleted_packages() {
     let files = [
         root.join("README.md"),
         root.join("docs/API_CONTRACT.md"),
-        root.join("docs/TESTING.md"),
-        root.join("docs/RELEASE_RUNBOOK.md"),
         root.join("docs/RELAY_INTEROP.md"),
     ];
 
@@ -134,8 +130,6 @@ fn api_contract_lists_current_canonical_routes_and_commands() {
     let api_contract = read(&root.join("docs/API_CONTRACT.md"));
     let readme = read(&root.join("README.md"));
     let sink_contract = read(&root.join("docs/KERNEL_SINK_CONTRACT.md"));
-    let testing = read(&root.join("docs/TESTING.md"));
-    let release_runbook = read(&root.join("docs/RELEASE_RUNBOOK.md"));
     let verify_release = read(&root.join("scripts/verify-release.sh"));
 
     for route in [
@@ -194,28 +188,25 @@ fn api_contract_lists_current_canonical_routes_and_commands() {
         "crates/axiomsync-cli/tests/sink_contract.rs",
         "crates/axiomsync-cli/tests/http_and_mcp.rs",
         "crates/axiomsync-cli/tests/relay_interop.rs",
+        "crates/axiomsync-cli/tests/public_surface_guard.rs",
     ] {
         assert!(
-            testing.contains(path),
-            "missing test path `{path}` from TESTING.md"
+            readme.contains(path),
+            "missing test path `{path}` from README.md"
         );
     }
 
-    for body in [&testing, &release_runbook] {
-        assert!(
-            body.contains(
-                "cargo test -p axiomsync-cli --test relay_interop relay_http_delivery_smoke_commits_only_after_both_apply_phases -- --nocapture"
-            ),
-            "missing explicit relay interop smoke gate"
-        );
-    }
+    assert!(
+        readme.contains(
+            "cargo test -p axiomsync-cli --test relay_interop relay_http_delivery_smoke_commits_only_after_both_apply_phases -- --nocapture"
+        ),
+        "missing explicit relay interop smoke gate"
+    );
 
-    for body in [&readme, &testing, &release_runbook] {
-        let mut search_start = 0;
-        for command in verification_commands() {
-            let position = command_position_after(body, command, search_start);
-            search_start = position + command.len();
-        }
+    let mut search_start = 0;
+    for command in verification_commands() {
+        let position = command_position_after(&readme, command, search_start);
+        search_start = position + command.len();
     }
 
     let mut search_start = 0;

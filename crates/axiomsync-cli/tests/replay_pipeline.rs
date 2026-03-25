@@ -233,6 +233,7 @@ fn auth_grants_and_search_filters_are_workspace_scoped() {
             .expect("authorize"),
         Some(workspace_id)
     );
+    assert!(app.authorize_workspace("workspace-token", None).is_err());
 
     let case_query = app
         .list_cases()
@@ -650,4 +651,21 @@ fn search_ranking_prefers_verified_cases_with_more_evidence() {
     assert_eq!(hits[0].id, verified_case_id);
     assert!(!hits[0].evidence.is_empty());
     assert!(hits[0].score > hits[1].score);
+}
+
+#[cfg(unix)]
+#[test]
+fn auth_store_is_written_with_owner_only_permissions() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempdir().expect("tempdir");
+    let app = axiomsync_cli::open(temp.path()).expect("app");
+    let plan = app
+        .plan_workspace_token_grant("/workspace/demo", "workspace-token")
+        .expect("grant plan");
+    app.apply_workspace_token_grant(&plan).expect("apply grant");
+
+    let metadata = fs::metadata(app.auth_path()).expect("auth metadata");
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
 }

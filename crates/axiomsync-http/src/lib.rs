@@ -2,7 +2,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use axum::extract::connect_info::IntoMakeServiceWithConnectInfo;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{ConnectInfo, Path, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Html;
 use axum::response::IntoResponse;
@@ -20,6 +20,11 @@ use axiomsync_mcp as mcp;
 #[derive(Clone)]
 pub struct AppState {
     pub app: AxiomSync,
+}
+
+#[derive(serde::Deserialize)]
+struct RunsQuery {
+    workspace_root: String,
 }
 
 pub fn router(app: AxiomSync) -> Router {
@@ -195,11 +200,10 @@ async fn search_cases(
     State(state): State<AppState>,
     payload: Json<SearchCasesRequest>,
 ) -> HttpResult<Json<Value>> {
-    authorize_workspace_filter(
-        &state.app,
-        &headers,
-        payload.filter.workspace_root.as_deref(),
-    )?;
+    let workspace_root = payload.filter.workspace_root.as_deref().ok_or_else(|| {
+        AxiomError::PermissionDenied("workspace_root filter is required".to_string())
+    })?;
+    authorize_workspace_filter(&state.app, &headers, Some(workspace_root))?;
     Ok(Json(serde_json::to_value(
         state.app.search_cases(payload.0)?,
     )?))
@@ -223,9 +227,15 @@ async fn get_thread(
     Ok(Json(serde_json::to_value(state.app.get_thread(&id)?)?))
 }
 
-async fn list_runs(headers: HeaderMap, State(state): State<AppState>) -> HttpResult<Json<Value>> {
-    authorize_admin(&state.app, &headers)?;
-    Ok(Json(serde_json::to_value(state.app.list_runs(None)?)?))
+async fn list_runs(
+    headers: HeaderMap,
+    Query(query): Query<RunsQuery>,
+    State(state): State<AppState>,
+) -> HttpResult<Json<Value>> {
+    authorize_workspace_filter(&state.app, &headers, Some(query.workspace_root.as_str()))?;
+    Ok(Json(serde_json::to_value(
+        state.app.list_runs(Some(query.workspace_root.as_str()))?,
+    )?))
 }
 
 async fn get_run(

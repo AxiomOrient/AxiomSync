@@ -1,6 +1,6 @@
 # API Contract
 
-이 문서는 현재 릴리스가 실제로 제공하는 public contract만 설명한다.
+이 문서는 현재 릴리스가 제공하는 canonical contract만 설명한다.
 
 ## Repository Boundary
 - 이 저장소는 knowledge kernel, SQLite store, CLI, HTTP API, MCP server를 소유한다.
@@ -135,9 +135,11 @@ public canonical noun은 `case`, `thread`, `run`, `task`, `document`, `evidence`
 - health 응답은 `pending_projection_count`, `pending_derived_count`, `pending_index_count`를 포함한다.
 - fixture 회귀는 [`contracts/kernel_sink_contract.json`](./contracts/kernel_sink_contract.json) schema validation까지 포함한다.
 - relay interop fixture 회귀는 same-host loopback HTTP sink sequence까지 포함한다.
+- canonical verification entrypoint는 [`../scripts/verify-release.sh`](../scripts/verify-release.sh) 다.
 
 ## Auth And Scope
 - workspace-scoped HTTP read surface는 workspace bearer token을 요구한다.
+- collection reads and search require an explicit workspace selector (`workspace_root`) before workspace bearer auth is evaluated.
 - admin rebuild surface와 admin MCP call은 global admin bearer token을 요구한다.
 - MCP HTTP binding은 resource/tool별 workspace requirement를 강제한다.
 - sink write surface는 bearer token 없이 loopback source address만 허용한다.

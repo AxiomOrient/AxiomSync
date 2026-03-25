@@ -319,8 +319,11 @@ async fn canonical_http_routes_work_with_auth() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/runs")
-                .header("authorization", format!("Bearer {}", seeded.admin_token))
+                .uri("/api/runs?workspace_root=/workspace/http")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", seeded.workspace_token),
+                )
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -624,6 +627,58 @@ fn mcp_exposes_only_canonical_resources_and_tools() {
     .expect("list documents tool");
     assert!(list_documents.get("result").is_some());
 
+    let list_runs = axiomsync_mcp::handle_request(
+        &seeded.app,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 61,
+            "method": "tools/call",
+            "params": {
+                "name": "list_runs",
+                "arguments": {
+                    "workspace_root": "/workspace/http"
+                }
+            }
+        }),
+        Some(&workspace_id),
+    )
+    .expect("list runs tool");
+    assert!(list_runs.get("result").is_some());
+
+    let missing_workspace_filter = axiomsync_mcp::handle_request(
+        &seeded.app,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 62,
+            "method": "tools/call",
+            "params": {
+                "name": "search_cases",
+                "arguments": {
+                    "query": seeded.case_problem,
+                    "limit": 10,
+                    "filter": {}
+                }
+            }
+        }),
+        Some(&workspace_id),
+    );
+    assert!(missing_workspace_filter.is_err());
+
+    let missing_workspace_runs = axiomsync_mcp::handle_request(
+        &seeded.app,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 63,
+            "method": "tools/call",
+            "params": {
+                "name": "list_runs",
+                "arguments": {}
+            }
+        }),
+        Some(&workspace_id),
+    );
+    assert!(missing_workspace_runs.is_err());
+
     let unknown_legacy_tool = axiomsync_mcp::handle_request(
         &seeded.app,
         serde_json::json!({
@@ -658,7 +713,7 @@ async fn route_auth_and_loopback_matrix_is_enforced() {
         .expect("response");
     assert_eq!(missing_workspace_auth.status(), StatusCode::FORBIDDEN);
 
-    let workspace_on_admin_route = router
+    let missing_workspace_selector = router
         .clone()
         .oneshot(
             Request::builder()
@@ -672,7 +727,7 @@ async fn route_auth_and_loopback_matrix_is_enforced() {
         )
         .await
         .expect("response");
-    assert_eq!(workspace_on_admin_route.status(), StatusCode::FORBIDDEN);
+    assert_eq!(missing_workspace_selector.status(), StatusCode::BAD_REQUEST);
 
     let admin_on_workspace_route = router
         .clone()
@@ -686,6 +741,47 @@ async fn route_auth_and_loopback_matrix_is_enforced() {
         .await
         .expect("response");
     assert_eq!(admin_on_workspace_route.status(), StatusCode::FORBIDDEN);
+
+    let missing_workspace_filter = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/query/search-cases")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", seeded.workspace_token),
+                )
+                .body(Body::from(
+                    serde_json::json!({
+                        "query": seeded.case_problem,
+                        "limit": 10,
+                        "filter": {}
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(missing_workspace_filter.status(), StatusCode::FORBIDDEN);
+
+    let workspace_scoped_run_list = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/runs?workspace_root=/workspace/http")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", seeded.workspace_token),
+                )
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(workspace_scoped_run_list.status(), StatusCode::OK);
 
     let loopback_request = Request::builder()
         .uri("/sink/raw-events/plan")

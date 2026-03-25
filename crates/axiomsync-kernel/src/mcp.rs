@@ -111,10 +111,10 @@ impl McpToolPort for AxiomSync {
                 self.get_evidence(id_arg(arguments)?)?,
             )?),
             "list_runs" => Ok(serde_json::to_value(
-                self.list_runs(arguments.get("workspace_root").and_then(Value::as_str))?,
+                self.list_runs(Some(required_workspace_root_arg(arguments)?))?,
             )?),
             "list_documents" => Ok(serde_json::to_value(self.list_documents(
-                arguments.get("workspace_root").and_then(Value::as_str),
+                Some(required_workspace_root_arg(arguments)?),
                 arguments.get("kind").and_then(Value::as_str),
             )?)?),
             _ => Err(crate::AxiomError::Validation(format!(
@@ -153,9 +153,22 @@ fn id_arg(arguments: &Value) -> crate::Result<&str> {
 }
 
 fn workspace_filter_arg(arguments: &Value) -> crate::Result<Option<String>> {
-    Ok(arguments
-        .get("filter")
-        .and_then(|filter| filter.get("workspace_root"))
+    Ok(Some(
+        arguments
+            .get("filter")
+            .and_then(|filter| filter.get("workspace_root"))
+            .and_then(Value::as_str)
+            .map(axiomsync_domain::workspace_stable_id)
+            .ok_or_else(|| {
+                crate::AxiomError::Validation("workspace_root filter is required".to_string())
+            })?,
+    ))
+}
+
+fn required_workspace_root_arg(arguments: &Value) -> crate::Result<&str> {
+    arguments
+        .get("workspace_root")
         .and_then(Value::as_str)
-        .map(axiomsync_domain::workspace_stable_id))
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| crate::AxiomError::Validation("workspace_root is required".to_string()))
 }

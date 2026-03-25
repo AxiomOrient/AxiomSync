@@ -50,6 +50,8 @@ pub fn authorize_workspace_token(
     token: &str,
     workspace_id: Option<&str>,
 ) -> Result<Option<String>> {
+    let expected = workspace_id
+        .ok_or_else(|| AxiomError::PermissionDenied("workspace scope is required".to_string()))?;
     let token_sha256 = stable_hash(&["workspace-token", token]);
     let grant = snapshot
         .grants
@@ -58,9 +60,7 @@ pub fn authorize_workspace_token(
         .ok_or_else(|| {
             AxiomError::PermissionDenied("token does not grant workspace access".to_string())
         })?;
-    if let Some(expected) = workspace_id
-        && expected != grant.workspace_id
-    {
+    if expected != grant.workspace_id {
         return Err(AxiomError::PermissionDenied(
             "token does not grant access to requested workspace".to_string(),
         ));
@@ -98,6 +98,7 @@ mod tests {
             authorize_workspace_token(&snapshot, "token-1", Some("ws_1")).expect("authorized"),
             Some("ws_1".to_string())
         );
+        assert!(authorize_workspace_token(&snapshot, "token-1", None).is_err());
         assert!(authorize_workspace_token(&snapshot, "token-1", Some("ws_2")).is_err());
         assert!(authorize_workspace_token(&snapshot, "missing", Some("ws_1")).is_err());
     }

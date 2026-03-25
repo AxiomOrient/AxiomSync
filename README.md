@@ -1,12 +1,11 @@
 # AxiomSync
 
-Universal agent memory kernel for recording immutable raw records into a single SQLite `context.db`, projecting them into canonical views, and deriving evidence-backed knowledge over CLI, HTTP, MCP, and a Rust-rendered web UI.
+Universal agent memory kernel that records immutable raw events into one SQLite `context.db`, projects canonical views, and derives evidence-backed knowledge over CLI, HTTP, MCP, and a local web UI.
 
 ## Repository Boundary
 - This repository owns the kernel workspace, CLI, HTTP API, MCP surface, and local web UI.
 - The canonical external write boundary is the raw-only `sink` surface exposed by this repository.
 - Edge capture, spool, retry, approval, browser integration, and connector-specific delivery live in a separate external repository and are not part of this release surface.
-- Any review package or extraction notes checked into this repository are reference material only, not the release contract.
 - Only files explicitly linked from this README, `docs/`, or `scripts/verify-release.sh` are part of the release contract.
 
 ## Runtime Model
@@ -26,7 +25,7 @@ Universal agent memory kernel for recording immutable raw records into a single 
 - `auth.json` stores hashed workspace grants plus hashed global admin tokens and is written with owner-only permissions on Unix.
 - Workspace-scoped read routes require a workspace bearer token.
 - Admin HTTP and web routes require a global admin bearer token.
-- Sink routes are intentionally unauthenticated but loopback-only, even if `web` is bound to a non-loopback address.
+- Sink routes are intentionally unauthenticated but loopback-only, even if `serve` is bound to a non-loopback address.
 - Same-host relay adapter sequencing is fixed in `docs/RELAY_INTEROP.md`.
 
 ## Quick Start
@@ -60,6 +59,7 @@ cargo run -p axiomsync-cli -- serve --addr 127.0.0.1:4400
 - sink append request shape is `AppendRawEventsRequest { batch_id, producer, received_at_ms, events[] }`
 - source cursor request shape is `UpsertSourceCursorRequest { connector, cursor_key, cursor_value, updated_at_ms }`
 - `serve`: serves `GET /health`, query/admin routes, and `/sink/*` on one server
+- collection reads that enumerate workspace data require an explicit workspace selector
 - external collectors and edge runtimes integrate only through these `sink` routes or equivalent CLI commands
 
 ## Kernel Flow
@@ -79,10 +79,9 @@ cargo run -p axiomsync-cli -- serve --addr 127.0.0.1:4400
 - Sink contract: [`docs/KERNEL_SINK_CONTRACT.md`](./docs/KERNEL_SINK_CONTRACT.md)
 - Relay interop: [`docs/RELAY_INTEROP.md`](./docs/RELAY_INTEROP.md)
 - Architecture: [`docs/RUNTIME_ARCHITECTURE.md`](./docs/RUNTIME_ARCHITECTURE.md)
-- Testing: [`docs/TESTING.md`](./docs/TESTING.md)
-- Release checklist: [`docs/RELEASE_RUNBOOK.md`](./docs/RELEASE_RUNBOOK.md)
+- Verification script: [`scripts/verify-release.sh`](./scripts/verify-release.sh)
 
-The files above are split by role. `docs/` defines the release contract and verification surface.
+`docs/` defines the release contract surface. `scripts/verify-release.sh` is the canonical verification entrypoint.
 
 ## Verification
 ```bash
@@ -96,3 +95,10 @@ cargo run -p axiomsync-cli -- serve --help
 cargo run -p axiomsync-cli -- mcp serve --help
 ./scripts/verify-release.sh
 ```
+
+Primary regression suites:
+- `crates/axiomsync-cli/tests/replay_pipeline.rs`
+- `crates/axiomsync-cli/tests/sink_contract.rs`
+- `crates/axiomsync-cli/tests/http_and_mcp.rs`
+- `crates/axiomsync-cli/tests/relay_interop.rs`
+- `crates/axiomsync-cli/tests/public_surface_guard.rs`

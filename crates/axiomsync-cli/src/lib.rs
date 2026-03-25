@@ -429,6 +429,12 @@ impl AuthStore {
 
     fn write_snapshot(&self, snapshot: &axiomsync_domain::AuthSnapshot) -> Result<()> {
         fs::write(self.path(), serde_json::to_vec_pretty(snapshot)?)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(self.path(), fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
     }
 }

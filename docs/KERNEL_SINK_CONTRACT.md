@@ -1,6 +1,6 @@
 # Kernel Sink Contract
 
-`sink`는 AxiomSync의 canonical raw-only write surface다.
+`sink`는 AxiomSync의 canonical raw-only write surface다. 외부 시스템은 semantic mutation 없이 이 seam으로만 쓴다.
 
 ## Principles
 - Parse -> Normalize -> Plan -> Apply
@@ -23,7 +23,7 @@
 - `POST /sink/source-cursors/plan`
 - `POST /sink/source-cursors/apply`
 
-Sink routes live on the main `web` server. Default base URL is `http://127.0.0.1:4400`.
+Sink routes live on the main `serve` router. Default base URL is `http://127.0.0.1:4400`.
 These routes are intentionally unauthenticated but are enforced as loopback-only by source address.
 Canonical server entrypoint is `axiomsync-cli serve`.
 Relay adapter sequencing과 sent-commit 규칙은 [`RELAY_INTEROP.md`](./RELAY_INTEROP.md) 를 따른다.
@@ -111,3 +111,7 @@ Request body is a serialized `SourceCursorUpsertPlan`.
 - duplicate append는 `409`가 아니라 successful no-op semantics를 따른다
 - true conflict: `409`
 - transient/internal failure: `429`, `500`, or `503` depending on adapter policy
+
+## Verification
+- fixture schema는 [`contracts/kernel_sink_contract.json`](./contracts/kernel_sink_contract.json) 으로 고정한다
+- canonical verification entrypoint는 [`../scripts/verify-release.sh`](../scripts/verify-release.sh) 다
