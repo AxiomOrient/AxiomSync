@@ -5,7 +5,7 @@ use axiomsync_domain::error::Result;
 use axiomsync_domain::{
     AnchorRow, ArtifactRow, AuthSnapshot, ClaimRow, DerivePlan, DoctorReport, EntryRow, EpisodeRow,
     IngestPlan, IngressReceiptRow, InsightAnchorRow, InsightRow, ProcedureRow, ProjectionPlan,
-    ReplayPlan, SearchDocsRow, SearchHit, SessionRow, SourceCursorRow, SourceCursorUpsertPlan,
+    ReplayPlan, SearchDocsRow, SearchHit, SessionRow, SourceCursorUpsertPlan,
     VerificationRow,
 };
 use serde_json::Value;
@@ -16,7 +16,6 @@ pub trait RepositoryPort: Send + Sync {
     fn init_report(&self) -> Result<Value>;
     fn existing_dedupe_keys_for(&self, keys: &[String]) -> Result<Vec<String>>;
     fn load_receipts(&self) -> Result<Vec<IngressReceiptRow>>;
-    fn load_source_cursors(&self) -> Result<Vec<SourceCursorRow>>;
     fn apply_ingest(&self, plan: &IngestPlan) -> Result<Value>;
     fn apply_source_cursor_upsert(&self, plan: &SourceCursorUpsertPlan) -> Result<Value>;
     fn apply_replay(&self, plan: &ReplayPlan) -> Result<Value>;

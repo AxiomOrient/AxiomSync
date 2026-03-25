@@ -94,7 +94,8 @@ impl McpToolPort for AxiomSync {
                 arguments.get("kind").and_then(Value::as_str),
             )?)?),
             _ => Err(crate::AxiomError::Validation(format!(
-                "unknown tool {name}"
+                "{}{name}",
+                crate::UNKNOWN_TOOL_ERROR_PREFIX
             ))),
         }
     }
@@ -112,10 +113,9 @@ impl McpToolPort for AxiomSync {
             "get_task" => self.task_workspace_id(id_arg(arguments)?),
             "get_document" => self.document_workspace_id(id_arg(arguments)?),
             "get_evidence" => self.evidence_workspace_id(id_arg(arguments)?),
-            "list_runs" | "list_documents" => Ok(arguments
-                .get("workspace_root")
-                .and_then(Value::as_str)
-                .map(axiomsync_domain::workspace_stable_id)),
+            "list_runs" | "list_documents" => Ok(Some(
+                axiomsync_domain::workspace_stable_id(required_workspace_root_arg(arguments)?),
+            )),
             _ => Ok(None),
         }
     }
@@ -160,23 +160,32 @@ enum ResourceTarget<'a> {
 }
 
 fn parse_resource_uri(uri: &str) -> crate::Result<ResourceTarget<'_>> {
+    fn non_empty<'a>(id: &'a str, uri: &str) -> crate::Result<&'a str> {
+        if id.is_empty() {
+            Err(crate::AxiomError::Validation(format!(
+                "invalid resource uri: {uri}"
+            )))
+        } else {
+            Ok(id)
+        }
+    }
     if let Some(id) = uri.strip_prefix("axiom://cases/") {
-        return Ok(ResourceTarget::Case(id));
+        return Ok(ResourceTarget::Case(non_empty(id, uri)?));
     }
     if let Some(id) = uri.strip_prefix("axiom://threads/") {
-        return Ok(ResourceTarget::Thread(id));
+        return Ok(ResourceTarget::Thread(non_empty(id, uri)?));
     }
     if let Some(id) = uri.strip_prefix("axiom://runs/") {
-        return Ok(ResourceTarget::Run(id));
+        return Ok(ResourceTarget::Run(non_empty(id, uri)?));
     }
     if let Some(id) = uri.strip_prefix("axiom://tasks/") {
-        return Ok(ResourceTarget::Task(id));
+        return Ok(ResourceTarget::Task(non_empty(id, uri)?));
     }
     if let Some(id) = uri.strip_prefix("axiom://documents/") {
-        return Ok(ResourceTarget::Document(id));
+        return Ok(ResourceTarget::Document(non_empty(id, uri)?));
     }
     if let Some(id) = uri.strip_prefix("axiom://evidence/") {
-        return Ok(ResourceTarget::Evidence(id));
+        return Ok(ResourceTarget::Evidence(non_empty(id, uri)?));
     }
     Err(crate::AxiomError::Validation(format!(
         "unknown resource {uri}"

@@ -12,6 +12,26 @@ use rusqlite::{Connection, Transaction, params};
 use serde_json::{Value, json};
 
 const CONTEXT_DB_USER_VERSION: i32 = 2;
+const ANCHOR_TARGET_GUARD_ERROR: &str = "anchors require entry_id or artifact_id";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedAnchorGuardSpec {
+    trigger_name: &'static str,
+    operation: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedAnchorGuardSpec {
+    trigger_name: &'static str,
+    operation: &'static str,
+    predicate: &'static str,
+    error_message: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AnchorGuardPlan {
+    sql_statements: Vec<String>,
+}
 
 #[derive(Debug, Clone)]
 pub struct ContextDb {
@@ -141,6 +161,10 @@ impl ContextDb {
               ON ingress_receipts(observed_at, receipt_id);",
         )
         .map_err(map_db_err)?;
+        let parsed_anchor_guards = parse_anchor_target_guards();
+        let normalized_anchor_guards = normalize_anchor_target_guards(parsed_anchor_guards);
+        let anchor_guard_plan = plan_anchor_target_guards(normalized_anchor_guards);
+        apply_anchor_target_guards(conn, &anchor_guard_plan)?;
         conn.pragma_update(None, "user_version", CONTEXT_DB_USER_VERSION)
             .map_err(map_db_err)?;
         Ok(())
@@ -227,29 +251,6 @@ impl RepositoryPort for ContextDb {
                     projection_state: row.get(17)?,
                     derived_state: row.get(18)?,
                     index_state: row.get(19)?,
-                })
-            })
-            .map_err(map_db_err)?;
-        rows.map(|row| row.map_err(map_db_err)).collect()
-    }
-
-    fn load_source_cursors(&self) -> Result<Vec<SourceCursorRow>> {
-        let conn = self.connection()?;
-        let mut stmt = conn
-            .prepare(
-                "select connector, cursor_key, cursor_value, updated_at, metadata_json
-                 from source_cursor
-                 order by connector asc, cursor_key asc",
-            )
-            .map_err(map_db_err)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(SourceCursorRow {
-                    connector: row.get(0)?,
-                    cursor_key: row.get(1)?,
-                    cursor_value: row.get(2)?,
-                    updated_at: row.get(3)?,
-                    metadata_json: parse_json_value(row.get::<_, String>(4)?)?,
                 })
             })
             .map_err(map_db_err)?;
@@ -1199,6 +1200,7 @@ fn procedure_steps_text(steps: Option<&Vec<Value>>) -> String {
         .join("\n")
 }
 
+/// SAFETY: `table` must be a hardcoded table name literal — never user-controlled input.
 fn count_rows(conn: &Connection, table: &str) -> Result<usize> {
     conn.query_row(&format!("select count(*) from {table}"), [], |row| {
         row.get::<_, i64>(0)
@@ -1207,6 +1209,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<usize> {
     .map_err(map_db_err)
 }
 
+/// SAFETY: `table` and `predicate` must be hardcoded literals — never user-controlled input.
 fn count_where(conn: &Connection, table: &str, predicate: &str) -> Result<usize> {
     conn.query_row(
         &format!("select count(*) from {table} where {predicate}"),
@@ -1217,6 +1220,7 @@ fn count_where(conn: &Connection, table: &str, predicate: &str) -> Result<usize>
     .map_err(map_db_err)
 }
 
+/// SAFETY: `table`, `column`, and `definition` must be hardcoded literals — never user-controlled input.
 fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
     let mut stmt = conn
         .prepare(&format!("pragma table_info({table})"))
@@ -1233,6 +1237,65 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str)
         [],
     )
     .map_err(map_db_err)?;
+    Ok(())
+}
+
+fn parse_anchor_target_guards() -> Vec<ParsedAnchorGuardSpec> {
+    vec![
+        ParsedAnchorGuardSpec {
+            trigger_name: "anchors_require_target_insert",
+            operation: "INSERT",
+        },
+        ParsedAnchorGuardSpec {
+            trigger_name: "anchors_require_target_update",
+            operation: "UPDATE",
+        },
+    ]
+}
+
+fn normalize_anchor_target_guards(
+    specs: Vec<ParsedAnchorGuardSpec>,
+) -> Vec<NormalizedAnchorGuardSpec> {
+    specs
+        .into_iter()
+        .map(|spec| NormalizedAnchorGuardSpec {
+            trigger_name: spec.trigger_name,
+            operation: spec.operation,
+            predicate: "NEW.entry_id IS NULL AND NEW.artifact_id IS NULL",
+            error_message: ANCHOR_TARGET_GUARD_ERROR,
+        })
+        .collect()
+}
+
+fn plan_anchor_target_guards(specs: Vec<NormalizedAnchorGuardSpec>) -> AnchorGuardPlan {
+    AnchorGuardPlan {
+        sql_statements: specs
+            .into_iter()
+            .map(|spec| {
+                format!(
+                    "CREATE TRIGGER IF NOT EXISTS {name}
+                     BEFORE {operation} ON anchors
+                     FOR EACH ROW
+                     WHEN {predicate}
+                     BEGIN
+                       SELECT RAISE(ABORT, '{error}');
+                     END;",
+                    name = spec.trigger_name,
+                    operation = spec.operation,
+                    predicate = spec.predicate,
+                    error = spec.error_message,
+                )
+            })
+            .collect(),
+    }
+}
+
+fn apply_anchor_target_guards(conn: &Connection, plan: &AnchorGuardPlan) -> Result<()> {
+    if plan.sql_statements.is_empty() {
+        return Ok(());
+    }
+    conn.execute_batch(&plan.sql_statements.join("\n"))
+        .map_err(map_db_err)?;
     Ok(())
 }
 
@@ -1259,7 +1322,7 @@ fn upsert_source_cursor_tx(tx: &Transaction<'_>, cursor: &SourceCursorRow) -> Re
 fn parse_json_value(raw: String) -> std::result::Result<Value, rusqlite::Error> {
     serde_json::from_str(&raw).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(
-            raw.len(),
+            0,
             rusqlite::types::Type::Text,
             Box::new(error),
         )
@@ -1268,4 +1331,62 @@ fn parse_json_value(raw: String) -> std::result::Result<Value, rusqlite::Error> 
 
 fn map_db_err(error: rusqlite::Error) -> AxiomError {
     AxiomError::Internal(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anchor_guard_plan_is_deterministic() {
+        let parsed = parse_anchor_target_guards();
+        let normalized = normalize_anchor_target_guards(parsed);
+        let plan = plan_anchor_target_guards(normalized);
+
+        assert_eq!(plan.sql_statements.len(), 2);
+        assert!(plan.sql_statements[0].contains("anchors_require_target_insert"));
+        assert!(plan.sql_statements[1].contains("anchors_require_target_update"));
+        assert!(
+            plan.sql_statements
+                .iter()
+                .all(|sql| sql.contains(ANCHOR_TARGET_GUARD_ERROR))
+        );
+    }
+
+    #[test]
+    fn initialize_adds_anchor_guards_for_existing_databases() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp.path().join("context.db");
+        let conn = Connection::open(&db_path).expect("open sqlite");
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE anchors (
+               anchor_id TEXT PRIMARY KEY,
+               entry_id TEXT,
+               artifact_id TEXT,
+               anchor_kind TEXT NOT NULL,
+               locator_json TEXT NOT NULL,
+               preview_text TEXT,
+               fingerprint TEXT
+             );",
+        )
+        .expect("legacy anchors schema");
+        drop(conn);
+
+        let db = ContextDb::open(temp.path()).expect("open context db");
+        let conn = db.connection().expect("reopen db");
+        let error = conn
+            .execute(
+                "INSERT INTO anchors (
+                    anchor_id, entry_id, artifact_id, anchor_kind, locator_json
+                 ) VALUES (?1, NULL, NULL, ?2, ?3)",
+                params!["anchor-invalid", "selection", "{}"],
+            )
+            .expect_err("legacy db should reject missing targets");
+        assert!(
+            error
+                .to_string()
+                .contains(ANCHOR_TARGET_GUARD_ERROR)
+        );
+    }
 }

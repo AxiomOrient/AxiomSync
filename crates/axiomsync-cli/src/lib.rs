@@ -413,12 +413,12 @@ impl AuthStore {
         Ok(Self { root })
     }
 
-    fn path(&self) -> PathBuf {
+    fn auth_file_path(&self) -> PathBuf {
         self.root.join("auth.json")
     }
 
     fn read_snapshot(&self) -> Result<axiomsync_domain::AuthSnapshot> {
-        match fs::read(self.path()) {
+        match fs::read(self.auth_file_path()) {
             Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 Ok(axiomsync_domain::AuthSnapshot::empty())
@@ -428,12 +428,36 @@ impl AuthStore {
     }
 
     fn write_snapshot(&self, snapshot: &axiomsync_domain::AuthSnapshot) -> Result<()> {
-        fs::write(self.path(), serde_json::to_vec_pretty(snapshot)?)?;
+        let bytes = serde_json::to_vec_pretty(snapshot)?;
+        let path = self.auth_file_path();
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-
-            fs::set_permissions(self.path(), fs::Permissions::from_mode(0o600))?;
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let tmp_path = path.with_extension("json.tmp");
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp_path)?;
+            file.write_all(&bytes)?;
+            file.sync_data()?;
+            drop(file);
+            fs::rename(&tmp_path, &path)?;
+        }
+        #[cfg(not(unix))]
+        {
+            use std::io::Write as _;
+            let tmp_path = path.with_extension("json.tmp");
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)?;
+            file.write_all(&bytes)?;
+            drop(file);
+            fs::rename(&tmp_path, &path)?;
         }
         Ok(())
     }
@@ -445,7 +469,7 @@ impl axiomsync_kernel::ports::AuthStorePort for AuthStore {
     }
 
     fn path(&self) -> PathBuf {
-        self.path()
+        self.auth_file_path()
     }
 
     fn read(&self) -> axiomsync_domain::Result<axiomsync_domain::AuthSnapshot> {
@@ -459,85 +483,155 @@ impl axiomsync_kernel::ports::AuthStorePort for AuthStore {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct NormalizedCliRunImport {
+    finished_at_ms: i64,
+    run_id: String,
+    command_event_id: String,
+    workspace_root: String,
+    task_id: String,
+    actor: String,
+    command: axiomsync_domain::CommandPayload,
+    stdout_artifact: Option<axiomsync_domain::ArtifactRef>,
+    stderr_artifact: Option<axiomsync_domain::ArtifactRef>,
+    changed_files: Vec<String>,
+    verification: axiomsync_domain::VerificationPayload,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct NormalizedWorkStateImport {
+    exported_at_ms: i64,
+    snapshot_id: String,
+    workspace_root: String,
+    run_id: String,
+    task_id: String,
+    status: String,
+    progress_summary: String,
+    task_file_uri: String,
+    result_file_uri: String,
+    events_file_uri: String,
+    evidence_uris: Vec<String>,
+}
+
 fn compile_cli_run_import(payload: CliCommandPayload) -> Result<AppendRawEventsRequest> {
+    let normalized = normalize_cli_run_import(payload)?;
+    Ok(plan_cli_run_import(normalized))
+}
+
+fn compile_work_state_import(payload: WorkStateExportPayload) -> Result<AppendRawEventsRequest> {
+    let normalized = normalize_work_state_import(payload)?;
+    Ok(plan_work_state_import(normalized))
+}
+
+fn normalize_cli_run_import(payload: CliCommandPayload) -> Result<NormalizedCliRunImport> {
     payload.validate()?;
-    let finished_at_ms = millis_to_i64(payload.finished_at_ms, "finished_at_ms")?;
-    Ok(AppendRawEventsRequest {
-        batch_id: format!("cli-run-{}", payload.command_event_id),
+    Ok(NormalizedCliRunImport {
+        finished_at_ms: millis_to_i64(payload.finished_at_ms, "finished_at_ms")?,
+        run_id: payload.run_id,
+        command_event_id: payload.command_event_id,
+        workspace_root: payload.workspace_root,
+        task_id: payload.task_id,
+        actor: payload.actor,
+        command: payload.command,
+        stdout_artifact: payload.stdout_artifact,
+        stderr_artifact: payload.stderr_artifact,
+        changed_files: payload.changed_files,
+        verification: payload.verification,
+    })
+}
+
+fn normalize_work_state_import(payload: WorkStateExportPayload) -> Result<NormalizedWorkStateImport> {
+    payload.validate()?;
+    Ok(NormalizedWorkStateImport {
+        exported_at_ms: millis_to_i64(payload.exported_at_ms, "exported_at_ms")?,
+        snapshot_id: payload.snapshot_id,
+        workspace_root: payload.workspace_root,
+        run_id: payload.run_id,
+        task_id: payload.task_id,
+        status: payload.status,
+        progress_summary: payload.progress_summary,
+        task_file_uri: payload.task_file_uri,
+        result_file_uri: payload.result_file_uri,
+        events_file_uri: payload.events_file_uri,
+        evidence_uris: payload.evidence_uris,
+    })
+}
+
+fn plan_cli_run_import(normalized: NormalizedCliRunImport) -> AppendRawEventsRequest {
+    AppendRawEventsRequest {
+        batch_id: format!("cli-run-{}", normalized.command_event_id),
         producer: "axiomsync-cli".to_string(),
-        received_at_ms: finished_at_ms,
+        received_at_ms: normalized.finished_at_ms,
         events: vec![axiomsync_domain::RawEventInput {
             connector: "cli_local_exec".to_string(),
             native_schema_version: Some("1".to_string()),
             session_kind: Some("run".to_string()),
-            external_session_key: Some(format!("run:{}", payload.run_id)),
-            external_entry_key: Some(payload.command_event_id.clone()),
+            external_session_key: Some(format!("run:{}", normalized.run_id)),
+            external_entry_key: Some(normalized.command_event_id.clone()),
             event_kind: Some("command_finished".to_string()),
             observed_at: None,
             captured_at: None,
-            workspace_root: Some(payload.workspace_root.clone()),
+            workspace_root: Some(normalized.workspace_root.clone()),
             content_hash: None,
             dedupe_key: None,
-            ts_ms: Some(finished_at_ms),
+            ts_ms: Some(normalized.finished_at_ms),
             observed_at_ms: None,
             captured_at_ms: None,
             payload: json!({
                 "session_kind": "run",
-                "workspace_root": payload.workspace_root,
-                "task_id": payload.task_id,
-                "actor": payload.actor,
-                "command": payload.command,
-                "stdout_artifact": payload.stdout_artifact,
-                "stderr_artifact": payload.stderr_artifact,
-                "changed_files": payload.changed_files,
-                "verification": payload.verification,
+                "workspace_root": normalized.workspace_root,
+                "task_id": normalized.task_id,
+                "actor": normalized.actor,
+                "command": normalized.command,
+                "stdout_artifact": normalized.stdout_artifact,
+                "stderr_artifact": normalized.stderr_artifact,
+                "changed_files": normalized.changed_files,
+                "verification": normalized.verification,
             }),
             raw_payload: None,
             artifacts: Vec::new(),
             hints: json!({}),
         }],
-    })
+    }
 }
 
-fn compile_work_state_import(payload: WorkStateExportPayload) -> Result<AppendRawEventsRequest> {
-    payload.validate()?;
-    let exported_at_ms = millis_to_i64(payload.exported_at_ms, "exported_at_ms")?;
-    Ok(AppendRawEventsRequest {
-        batch_id: format!("work-state-{}", payload.snapshot_id),
+fn plan_work_state_import(normalized: NormalizedWorkStateImport) -> AppendRawEventsRequest {
+    AppendRawEventsRequest {
+        batch_id: format!("work-state-{}", normalized.snapshot_id),
         producer: "axiomsync-cli".to_string(),
-        received_at_ms: exported_at_ms,
+        received_at_ms: normalized.exported_at_ms,
         events: vec![axiomsync_domain::RawEventInput {
             connector: "work_state_export".to_string(),
             native_schema_version: Some("1".to_string()),
             session_kind: Some("task".to_string()),
-            external_session_key: Some(format!("task:{}", payload.task_id)),
-            external_entry_key: Some(payload.snapshot_id.clone()),
+            external_session_key: Some(format!("task:{}", normalized.task_id)),
+            external_entry_key: Some(normalized.snapshot_id.clone()),
             event_kind: Some("task_state_imported".to_string()),
             observed_at: None,
             captured_at: None,
-            workspace_root: Some(payload.workspace_root.clone()),
+            workspace_root: Some(normalized.workspace_root.clone()),
             content_hash: None,
             dedupe_key: None,
-            ts_ms: Some(exported_at_ms),
+            ts_ms: Some(normalized.exported_at_ms),
             observed_at_ms: None,
             captured_at_ms: None,
             payload: json!({
                 "session_kind": "task",
-                "workspace_root": payload.workspace_root,
-                "run_id": payload.run_id,
-                "task_id": payload.task_id,
-                "status": payload.status,
-                "progress_summary": payload.progress_summary,
-                "task_file_uri": payload.task_file_uri,
-                "result_file_uri": payload.result_file_uri,
-                "events_file_uri": payload.events_file_uri,
-                "evidence_uris": payload.evidence_uris,
+                "workspace_root": normalized.workspace_root,
+                "run_id": normalized.run_id,
+                "task_id": normalized.task_id,
+                "status": normalized.status,
+                "progress_summary": normalized.progress_summary,
+                "task_file_uri": normalized.task_file_uri,
+                "result_file_uri": normalized.result_file_uri,
+                "events_file_uri": normalized.events_file_uri,
+                "evidence_uris": normalized.evidence_uris,
             }),
             raw_payload: None,
             artifacts: Vec::new(),
             hints: json!({}),
         }],
-    })
+    }
 }
 
 fn millis_to_i64(value: u64, field: &str) -> Result<i64> {
@@ -608,5 +702,96 @@ mod tests {
                 .to_string()
                 .contains("exported_at_ms exceeds supported timestamp range")
         );
+    }
+
+    #[test]
+    fn cli_run_import_rejects_empty_required_fields() {
+        let payload = CliCommandPayload {
+            run_id: "".to_string(),
+            command_event_id: "evt-1".to_string(),
+            workspace_root: "/workspace/demo".to_string(),
+            task_id: "task-1".to_string(),
+            actor: "assistant".to_string(),
+            command: axiomsync_domain::CommandPayload {
+                argv: vec!["cargo".to_string(), "test".to_string()],
+                cwd: "/workspace/demo".to_string(),
+                exit_code: 0,
+                duration_ms: 1,
+                env_keys: Vec::new(),
+            },
+            stdout_artifact: None,
+            stderr_artifact: None,
+            changed_files: Vec::new(),
+            verification: axiomsync_domain::VerificationPayload {
+                kind: "command".to_string(),
+                status: "passed".to_string(),
+                summary: None,
+            },
+            finished_at_ms: 1710000000000,
+        };
+
+        let error = compile_cli_run_import(payload).expect_err("empty run_id should fail");
+        assert!(
+            error.to_string().contains("run_id"),
+            "error should mention the field: {error}"
+        );
+    }
+
+    #[test]
+    fn work_state_import_rejects_empty_required_fields() {
+        let payload = WorkStateExportPayload {
+            snapshot_id: "snap-1".to_string(),
+            exported_at_ms: 1710000000000,
+            workspace_root: "/workspace/demo".to_string(),
+            run_id: "run-1".to_string(),
+            task_id: "task-1".to_string(),
+            status: "".to_string(),
+            progress_summary: "in progress".to_string(),
+            task_file_uri: "file:///workspace/demo/task.md".to_string(),
+            result_file_uri: "file:///workspace/demo/result.md".to_string(),
+            events_file_uri: "file:///workspace/demo/events.json".to_string(),
+            evidence_uris: Vec::new(),
+        };
+
+        let error =
+            compile_work_state_import(payload).expect_err("empty status should fail");
+        assert!(
+            error.to_string().contains("status"),
+            "error should mention the field: {error}"
+        );
+    }
+
+    #[test]
+    fn cli_run_import_normalize_and_plan_are_deterministic() {
+        let payload = CliCommandPayload {
+            run_id: "run-1".to_string(),
+            command_event_id: "evt-1".to_string(),
+            workspace_root: "/workspace/demo".to_string(),
+            task_id: "task-1".to_string(),
+            actor: "assistant".to_string(),
+            command: axiomsync_domain::CommandPayload {
+                argv: vec!["cargo".to_string(), "test".to_string()],
+                cwd: "/workspace/demo".to_string(),
+                exit_code: 0,
+                duration_ms: 1,
+                env_keys: Vec::new(),
+            },
+            stdout_artifact: None,
+            stderr_artifact: None,
+            changed_files: vec!["src/lib.rs".to_string()],
+            verification: axiomsync_domain::VerificationPayload {
+                kind: "command".to_string(),
+                status: "passed".to_string(),
+                summary: Some("ok".to_string()),
+            },
+            finished_at_ms: 1710000000000,
+        };
+
+        let normalized = normalize_cli_run_import(payload).expect("normalized");
+        assert_eq!(normalized.finished_at_ms, 1710000000000);
+        let planned = plan_cli_run_import(normalized);
+        assert_eq!(planned.batch_id, "cli-run-evt-1");
+        assert_eq!(planned.received_at_ms, 1710000000000);
+        assert_eq!(planned.events[0].external_session_key.as_deref(), Some("run:run-1"));
     }
 }

@@ -264,7 +264,6 @@ fn build_verification(
         kind.contains("verification_passed")
             || kind.contains("check_result")
             || text.contains("check passed")
-            || text.contains("passed")
     });
     let human_verified = texts
         .iter()
@@ -355,7 +354,8 @@ fn infer_episode_kind(session: &SessionRow) -> String {
 
 fn extract_claim(entries: &[&EntryRow], needles: &[&str]) -> Option<String> {
     for entry in entries {
-        let text = entry.text_body.as_deref()?.trim();
+        let Some(body) = entry.text_body.as_deref() else { continue; };
+        let text = body.trim();
         let lowered = text.to_ascii_lowercase();
         if needles.iter().any(|needle| lowered.contains(needle)) {
             return Some(truncate(text, 160));

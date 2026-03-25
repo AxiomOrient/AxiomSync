@@ -11,3 +11,7 @@ homepage = { workspace = true }
 axiomsync-domain = { workspace = true }
 axiomsync-kernel = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+axiomsync-cli = { workspace = true }
+tempfile = { workspace = true }

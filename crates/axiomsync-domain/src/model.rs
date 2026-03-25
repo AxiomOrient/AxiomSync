@@ -891,7 +891,8 @@ pub struct AuthGrantRecord {
 pub struct AuthSnapshot {
     pub schema_version: String,
     pub grants: Vec<AuthGrantRecord>,
-    pub admin_tokens: Vec<String>,
+    #[serde(rename = "admin_tokens")]
+    pub admin_token_sha256s: Vec<String>,
 }
 
 impl AuthSnapshot {
@@ -899,7 +900,7 @@ impl AuthSnapshot {
         Self {
             schema_version: KERNEL_SCHEMA_VERSION.to_string(),
             grants: Vec::new(),
-            admin_tokens: Vec::new(),
+            admin_token_sha256s: Vec::new(),
         }
     }
 }

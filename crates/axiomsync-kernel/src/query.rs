@@ -280,10 +280,17 @@ fn snippet(doc: &SearchDocsRow, query: &str) -> String {
 
 fn fallback_snippet(text: &str, query: &str) -> String {
     let lowered = text.to_ascii_lowercase();
-    let query = query.to_ascii_lowercase();
-    if let Some(index) = lowered.find(&query) {
-        let start = index.saturating_sub(24);
-        let end = (index + query.len() + 72).min(text.len());
+    let query_lower = query.to_ascii_lowercase();
+    if let Some(byte_pos) = lowered.find(query_lower.as_str()) {
+        let start_hint = byte_pos.saturating_sub(24);
+        let start = (start_hint..=byte_pos)
+            .find(|&i| text.is_char_boundary(i))
+            .unwrap_or(0);
+        let end_hint = (byte_pos + query_lower.len() + 72).min(text.len());
+        let end = (0..=end_hint)
+            .rev()
+            .find(|&i| text.is_char_boundary(i))
+            .unwrap_or(text.len());
         text[start..end].to_string()
     } else {
         text.chars().take(120).collect()

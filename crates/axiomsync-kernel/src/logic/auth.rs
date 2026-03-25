@@ -37,11 +37,11 @@ pub fn apply_workspace_token_plan(
 pub fn apply_admin_token_plan(snapshot: &AuthSnapshot, plan: &AdminTokenPlan) -> AuthSnapshot {
     let mut next = snapshot.clone();
     next.schema_version = crate::domain::KERNEL_SCHEMA_VERSION.to_string();
-    next.admin_tokens
+    next.admin_token_sha256s
         .retain(|token| token != &plan.token_sha256);
-    next.admin_tokens.push(plan.token_sha256.clone());
-    next.admin_tokens.sort();
-    next.admin_tokens.dedup();
+    next.admin_token_sha256s.push(plan.token_sha256.clone());
+    next.admin_token_sha256s.sort();
+    next.admin_token_sha256s.dedup();
     next
 }
 
@@ -56,7 +56,7 @@ pub fn authorize_workspace_token(
     let grant = snapshot
         .grants
         .iter()
-        .find(|grant| grant.token_sha256 == token_sha256)
+        .find(|grant| ct_eq(&grant.token_sha256, &token_sha256))
         .ok_or_else(|| {
             AxiomError::PermissionDenied("token does not grant workspace access".to_string())
         })?;
@@ -70,13 +70,29 @@ pub fn authorize_workspace_token(
 
 pub fn authorize_admin_token(snapshot: &AuthSnapshot, token: &str) -> Result<()> {
     let token_sha256 = stable_hash(&["admin-token", token]);
-    if snapshot.admin_tokens.contains(&token_sha256) {
+    let matched = snapshot
+        .admin_token_sha256s
+        .iter()
+        .any(|stored| ct_eq(stored, &token_sha256));
+    if matched {
         Ok(())
     } else {
         Err(AxiomError::PermissionDenied(
             "token does not grant admin access".to_string(),
         ))
     }
+}
+
+/// Constant-time string equality to prevent timing attacks on token comparisons.
+/// Uses XOR fold over all bytes so comparison time is independent of where bytes differ.
+fn ct_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 #[cfg(test)]
@@ -91,7 +107,7 @@ mod tests {
                 workspace_id: "ws_1".to_string(),
                 token_sha256: stable_hash(&["workspace-token", "token-1"]),
             }],
-            admin_tokens: Vec::new(),
+            admin_token_sha256s: Vec::new(),
         };
 
         assert_eq!(
@@ -108,7 +124,7 @@ mod tests {
         let snapshot = AuthSnapshot {
             schema_version: crate::domain::KERNEL_SCHEMA_VERSION.to_string(),
             grants: Vec::new(),
-            admin_tokens: vec![stable_hash(&["admin-token", "admin-1"])],
+            admin_token_sha256s: vec![stable_hash(&["admin-token", "admin-1"])],
         };
 
         assert!(authorize_admin_token(&snapshot, "admin-1").is_ok());

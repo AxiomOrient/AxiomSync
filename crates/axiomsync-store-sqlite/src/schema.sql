@@ -110,7 +110,8 @@ CREATE TABLE IF NOT EXISTS anchors (
   anchor_kind TEXT NOT NULL,
   locator_json TEXT NOT NULL,
   preview_text TEXT,
-  fingerprint TEXT
+  fingerprint TEXT,
+  CHECK (entry_id IS NOT NULL OR artifact_id IS NOT NULL)
 );
 
 CREATE TABLE IF NOT EXISTS episodes (

@@ -128,6 +128,7 @@ public canonical noun은 `case`, `thread`, `run`, `task`, `document`, `evidence`
 ## Sink Contract
 - raw append는 `AppendRawEventsRequest -> IngestPlan -> apply_ingest` 순서만 허용한다.
 - source cursor upsert는 `UpsertSourceCursorRequest -> SourceCursorUpsertPlan -> apply_source_cursor_upsert` 순서만 허용한다.
+- trusted local import (`import-cli-run`, `import-work-state`)도 `payload -> normalized import -> AppendRawEventsRequest` 순서로만 컴파일한다.
 - projection rebuild는 `build_projection_plan -> apply_projection_plan` 순서를 지원한다.
 - derivation rebuild는 `build_derivation_plan -> apply_derivation_plan` 순서를 지원한다.
 - full replay rebuild는 `build_replay_plan -> apply_replay` 순서를 지원한다.
@@ -149,5 +150,6 @@ public canonical noun은 `case`, `thread`, `run`, `task`, `document`, `evidence`
 - admin rebuild surface와 admin MCP call은 global admin bearer token을 요구한다.
 - MCP HTTP binding은 resource/tool별 workspace requirement를 강제한다.
 - MCP는 parse/auth/tool failures를 JSON-RPC error object로 반환한다.
+- MCP stdio/HTTP adapter는 request를 parse/normalize/plan 한 뒤에만 apply 단계에서 kernel을 호출한다.
 - sink write surface는 bearer token 없이 loopback source address만 허용한다.
 - `auth.json`에는 hashed workspace grants와 hashed admin token만 저장한다.

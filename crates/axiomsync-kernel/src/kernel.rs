@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
@@ -19,6 +20,7 @@ use crate::projection::plan_projection;
 pub struct AxiomSync {
     repo: SharedRepositoryPort,
     auth: SharedAuthStorePort,
+    auth_write_lock: Arc<Mutex<()>>,
 }
 
 impl std::fmt::Debug for AxiomSync {
@@ -31,7 +33,7 @@ impl std::fmt::Debug for AxiomSync {
 
 impl AxiomSync {
     pub fn new(repo: SharedRepositoryPort, auth: SharedAuthStorePort) -> Self {
-        Self { repo, auth }
+        Self { repo, auth, auth_write_lock: Arc::new(Mutex::new(())) }
     }
 
     #[must_use]
@@ -219,7 +221,6 @@ impl AxiomSync {
         let episode = corpus
             .episodes
             .iter()
-            .into_iter()
             .find(|episode| episode.episode_id == case_id)
             .ok_or_else(|| AxiomError::NotFound(format!("case {case_id}")))?;
         Ok(case_from_episode(
@@ -333,6 +334,7 @@ impl AxiomSync {
     }
 
     pub fn apply_workspace_token_grant(&self, plan: &WorkspaceTokenPlan) -> Result<Value> {
+        let _guard = self.auth_write_lock.lock().unwrap_or_else(|p| p.into_inner());
         let snapshot = self.auth.read()?;
         let next = crate::logic::auth::apply_workspace_token_plan(&snapshot, plan);
         self.auth.write(&next)?;
@@ -344,9 +346,10 @@ impl AxiomSync {
     }
 
     pub fn apply_admin_token_grant(&self, plan: &AdminTokenPlan) -> Result<Value> {
+        let _guard = self.auth_write_lock.lock().unwrap_or_else(|p| p.into_inner());
         let snapshot = self.auth.read()?;
         let next = crate::logic::auth::apply_admin_token_plan(&snapshot, plan);
-        let admin_tokens = next.admin_tokens.len();
+        let admin_tokens = next.admin_token_sha256s.len();
         self.auth.write(&next)?;
         Ok(json!({ "admin_tokens": admin_tokens }))
     }

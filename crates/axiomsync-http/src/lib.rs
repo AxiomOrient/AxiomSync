@@ -69,9 +69,6 @@ async fn health(State(state): State<AppState>) -> HttpResult<Json<Value>> {
         state.app.pending_counts()?;
     Ok(Json(json!({
         "status": "ok",
-        "root": state.app.root(),
-        "db_path": state.app.db_path(),
-        "auth_path": state.app.auth_path(),
         "pending_projection_count": pending_projection_count,
         "pending_derived_count": pending_derived_count,
         "pending_index_count": pending_index_count,
@@ -194,15 +191,16 @@ async fn apply_replay(
 async fn search_cases(
     headers: HeaderMap,
     State(state): State<AppState>,
-    payload: Json<SearchCasesRequest>,
+    payload: std::result::Result<Json<SearchCasesRequest>, JsonRejection>,
 ) -> HttpResult<Json<Value>> {
+    let Json(request) = payload.map_err(|error| AxiomError::Validation(error.body_text()))?;
     let workspace_root =
-        payload.filter.workspace_root.as_deref().ok_or_else(|| {
+        request.filter.workspace_root.as_deref().ok_or_else(|| {
             AxiomError::Validation("workspace_root filter is required".to_string())
         })?;
     authorize_workspace_filter(&state.app, &headers, Some(workspace_root))?;
     Ok(Json(serde_json::to_value(
-        state.app.search_cases(payload.0)?,
+        state.app.search_cases(request)?,
     )?))
 }
 
@@ -280,21 +278,26 @@ async fn mcp_http(
     let id = mcp::rpc_id(&request);
     let parsed = match mcp::parse_request(&request) {
         Ok(parsed) => parsed,
-        Err(error) => return Ok(Json(mcp::error_response(id, &error))),
+        // Structural request errors use -32600 (Invalid Request), not -32602 (Invalid Params)
+        Err(error) => return Ok(Json(mcp::request_parse_error_response(id, &error))),
     };
     let workspace_id = match mcp::workspace_requirement(&state.app, &parsed) {
         Ok(workspace_id) => workspace_id,
         Err(error) => return Ok(Json(mcp::error_response(parsed.id.clone(), &error))),
     };
     if let Some(required) = workspace_id.as_deref() {
-        authorize_workspace_resource(&state.app, &headers, Some(required.to_string()))?;
-    } else {
-        authorize_admin(&state.app, &headers)?;
+        if let Err(error) =
+            authorize_workspace_resource(&state.app, &headers, Some(required.to_string()))
+        {
+            return Ok(Json(mcp::error_response(parsed.id.clone(), &error)));
+        }
+    } else if let Err(error) = authorize_admin(&state.app, &headers) {
+        return Ok(Json(mcp::error_response(parsed.id.clone(), &error)));
     }
     Ok(Json(
         match mcp::handle_parsed_request(&state.app, parsed, workspace_id.as_deref()) {
             Ok(response) => response,
-            Err(error) => mcp::error_response(mcp::rpc_id(&request), &error),
+            Err(error) => mcp::error_response(id, &error),
         },
     ))
 }

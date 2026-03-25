@@ -164,18 +164,19 @@ fn computed_dedupe_key(
     source_kind: &str,
     event: &axiomsync_domain::RawEventInput,
 ) -> Result<Option<String>> {
-    Ok(event.dedupe_key.clone().or_else(|| {
-        Some(stable_id(
-            "dedupe",
-            &(
-                source_kind,
-                event.normalized_session_kind(),
-                event.normalized_session_key().ok(),
-                event.external_entry_key.as_deref(),
-                event.normalized_event_kind().ok(),
-                event.normalized_observed_at().ok(),
-                event.normalized_content_hash().ok(),
-            ),
-        ))
-    }))
+    if let Some(key) = event.dedupe_key.clone() {
+        return Ok(Some(key));
+    }
+    Ok(Some(stable_id(
+        "dedupe",
+        &(
+            source_kind,
+            event.normalized_session_kind(),
+            event.normalized_session_key()?,
+            event.external_entry_key.as_deref(),
+            event.normalized_event_kind()?,
+            event.normalized_observed_at()?,
+            event.normalized_content_hash()?,
+        ),
+    )))
 }

@@ -68,6 +68,7 @@ cargo run -p axiomsync-cli -- serve --addr 127.0.0.1:4400
 - `project plan-rebuild` / `project apply-replay-plan`: rebuild projection and derivation from the raw ledger through one replay plan
 - `project doctor`: report counts for receipts, projected rows, derived rows, and pending projection/derivation/index work
 - `mcp serve`: expose canonical `case/thread/run/task/document/evidence` resources and tools
+- `sink import-cli-run` / `sink import-work-state`: normalize trusted local payloads into deterministic `AppendRawEventsRequest` plans before any apply step
 
 ## Canonical Query Model
 - public canonical nouns: `case`, `thread`, `run`, `task`, `document`, `evidence`

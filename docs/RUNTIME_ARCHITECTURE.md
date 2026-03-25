@@ -53,6 +53,7 @@ public canonical noun은 `case / thread / run / task / document / evidence`다. 
 - Parse -> Normalize -> Plan stays side-effect free
 - Apply stays behind repository/auth adapters
 - dry-run never mutates store state
+- MCP adapter, trusted CLI import compiler, and SQLite bootstrap guards now all follow the same explicit parse/normalize/plan/apply boundary
 - sink write routes are unauthenticated but loopback-only
 - workspace-scoped read routes require workspace bearer auth
 - collection reads and search require an explicit workspace selector before workspace auth is evaluated
